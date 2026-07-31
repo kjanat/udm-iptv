@@ -179,7 +179,10 @@ while true; do
         ;;
     3)  # Perform profile configuration
         db_get udm-iptv/profile
-        . /usr/lib/udm-iptv/profiles/"$RET".profile
+        profile="/usr/lib/udm-iptv/profiles/$RET.profile"
+        if [ -r "$profile" ]; then
+            . "$profile"
+        fi
         ;;
     4)  # Select LAN interfaces
         case "$board" in
