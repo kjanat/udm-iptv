@@ -18,14 +18,22 @@ if command -v unifi-os > /dev/null 2>&1; then
     exit 1
 fi
 
-UDM_IPTV_VERSION=3.0.6
+UDM_IPTV_VERSION="${UDM_IPTV_VERSION:-3.0.6}"
+UDM_IPTV_REPOSITORY="${UDM_IPTV_REPOSITORY:-fabianishere/udm-iptv}"
+UDM_IPTV_PACKAGE="${UDM_IPTV_PACKAGE:-https://github.com/$UDM_IPTV_REPOSITORY/releases/download/v$UDM_IPTV_VERSION/udm-iptv_${UDM_IPTV_VERSION}_all.deb}"
 
 dest=$(mktemp -d)
 
-echo "Downloading packages..."
-
-# Download udm-iptv package
-curl -sS -o "$dest/udm-iptv.deb" -L "https://github.com/fabianishere/udm-iptv/releases/download/v$UDM_IPTV_VERSION/udm-iptv_${UDM_IPTV_VERSION}_all.deb"
+case "$UDM_IPTV_PACKAGE" in
+    http://*|https://*)
+        echo "Downloading $UDM_IPTV_PACKAGE..."
+        curl -fsS -o "$dest/udm-iptv.deb" -L "$UDM_IPTV_PACKAGE"
+        ;;
+    *)
+        echo "Using $UDM_IPTV_PACKAGE..."
+        cp "$UDM_IPTV_PACKAGE" "$dest/udm-iptv.deb"
+        ;;
+esac
 
 # Fix permissions on the packages
 chown _apt:root "$dest/udm-iptv.deb"
