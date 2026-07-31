@@ -86,13 +86,6 @@ udm_iptv_restore()
 
     udm_iptv_upgrade
 
-    debconf-set-selections "$UDM_IPTV_STATE_DIR/debconf.preseed"
-
-    if [ -e "$UDM_IPTV_STATE_DIR/udm-iptv.conf" ]; then
-        cp "$UDM_IPTV_STATE_DIR/udm-iptv.conf" /etc/udm-iptv.conf
-        chmod 600 /etc/udm-iptv.conf
-    fi
-
     systemctl enable udm-iptv
     systemctl restart udm-iptv
 }

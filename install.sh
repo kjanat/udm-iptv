@@ -34,19 +34,27 @@ esac
 
 api="https://api.github.com/repos/$UDM_IPTV_REPOSITORY"
 
+api_get() {
+    if [ -n "$UDM_IPTV_TOKEN" ]; then
+        curl -fsS -H "Authorization: Bearer $UDM_IPTV_TOKEN" "$@"
+    else
+        curl -fsS "$@"
+    fi
+}
+
 json_field() {
     sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" | head -n 1
 }
 
 resolve_head() {
-    curl -fsS "$api/pulls/$UDM_IPTV_PR" | json_field sha
+    api_get "$api/pulls/$UDM_IPTV_PR" | json_field sha
 }
 
 resolve_run() {
     if [ -n "$UDM_IPTV_PR" ]; then
-        curl -fsS "$api/actions/runs?head_sha=$1&per_page=1" | json_field id
+        api_get "$api/actions/runs?head_sha=$1&per_page=1" | json_field id
     elif [ "$UDM_IPTV_RUN" = "latest" ]; then
-        curl -fsS "$api/actions/runs?status=success&per_page=1" | json_field id
+        api_get "$api/actions/runs?status=success&per_page=1" | json_field id
     else
         echo "$UDM_IPTV_RUN"
     fi
@@ -55,11 +63,11 @@ resolve_run() {
 await_run() {
     waited=0
     while [ "$waited" -lt "$UDM_IPTV_TIMEOUT_SECONDS" ]; do
-        status=$(curl -fsS "$api/actions/runs/$1" | json_field status)
+        status=$(api_get "$api/actions/runs/$1" | json_field status) || status=""
         case "$status" in
             completed) return 0 ;;
             "")
-                echo "error: Workflow run $1 not found."
+                echo "error: Could not read the status of run $1."
                 return 1
                 ;;
         esac
@@ -93,13 +101,13 @@ if [ -n "$UDM_IPTV_RUN" ] || [ -n "$UDM_IPTV_PR" ]; then
 
     await_run "$run" || exit 1
 
-    conclusion=$(curl -fsS "$api/actions/runs/$run" | json_field conclusion)
+    conclusion=$(api_get "$api/actions/runs/$run" | json_field conclusion)
     [ "$conclusion" = "success" ] || {
         echo "error: Run $run concluded $conclusion."
         exit 1
     }
 
-    zip=$(curl -fsS "$api/actions/runs/$run/artifacts" | json_field archive_download_url)
+    zip=$(api_get "$api/actions/runs/$run/artifacts" | json_field archive_download_url)
     [ -n "$zip" ] || {
         echo "error: Run $run has no artifacts."
         exit 1

@@ -9,6 +9,28 @@
 # Source debconf library.
 . /usr/share/debconf/confmodule
 
+CONFIGFILE=/etc/udm-iptv.conf
+STATEDIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
+
+# A firmware update removes the package but not /data, so a first install that
+# finds saved answers is a restore rather than a new configuration. The answers
+# are applied through the open debconf session, since dpkg holds its database
+# for the duration of this script. Descriptor 3 belongs to confmodule.
+if [ "$1" = "configure" ] && [ -z "${2:-}" ] && [ -e "$STATEDIR/debconf.preseed" ]; then
+    while read -r _ question _ value <&7; do
+        [ -n "$question" ] || continue
+        db_set "$question" "$value"
+    done 7< "$STATEDIR/debconf.preseed"
+
+    if [ -e "$STATEDIR/udm-iptv.conf" ]; then
+        cp "$STATEDIR/udm-iptv.conf" "$CONFIGFILE"
+        chmod 600 "$CONFIGFILE"
+    fi
+
+    echo "Restored the configuration saved in $STATEDIR."
+    restored=yes
+fi
+
 # Substitute a debconf answer into a configuration file with the syntax of
 # /etc/udm-iptv.conf
 replace_conf() {
@@ -34,7 +56,6 @@ remove_conf() {
     fi
 }
 
-CONFIGFILE=/etc/udm-iptv.conf
 tmpconf=$(mktemp -t iptv.XXXX.conf)
 
 # Copy original configuration into temp file
@@ -99,7 +120,11 @@ replace_conf "$tmpconf" "IPTV_IGMPPROXY_IGMP_VERSION" "$RET"
 # Replace file with updated configuration
 mv "$tmpconf" "$(readlink -f "$CONFIGFILE")"
 
-if [ -d /data ]; then
+# Nothing new to save when the answers just came out of the saved copy. Closing
+# the debconf session first flushes it, since persist reads the database rather
+# than this script's session.
+if [ -d /data ] && [ -z "${restored:-}" ]; then
+    db_stop
     /usr/bin/udm-iptv persist || true
 fi
 

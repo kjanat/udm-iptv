@@ -190,25 +190,28 @@ If you experience any issues while setting up the service, please visit the
 ### Installation across Firmware Updates
 
 A firmware update replaces the root filesystem, which removes `udm-iptv`, its
-service unit and `/etc/udm-iptv.conf`. `/data` survives, so your debconf answers
-and configuration are copied to `/data/udm-iptv` after every successful
+service unit and `/etc/udm-iptv.conf`. `/data` survives, so your answers and
+configuration are copied to `/data/udm-iptv` after every successful
 configuration. Nothing needs to be enabled and nothing needs to be run
 beforehand.
 
-What cannot be automated is the restore: the update removes the package, so
-there is nothing left on the device to run itself. After an update, reinstall
-from the saved copy:
+Reinstalling after an update picks that copy back up, so the usual installation
+command is all that is needed:
+
+```bash
+sh -c "$(curl https://raw.githubusercontent.com/fabianishere/udm-iptv/master/install.sh -sSf)"
+```
+
+If the `udm-iptv` command survived the update, this does the same thing:
 
 ```bash
 udm-iptv restore
 ```
 
-If the update also removed the `udm-iptv` command, re-run the installation
-script first. `restore` waits for the package manager, since UniFi OS reinstalls
-its own packages for several minutes after the first boot.
-
-`restore` does nothing when the service is already running, so it is safe to
-schedule from another always-on host:
+It does nothing when the service is already running, and waits for the package
+manager, since UniFi OS reinstalls its own packages for several minutes after
+the first boot. Both properties make it safe to schedule from another always-on
+host:
 
 ```bash
 ssh unifi udm-iptv restore
