@@ -137,15 +137,44 @@ boot process of your UniFi device and that will set up the applications
 necessary to route IPTV traffic. After installation, the service is automatically
 started.
 
+Your configuration is saved to `/data` so that it survives a firmware update.
+This is best effort: a firmware update removes the package itself, so the
+installation has to be restored afterwards. See
+[Installation across Firmware Updates](#installation-across-firmware-updates)
+and fabianishere/udm-iptv#120.
+
 If you experience any issues while setting up the service, please visit the
 [Troubleshooting](#troubleshooting) section.
 
 ### Installation across Firmware Updates
 
-**Please remember to make a backup of your configuration before a
-firmware update**. Currently, your configuration and installation might or might
-not persist across firmware updates depending on the type of upgrade
-(see [#120](https://github.com/fabianishere/udm-iptv/issues/120)).
+A firmware update replaces the root filesystem, which removes `udm-iptv`, its
+service unit and `/etc/udm-iptv.conf`. `/data` survives, so your debconf answers
+and configuration are copied to `/data/udm-iptv` after every successful
+configuration. Nothing needs to be enabled and nothing needs to be run
+beforehand.
+
+What cannot be automated is the restore: the update removes the package, so
+there is nothing left on the device to run itself. After an update, reinstall
+from the saved copy:
+
+```bash
+udm-iptv restore
+```
+
+If the update also removed the `udm-iptv` command, re-run the installation
+script first. `restore` waits for the package manager, since UniFi OS reinstalls
+its own packages for several minutes after the first boot.
+
+`restore` does nothing when the service is already running, so it is safe to
+schedule from another always-on host:
+
+```bash
+ssh unifi udm-iptv restore
+```
+
+`udm-iptv persist` writes the copy on demand, which is only useful if you edit
+`/etc/udm-iptv.conf` by hand instead of using `udm-iptv configure`.
 
 ### Configuration
 You can modify the configuration of the service interactively as follows:

@@ -99,6 +99,10 @@ replace_conf "$tmpconf" "IPTV_IGMPPROXY_IGMP_VERSION" "$RET"
 # Replace file with updated configuration
 mv "$tmpconf" "$(readlink -f "$CONFIGFILE")"
 
+if [ -d /data ]; then
+    /usr/bin/udm-iptv persist || true
+fi
+
 #DEBHELPER#
 
 exit 0
