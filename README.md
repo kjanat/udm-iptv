@@ -132,6 +132,47 @@ We appreciate if you share the configuration so others can also benefit.
 See the [profiles](profiles) directory for examples of existing configuration
 profiles.
 
+<details>
+<summary>Installing a different build</summary>
+
+The installer reads the following environment variables:
+
+| Variable            | Description                                                                       |
+|---------------------|-----------------------------------------------------------------------------------|
+| UDM_IPTV_VERSION    | Release to install (default `3.0.6`)                                              |
+| UDM_IPTV_REPOSITORY | Repository to install from (default `fabianishere/udm-iptv`)                      |
+| UDM_IPTV_PACKAGE    | Package to install, as a URL or a path on the device                              |
+| UDM_IPTV_PR         | Pull request whose build to install, as a number or `owner/repo#number`           |
+| UDM_IPTV_RUN        | Workflow run whose build to install, or `latest` for the newest successful one    |
+| UDM_IPTV_TOKEN      | Token with `actions:read`, required for `UDM_IPTV_PR` and `UDM_IPTV_RUN`          |
+| UDM_IPTV_TIMEOUT_SECONDS | Seconds to wait for a workflow run to finish (default `900`)                 |
+
+Artifacts are only downloadable with a token, including on public
+repositories. Releases are not, so `UDM_IPTV_VERSION` and
+`UDM_IPTV_REPOSITORY` need none.
+
+Copy a token to the device, keeping it out of the command line:
+
+```bash
+gh auth token | ssh unifi 'cat > /tmp/.ghtok && chmod 600 /tmp/.ghtok'
+```
+
+Install the build of a pull request, waiting for the workflow if it is still
+running:
+
+```bash
+ssh unifi 'UDM_IPTV_PR="fabianishere/udm-iptv#123" UDM_IPTV_TOKEN=$(cat /tmp/.ghtok) \
+    sh -c "$(curl https://raw.githubusercontent.com/fabianishere/udm-iptv/master/install.sh -sSf)"'
+```
+
+Remove the token when you are done:
+
+```bash
+ssh unifi 'rm -f /tmp/.ghtok'
+```
+
+</details>
+
 The package installs a service that is started during the
 boot process of your UniFi device and that will set up the applications
 necessary to route IPTV traffic. After installation, the service is automatically

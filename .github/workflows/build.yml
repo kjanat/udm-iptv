@@ -8,7 +8,7 @@ jobs:
     if: ${{ !contains(github.event.head_commit.message, 'skip ci') }}
     steps:
       - name: Checkout Sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: udm-iptv
       - name: Setup Dependencies
@@ -18,7 +18,7 @@ jobs:
           cd udm-iptv
           debuild -uc -us --lintian-opts --profile debian
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-artifacts
           if-no-files-found: error

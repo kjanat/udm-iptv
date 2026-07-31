@@ -23,7 +23,7 @@ UDM_IPTV_REPOSITORY="${UDM_IPTV_REPOSITORY:-fabianishere/udm-iptv}"
 UDM_IPTV_RUN="${UDM_IPTV_RUN:-}"
 UDM_IPTV_PR="${UDM_IPTV_PR:-}"
 UDM_IPTV_TOKEN="${UDM_IPTV_TOKEN:-${GITHUB_TOKEN:-}}"
-UDM_IPTV_TIMEOUT="${UDM_IPTV_TIMEOUT:-900}"
+UDM_IPTV_TIMEOUT_SECONDS="${UDM_IPTV_TIMEOUT_SECONDS:-900}"
 
 case "$UDM_IPTV_PR" in
     */*\#*)
@@ -54,7 +54,7 @@ resolve_run() {
 
 await_run() {
     waited=0
-    while [ "$waited" -lt "$UDM_IPTV_TIMEOUT" ]; do
+    while [ "$waited" -lt "$UDM_IPTV_TIMEOUT_SECONDS" ]; do
         status=$(curl -fsS "$api/actions/runs/$1" | json_field status)
         case "$status" in
             completed) return 0 ;;
@@ -67,7 +67,7 @@ await_run() {
         sleep 15
         waited=$((waited + 15))
     done
-    echo "error: Run $1 did not complete within ${UDM_IPTV_TIMEOUT}s."
+    echo "error: Run $1 did not complete within ${UDM_IPTV_TIMEOUT_SECONDS}s."
     return 1
 }
 
