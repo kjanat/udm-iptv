@@ -101,19 +101,19 @@ if [ -e $CONFIGFILE ]; then
     db_set udm-iptv/wan-vlan-separate "$([ "$IPTV_WAN_INTERFACE" = 0 ] && echo "false" || echo "true")"
     db_set udm-iptv/wan-vlan "$IPTV_WAN_VLAN"
     db_set udm-iptv/wan-vlan-interface "$IPTV_WAN_VLAN_INTERFACE"
-    db_set udm-iptv/wan-vlan-mac "$IPTV_WAN_VLAN_MAC"
+    db_set udm-iptv/wan-vlan-mac "${IPTV_WAN_VLAN_MAC:-}"
 
     db_set udm-iptv/wan-ranges "$(echo "$IPTV_WAN_RANGES" | tr -s ' ' ',')"
-    db_set udm-iptv/wan-dhcp "$IPTV_WAN_DHCP"
+    db_set udm-iptv/wan-dhcp "${IPTV_WAN_DHCP:-}"
     db_set udm-iptv/wan-dhcp-options "$IPTV_WAN_DHCP_OPTIONS"
-    db_set udm-iptv/wan-static-ip "$IPTV_WAN_STATIC_IP"
+    db_set udm-iptv/wan-static-ip "${IPTV_WAN_STATIC_IP:-}"
 
     db_set udm-iptv/lan-interfaces "$(echo "$IPTV_LAN_INTERFACES" | tr -s ' ' ',')"
 
-    db_set udm-iptv/igmpproxy-program "$IPTV_IGMPPROXY_PROGRAM"
+    db_set udm-iptv/igmpproxy-program "${IPTV_IGMPPROXY_PROGRAM:-}"
     db_set udm-iptv/igmpproxy-quickleave "$([ -n "$IPTV_IGMPPROXY_DISABLE_QUICKLEAVE" ] && [ "$IPTV_IGMPPROXY_DISABLE_QUICKLEAVE" != "false" ] && echo "false" || echo "true")"
     db_set udm-iptv/igmpproxy-debug "$IPTV_IGMPPROXY_DEBUG"
-    db_set udm-iptv/igmpproxy-igmp-version "$IPTV_IGMPPROXY_IGMP_VERSION"
+    db_set udm-iptv/igmpproxy-igmp-version "${IPTV_IGMPPROXY_IGMP_VERSION:-}"
 fi
 
 # Facilitate backup capability per debconf-devel(7)
@@ -179,7 +179,7 @@ while true; do
         ;;
     3)  # Perform profile configuration
         db_get udm-iptv/profile
-        profile="/usr/lib/udm-iptv/profiles/$RET.profile"
+        profile="/usr/lib/udm-iptv/profiles/${RET:-}.profile"
         if [ -r "$profile" ]; then
             . "$profile"
         fi
