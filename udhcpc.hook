@@ -73,7 +73,10 @@ routes() {
     # and a Router option, the DHCP client MUST ignore the Router option.
     if [ -n "${staticroutes}" ]; then
         # static routes format: dest1/mask gw1 ... destn/mask gwn
-        set -- "${staticroutes}"
+        set --
+        for route_field in ${staticroutes}; do
+            set -- "$@" "${route_field}"
+        done
         while [ -n "$1" ] && [ -n "$2" ]; do
             static_dest="$1"
             static_gw="$2"

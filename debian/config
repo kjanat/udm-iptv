@@ -47,8 +47,10 @@ _if_inet_list_uxg() {
 _if_inet_list_lower() {
     for path in "$1"/lower_*; do
         if ! [ -e "${path}" ]; then
-                link=$(readlink "$1")
-                basename "${link}"
+                link=$(readlink "$1") || link=
+                if [ -n "${link}" ]; then
+                        basename "${link}"
+                fi
                 break
         fi
         _if_inet_list_lower "${path}"
@@ -57,8 +59,10 @@ _if_inet_list_lower() {
 
 # Helper function to list all upper interfaces of some interface
 _if_inet_list_upper() {
-    link=$(readlink "$1")
-    basename "${link}"
+    link=$(readlink "$1") || link=
+    if [ -n "${link}" ]; then
+        basename "${link}"
+    fi
     for path in "$1"/upper_*; do
         [ -e "${path}" ] || continue
         _if_inet_list_upper "${path}"
@@ -203,6 +207,8 @@ while true; do
         if [ -r "${profile}" ]; then
             # shellcheck source=profiles/custom.profile
             . "${profile}"
+        else
+            echo "warning: no profile at ${profile}, keeping the current answers" >&2
         fi
         ;;
     4)  # Select LAN interfaces

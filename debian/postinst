@@ -20,7 +20,7 @@ STATEDIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
 if [ "$1" = "configure" ] && [ -z "${2:-}" ] && [ -e "${STATEDIR}/debconf.preseed" ]; then
     while read -r _ question _ value <&7; do
         [ -n "${question}" ] || continue
-        db_set "${question}" "${value}"
+        db_set "${question}" "${value}" || true
     done 7< "${STATEDIR}/debconf.preseed"
 
     if [ -e "${STATEDIR}/udm-iptv.conf" ]; then

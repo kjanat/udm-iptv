@@ -9,7 +9,7 @@
 case "$1" in
     purge)
         rm -rf /var/cache/udm-iptv
-        rm -rf "${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
+        rm -rf /data/udm-iptv
         if [ -e /usr/share/debconf/confmodule ]
         then
                 # Source debconf library and purge db
