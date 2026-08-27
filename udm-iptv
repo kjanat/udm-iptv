@@ -39,7 +39,7 @@ udm_iptv_persist() {
 	awk '
         /^Name: udm-iptv/ { name = $2; have = 0 }
         /^Value:/ && name { $1 = ""; sub(/^ /, ""); value = $0; have = 1 }
-        /^$/ && name && have { print name "\t" value; name = "" }
+        /^$/ { if (name && have) print name "\t" value; name = ""; have = 0 }
     ' /var/cache/debconf/config.dat >"${UDM_IPTV_STATE_DIR}/.values"
 
 	awk '
@@ -51,6 +51,8 @@ udm_iptv_persist() {
         NR == FNR { type[$1] = $2; next }
         $1 in type && type[$1] != "note" { printf "udm-iptv\t%s\t%s\t%s\n", $1, type[$1], $2 }
     ' "${UDM_IPTV_STATE_DIR}/.types" "${UDM_IPTV_STATE_DIR}/.values" >"${UDM_IPTV_STATE_DIR}/debconf.preseed"
+
+	chmod 600 "${UDM_IPTV_STATE_DIR}/debconf.preseed"
 
 	rm -f "${UDM_IPTV_STATE_DIR}/.values" "${UDM_IPTV_STATE_DIR}/.types"
 
