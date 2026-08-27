@@ -9,7 +9,7 @@
 # (at your option) any later version.
 
 db_get udm-iptv/wan-port
-db_set udm-iptv/wan-interface "$RET"
+db_set udm-iptv/wan-interface "${RET}"
 
 db_set udm-iptv/wan-vlan 0
 db_set udm-iptv/wan-ranges "224.0.0.0/4, 109.159.247.0/24"
