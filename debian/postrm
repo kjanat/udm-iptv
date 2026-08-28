@@ -9,15 +9,24 @@
 case "$1" in
     purge)
         rm -rf /var/cache/udm-iptv
+        rm -rf /data/udm-iptv
         if [ -e /usr/share/debconf/confmodule ]
         then
                 # Source debconf library and purge db
+                # shellcheck source=/dev/null
                 . /usr/share/debconf/confmodule
                 db_purge
         fi
         ;;
 
-    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    remove)
+        # Leaving this enabled would reinstall the package on the next boot.
+        if [ -d /run/systemd/system ]; then
+            systemctl disable udm-iptv-restore.service > /dev/null 2>&1 || true
+        fi
+        ;;
+
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
         ;;
 
     *)
