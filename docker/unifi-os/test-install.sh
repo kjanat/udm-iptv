@@ -30,6 +30,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+dump() {
+	name=$1
+	echo "error: ${name} status=$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null || echo gone)" >&2
+	docker logs "${name}" >&2 || true
+	docker exec "${name}" systemctl status udm-iptv-restore.service udm-iptv.service >&2 || true
+	docker exec "${name}" journalctl -u udm-iptv-restore -u udm-iptv --no-pager >&2 || true
+}
+
 ensure_arm64() {
 	image=$1
 	if docker run --rm --platform linux/arm64 "${image}" uname -m; then
@@ -61,21 +69,44 @@ wait_systemd() {
 	name=$1
 	n=0
 	while [ "${n}" -lt 60 ]; do
-		if [ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null || echo false)" = "true" ] \
-			&& docker exec "${name}" test -d /run/systemd/system; then
+		status=$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null || echo gone)
+		if [ "${status}" = "exited" ] || [ "${status}" = "dead" ] || [ "${status}" = "gone" ]; then
+			echo "error: ${name} ${status} while waiting for systemd" >&2
+			dump "${name}"
+			return 1
+		fi
+		if [ "${status}" = "running" ] && docker exec "${name}" test -d /run/systemd/system; then
+			echo "systemd up in ${name}"
 			return 0
 		fi
 		sleep 2
 		n=$((n + 2))
 	done
 	echo "error: systemd did not start in ${name}" >&2
-	docker inspect -f '{{.State.Status}} {{.State.Error}}' "${name}" >&2 || true
-	docker logs "${name}" >&2 || true
+	dump "${name}"
+	return 1
+}
+
+wait_pkg() {
+	name=$1
+	n=0
+	while [ "${n}" -lt 180 ]; do
+		if docker exec "${name}" test -e /usr/bin/udm-iptv \
+			&& docker exec "${name}" test -e /usr/lib/udm-iptv/udm-iptvd; then
+			echo "package present in ${name}"
+			return 0
+		fi
+		sleep 2
+		n=$((n + 2))
+	done
+	echo "error: restore did not install the package in ${name}" >&2
+	dump "${name}"
 	return 1
 }
 
 wait_active() {
 	name=$1
+	timeout 30 docker exec "${name}" systemctl start udm-iptv || true
 	n=0
 	while [ "${n}" -lt 180 ]; do
 		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv \
@@ -88,16 +119,14 @@ wait_active() {
 		n=$((n + 2))
 	done
 	echo "error: udm-iptv is not enabled and active in ${name}" >&2
-	docker exec "${name}" systemctl status udm-iptv-restore.service udm-iptv.service >&2 || true
-	docker exec "${name}" journalctl -u udm-iptv-restore -u udm-iptv --no-pager >&2 || true
-	docker logs "${name}" >&2 || true
+	dump "${name}"
 	return 1
 }
 
 assert_restored() {
 	name=$1
-	docker exec "${name}" test -e /usr/bin/udm-iptv
-	docker exec "${name}" test -e /usr/lib/udm-iptv/udm-iptvd
+	timeout 120 docker exec "${name}" systemctl start udm-iptv-restore.service || true
+	wait_pkg "${name}"
 	docker exec "${name}" test -e /etc/systemd/system/udm-iptv-restore.service
 	docker exec "${name}" systemctl is-enabled --quiet udm-iptv-restore
 	wait_active "${name}"
@@ -111,6 +140,7 @@ ensure_arm64 "${to_image}"
 
 docker volume create "${vol_data}" >/dev/null
 
+echo "booting ${from_image}"
 boot "${from_name}" "${from_image}"
 wait_systemd "${from_name}"
 docker exec \
@@ -124,15 +154,12 @@ docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv-restore
 docker exec "${from_name}" cp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 docker exec "${from_name}" cp /etc/systemd/system/udm-iptv-restore.service /data/udm-iptv/udm-iptv-restore.service
-echo "starting udm-iptv on ${from_name}"
-timeout 30 docker exec "${from_name}" systemctl start udm-iptv || true
 wait_active "${from_name}"
 docker stop "${from_name}"
 
 echo "booting ${to_image}"
 boot "${to_name}" "${to_image}"
 wait_systemd "${to_name}"
-echo "to systemd up"
 if docker exec "${to_name}" test -e /usr/lib/udm-iptv/udm-iptvd; then
 	echo "error: package still on /usr after firmware swap" >&2
 	exit 1
@@ -140,6 +167,7 @@ fi
 assert_restored "${to_name}"
 docker exec "${to_name}" cmp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 
+echo "rebooting ${to_name}"
 docker stop "${to_name}"
 docker start "${to_name}"
 wait_systemd "${to_name}"
