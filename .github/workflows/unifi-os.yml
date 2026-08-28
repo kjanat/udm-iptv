@@ -17,6 +17,7 @@ jobs:
   build-deb:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: udm-iptv } }
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { path: udm-iptv }
@@ -34,18 +35,26 @@ jobs:
     env:
       SKU: ${{ github.event_name == 'workflow_dispatch' && inputs.sku || 'all' }}
       UNIFI_OS_IMAGE: ghcr.io/kjanat/unifi-os
+    timeout-minutes: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: column --table-columns=model,id,ver,url --json < docker/unifi-os/firmware.tsv > docker/unifi-os/firmware.json
       - id: rows
         uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4
-        with:
-          cmd: yq -I=0 '.table' docker/unifi-os/firmware.json
+        with: { cmd: "yq -I=0 '.table' docker/unifi-os/firmware.json" }
       - id: models
         uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4
         env: { SKU: "${{ env.SKU }}" }
         with:
-          cmd: yq -I=0 '[.table[].model] | unique | map(select(strenv(SKU) == "all" or strenv(SKU) == "" or . == strenv(SKU)))' docker/unifi-os/firmware.json
+          cmd: >-
+            yq -I=0 '
+              [.table[].model] | unique |
+                map(select(
+                  strenv(SKU) == "all" or
+                  strenv(SKU) == "" or
+                  . == strenv(SKU)
+                ))
+            ' docker/unifi-os/firmware.json
       - id: pairs
         uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4
         env: { SKU: "${{ env.SKU }}", UNIFI_OS_IMAGE: "${{ env.UNIFI_OS_IMAGE }}" }
@@ -66,6 +75,7 @@ jobs:
     defaults: { run: { working-directory: docker/unifi-os } }
     strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.catalog.outputs.pairs) }}" } }
     env: { MODEL: "${{ matrix.model }}", FROM_IMAGE: "${{ matrix.from_image }}", TO_IMAGE: "${{ matrix.to_image }}" }
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
