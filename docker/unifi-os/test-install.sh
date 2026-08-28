@@ -130,6 +130,13 @@ dump() {
 	group_end
 }
 
+log_config() {
+	local name=$1
+	local label=$2
+	printf '\n--- /etc/udm-iptv.conf (%s) ---\n' "${label}"
+	docker exec "${name}" cat /etc/udm-iptv.conf
+}
+
 ensure_arm64() {
 	local image=$1
 	if docker run --rm --platform linux/arm64 "${image}" uname -m; then
@@ -309,13 +316,17 @@ docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.deb
 docker exec "${from_name}" test -e /data/udm-iptv/debconf.preseed
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv-restore
+log_config "${from_name}" "after initial installation"
 docker exec "${from_name}" cp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 docker exec "${from_name}" cp /data/udm-iptv/debconf.preseed /data/udm-iptv/debconf.preseed.installed
 docker exec "${from_name}" cp /etc/systemd/system/udm-iptv-restore.service /data/udm-iptv/udm-iptv-restore.service
 docker exec "${from_name}" udm-iptv persist
+log_config "${from_name}" "after repeated persistence"
 docker exec "${from_name}" cmp /data/udm-iptv/debconf.preseed /data/udm-iptv/debconf.preseed.installed
 wait_active "${from_name}"
+log_config "${from_name}" "before package upgrade"
 docker exec "${from_name}" udm-iptv upgrade --package /tmp/udm-iptv.deb
+log_config "${from_name}" "after package upgrade"
 assert_version "${from_name}" "${current_version}"
 docker exec "${from_name}" cmp /tmp/udm-iptv.deb /data/udm-iptv/udm-iptv.deb
 docker exec "${from_name}" cmp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
