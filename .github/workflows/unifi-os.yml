@@ -83,6 +83,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with: { name: build-artifacts, path: docker/unifi-os }
+      - id: firmware-key
+        shell: bash
+        run: |
+          key=$(awk -F '\t' -v model="${MODEL}" '$1 == model' firmware.tsv | sha256sum | cut -d ' ' -f 1)
+          echo "key=${key}" >> "${GITHUB_OUTPUT}"
+      - id: firmware-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/unifi-os/firmware
+          key: unifi-os-firmware-${{ runner.os }}-${{ runner.arch }}-${{ matrix.model }}-${{ steps.firmware-key.outputs.key }}
       - run: sudo apt-get update && sudo apt-get install -y squashfs-tools
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
         with: { platforms: arm64 }
@@ -90,6 +100,11 @@ jobs:
         env:
           UNIFI_OS_CACHE: ${{ runner.temp }}/unifi-os
           UNIFI_OS_IMAGE: ghcr.io/kjanat/unifi-os
+      - if: steps.firmware-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/unifi-os/firmware
+          key: ${{ steps.firmware-cache.outputs.cache-primary-key }}
       - run: ./test-install.sh "${MODEL}" udm-iptv_*.deb
       - if: github.event_name == 'workflow_dispatch'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4

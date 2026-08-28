@@ -30,6 +30,8 @@ build_one() {
 		echo "Downloading ${url}"
 		curl -fL --retry 3 -A "curl/8.5.0" -o "${bin}.partial" "${url}"
 		mv "${bin}.partial" "${bin}"
+	else
+		echo "Using cached ${bin}"
 	fi
 
 	python3 "${here}/extract.py" "${bin}" "${fwdir}"
@@ -44,7 +46,7 @@ build_one() {
 
 	docker tag "${image}:${tag}" "${image}:${key}-${board}-${version}"
 	rm -rf "${root}"
-	rm -f "${fwdir}/rootfs.squashfs" "${fwdir}/uboot.bin" "${fwdir}/kernel.bin" "${bin}"
+	rm -f "${fwdir}/rootfs.squashfs" "${fwdir}/uboot.bin" "${fwdir}/kernel.bin"
 	echo "${image}:${tag}"
 }
 
