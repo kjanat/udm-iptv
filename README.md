@@ -274,6 +274,12 @@ To fully remove an `udm-iptv` installation from your UniFi device, run the follo
 udm-iptv uninstall
 ```
 
+Or to remove the package but keep the configuration and answers, run:
+
+```sh
+udm-iptv uninstall --keep-data
+```
+
 ## Troubleshooting
 
 Below is a non-exhaustive list of issues that might occur while getting IPTV to
