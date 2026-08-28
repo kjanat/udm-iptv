@@ -310,12 +310,16 @@ docker exec "${from_name}" test -e /data/udm-iptv/debconf.preseed
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv-restore
 docker exec "${from_name}" cp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
+docker exec "${from_name}" cp /data/udm-iptv/debconf.preseed /data/udm-iptv/debconf.preseed.installed
 docker exec "${from_name}" cp /etc/systemd/system/udm-iptv-restore.service /data/udm-iptv/udm-iptv-restore.service
+docker exec "${from_name}" udm-iptv persist
+docker exec "${from_name}" cmp /data/udm-iptv/debconf.preseed /data/udm-iptv/debconf.preseed.installed
 wait_active "${from_name}"
 docker exec "${from_name}" udm-iptv upgrade --package /tmp/udm-iptv.deb
 assert_version "${from_name}" "${current_version}"
 docker exec "${from_name}" cmp /tmp/udm-iptv.deb /data/udm-iptv/udm-iptv.deb
 docker exec "${from_name}" cmp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
+docker exec "${from_name}" cmp /data/udm-iptv/debconf.preseed /data/udm-iptv/debconf.preseed.installed
 docker exec "${from_name}" systemctl is-enabled --quiet udm-iptv-restore.service
 wait_active "${from_name}"
 docker stop "${from_name}"

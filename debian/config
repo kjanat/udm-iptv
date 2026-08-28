@@ -104,6 +104,8 @@ db_capb escape
 # contains the exact answers that produced the persisted configuration.
 CONFIGFILE=/etc/udm-iptv.conf
 STATEDIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
+PROFILEDIR=/usr/lib/udm-iptv/profiles
+PROFILEPENDING=/var/cache/udm-iptv/profile.pending
 restored=
 if [ ! -e "${CONFIGFILE}" ] && [ -r "${STATEDIR}/debconf.preseed" ]; then
     while read -r _ question _ value <&7; do
@@ -111,6 +113,7 @@ if [ ! -e "${CONFIGFILE}" ] && [ -r "${STATEDIR}/debconf.preseed" ]; then
         db_set "${question}" "${value}" || true
     done 7< "${STATEDIR}/debconf.preseed"
     restored=yes
+    rm -f "${PROFILEPENDING}"
 fi
 
 # Restore existing configuration
@@ -217,12 +220,17 @@ while true; do
     3)  # Perform profile configuration
         if [ -z "${restored}" ]; then
             db_get udm-iptv/profile
-            profile="/usr/lib/udm-iptv/profiles/${RET:-}.profile"
+            profile="${PROFILEDIR}/${RET:-}.profile"
             if [ -r "${profile}" ]; then
                 # shellcheck source=profiles/custom.profile
                 . "${profile}"
-            elif [ -d /usr/lib/udm-iptv/profiles ]; then
+                rm -f "${PROFILEPENDING}"
+            elif [ -d "${PROFILEDIR}" ]; then
                 echo "warning: no profile at ${profile}, keeping the current answers" >&2
+                rm -f "${PROFILEPENDING}"
+            else
+                mkdir -p "$(dirname "${PROFILEPENDING}")"
+                printf '%s\n' "${RET:-}" > "${PROFILEPENDING}"
             fi
         fi
         ;;

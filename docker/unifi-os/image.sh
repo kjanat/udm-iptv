@@ -2,7 +2,7 @@
 set -eu
 
 here=$(dirname -- "$0")
-here=$(cd -- "$here" && pwd)
+here=$(cd -- "${here}" && pwd)
 catalog="${here}/firmware.tsv"
 image="${UNIFI_OS_IMAGE:-ghcr.io/kjanat/unifi-os}"
 wanted="${1:-all}"
