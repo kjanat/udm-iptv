@@ -4,6 +4,8 @@ set -eu
 export container=docker
 
 printf 'APT::Get::Assume-Yes "true";\n' >/etc/apt/apt.conf.d/99yes
+printf '#!/bin/sh\nexit 101\n' >/usr/sbin/policy-rc.d
+chmod 755 /usr/sbin/policy-rc.d
 
 if command -v unifi-os >/dev/null 2>&1; then
 	mv "$(command -v unifi-os)" /usr/sbin/unifi-os.real

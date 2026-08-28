@@ -124,12 +124,19 @@ docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv-restore
 docker exec "${from_name}" cp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 docker exec "${from_name}" cp /etc/systemd/system/udm-iptv-restore.service /data/udm-iptv/udm-iptv-restore.service
+echo "starting udm-iptv on ${from_name}"
+timeout 30 docker exec "${from_name}" systemctl start udm-iptv || true
 wait_active "${from_name}"
 docker stop "${from_name}"
 
+echo "booting ${to_image}"
 boot "${to_name}" "${to_image}"
 wait_systemd "${to_name}"
-docker exec "${to_name}" test ! -e /usr/lib/udm-iptv/udm-iptvd
+echo "to systemd up"
+if docker exec "${to_name}" test -e /usr/lib/udm-iptv/udm-iptvd; then
+	echo "error: package still on /usr after firmware swap" >&2
+	exit 1
+fi
 assert_restored "${to_name}"
 docker exec "${to_name}" cmp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 
