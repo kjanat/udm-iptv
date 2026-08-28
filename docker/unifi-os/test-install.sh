@@ -12,16 +12,17 @@ if [[ -z ${sku} || -z ${deb} ]]; then
 fi
 
 if [[ -n ${FROM_IMAGE:-} && -n ${TO_IMAGE:-} ]]; then
-	from_image=$FROM_IMAGE
-	to_image=$TO_IMAGE
+	from_image=${FROM_IMAGE}
+	to_image=${TO_IMAGE}
 else
 	pair=$("${here}/upgrade-pair.sh" "${sku}")
 	from_image=
 	to_image=
 	while IFS='=' read -r name value; do
 		case ${name} in
-			from_image) from_image=$value ;;
-			to_image) to_image=$value ;;
+			from_image) from_image=${value} ;;
+			to_image) to_image=${value} ;;
+			*) ;;
 		esac
 	done <<<"${pair}"
 	if [[ -z ${from_image} || -z ${to_image} ]]; then
@@ -30,6 +31,11 @@ else
 	fi
 fi
 deb=$(readlink -f "${deb}")
+work=$(mktemp -d)
+old_root="${work}/old"
+old_deb=${OLD_PACKAGE:-"${work}/udm-iptv-old.deb"}
+current_version=${CURRENT_PACKAGE_VERSION:-}
+old_version=${OLD_PACKAGE_VERSION:-}
 id="udm-iptv-${sku}-$$"
 vol_data="${id}-data"
 from_name="${id}-from"
@@ -47,16 +53,20 @@ workflow_escape() {
 workflow_emit() {
 	local command=$1
 	local message=$2
+	local escaped
 	if [[ ${GITHUB_ACTIONS:-} == true ]]; then
-		printf '::%s::%s\n' "${command}" "$(workflow_escape "${message}")"
+		escaped=$(workflow_escape "${message}")
+		printf '::%s::%s\n' "${command}" "${escaped}"
 	fi
 }
 
 workflow_error() {
 	local message=$1
+	local escaped
 	if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+		escaped=$(workflow_escape "${message}")
 		printf '::error file=docker/unifi-os/test-install.sh,title=UniFi OS integration test::%s\n' \
-			"$(workflow_escape "${message}")"
+			"${escaped}"
 	fi
 }
 
@@ -90,14 +100,17 @@ cleanup() {
 	group_end
 	docker rm -f "${from_name}" "${to_name}" >/dev/null 2>&1 || true
 	docker volume rm "${vol_data}" >/dev/null 2>&1 || true
+	rm -rf "${work}"
 	exit "${status}"
 }
 trap cleanup EXIT
 
 dump() {
 	local name=$1
+	local status
 	group_begin "Diagnostics: ${name}"
-	echo "container status=$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null || echo gone)" >&2
+	status=$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null) || status=gone
+	echo "container status=${status}" >&2
 	docker logs "${name}" >&2 || true
 	docker exec "${name}" systemctl is-system-running >&2 || true
 	docker exec "${name}" systemctl list-jobs --no-pager >&2 || true
@@ -128,6 +141,7 @@ boot() {
 		--tmpfs /run:exec --tmpfs /run/lock --tmpfs /tmp:exec \
 		-v "${vol_data}:/data" \
 		-v "${deb}:/tmp/udm-iptv.deb:ro" \
+		-v "${old_deb}:/tmp/udm-iptv-old.deb:ro" \
 		-v "${repo}/install.sh:/tmp/install.sh:ro" \
 		-v "${here}/harness.sh:/harness.sh:ro" \
 		-v "${here}/udm-iptv-test.target:/etc/systemd/system/udm-iptv-test.target:ro" \
@@ -222,9 +236,50 @@ assert_restored() {
 	wait_active "${name}"
 }
 
+assert_version() {
+	local name=$1
+	local expected=$2
+	local actual
+	actual=$(docker exec "${name}" dpkg-query -W -f='${Version}' udm-iptv)
+	if [[ ${actual} != "${expected}" ]]; then
+		report_error "expected udm-iptv ${expected} in ${name}, found ${actual}"
+		return 1
+	fi
+	echo "package version ${actual} in ${name}"
+}
+
+assert_removed() {
+	local name=$1
+	if docker exec "${name}" test -e /usr/bin/udm-iptv; then
+		report_error "package still installed in ${name}"
+		return 1
+	fi
+	if docker exec "${name}" systemctl is-enabled --quiet udm-iptv-restore.service 2>/dev/null; then
+		report_error "restore service still enabled in ${name}"
+		return 1
+	fi
+}
+
 workflow_emit notice "Testing ${sku}: ${from_image} -> ${to_image}"
 echo "from=${from_image}"
 echo "to=${to_image}"
+
+group_begin "Prepare package upgrade"
+if [[ -n ${OLD_PACKAGE:-} ]]; then
+	old_deb=$(readlink -f "${old_deb}")
+	if [[ -z ${current_version} || -z ${old_version} ]]; then
+		report_error "OLD_PACKAGE requires CURRENT_PACKAGE_VERSION and OLD_PACKAGE_VERSION"
+		exit 1
+	fi
+else
+	current_version=$(dpkg-deb -f "${deb}" Version)
+	old_version="${current_version}~integration"
+	dpkg-deb -R "${deb}" "${old_root}"
+	sed -i "s/^Version: .*/Version: ${old_version}/" "${old_root}/DEBIAN/control"
+	dpkg-deb --root-owner-group -b "${old_root}" "${old_deb}"
+fi
+echo "package upgrade=${old_version} -> ${current_version}"
+group_end
 
 group_begin "Prepare ARM64 images"
 ensure_arm64 "${from_image}"
@@ -238,15 +293,22 @@ boot "${from_name}" "${from_image}"
 wait_systemd "${from_name}"
 docker exec \
 	-e DEBIAN_FRONTEND=noninteractive \
-	-e UDM_IPTV_PACKAGE=/tmp/udm-iptv.deb \
+	-e UDM_IPTV_PACKAGE=/tmp/udm-iptv-old.deb \
 	"${from_name}" \
 	sh /tmp/install.sh
+assert_version "${from_name}" "${old_version}"
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.deb
 docker exec "${from_name}" test -e /data/udm-iptv/debconf.preseed
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv-restore
 docker exec "${from_name}" cp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 docker exec "${from_name}" cp /etc/systemd/system/udm-iptv-restore.service /data/udm-iptv/udm-iptv-restore.service
+wait_active "${from_name}"
+docker exec "${from_name}" udm-iptv upgrade --package /tmp/udm-iptv.deb
+assert_version "${from_name}" "${current_version}"
+docker exec "${from_name}" cmp /tmp/udm-iptv.deb /data/udm-iptv/udm-iptv.deb
+docker exec "${from_name}" cmp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
+docker exec "${from_name}" systemctl is-enabled --quiet udm-iptv-restore.service
 wait_active "${from_name}"
 docker stop "${from_name}"
 group_end
@@ -267,6 +329,37 @@ docker stop "${to_name}"
 docker start "${to_name}"
 wait_systemd "${to_name}"
 assert_restored "${to_name}"
+assert_version "${to_name}" "${current_version}"
 docker exec "${to_name}" cmp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 echo "upgrade and reboot ok"
+group_end
+
+group_begin "Remove while retaining saved state"
+docker exec "${to_name}" udm-iptv uninstall --keep-data
+assert_removed "${to_name}"
+docker exec "${to_name}" test -e /etc/udm-iptv.conf
+docker exec "${to_name}" test -e /data/udm-iptv/udm-iptv.deb
+docker exec "${to_name}" test -e /data/udm-iptv/udm-iptv-restore
+docker stop "${to_name}"
+docker start "${to_name}"
+wait_systemd "${to_name}"
+assert_removed "${to_name}"
+echo "removed package stayed removed after reboot"
+group_end
+
+group_begin "Restore manually, then purge"
+docker exec "${to_name}" /data/udm-iptv/udm-iptv-restore
+assert_restored "${to_name}"
+assert_version "${to_name}" "${current_version}"
+docker exec "${to_name}" udm-iptv uninstall
+assert_removed "${to_name}"
+docker exec "${to_name}" test ! -e /etc/udm-iptv.conf
+docker exec "${to_name}" test ! -e /etc/systemd/system/udm-iptv-restore.service
+docker exec "${to_name}" test ! -e /data/udm-iptv
+docker stop "${to_name}"
+docker start "${to_name}"
+wait_systemd "${to_name}"
+assert_removed "${to_name}"
+docker exec "${to_name}" test ! -e /data/udm-iptv
+echo "purged package stayed removed after reboot"
 group_end

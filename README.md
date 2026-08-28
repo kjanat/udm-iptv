@@ -261,8 +261,19 @@ Use the following command to upgrade `udm-iptv`:
 udm-iptv upgrade
 ```
 
-It fetches the installer from `UDM_IPTV_REPOSITORY` at `UDM_IPTV_BRANCH`, the
-same pair the restore uses.
+By default this resolves and installs the latest published release. The command
+also accepts an explicit release, package, pull request or workflow run:
+
+```sh
+udm-iptv upgrade --version 3.0.6
+udm-iptv upgrade --package /data/udm-iptv/udm-iptv.deb
+udm-iptv upgrade --pr fabianishere/udm-iptv#123 --token-file /tmp/.ghtok
+udm-iptv upgrade --run latest --token-file /tmp/.ghtok
+```
+
+Run `udm-iptv upgrade --help` for the complete option list. Firmware restoration
+always uses the saved package and never upgrades automatically; this keeps a
+firmware update separate from a package update.
 
 If that command does not exist, please re-run the installation script.
 

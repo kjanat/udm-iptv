@@ -163,6 +163,16 @@ if [ -n "${UDM_IPTV_RUN}" ] || [ -n "${UDM_IPTV_PR}" ]; then
 	}
 	mv "${deb}" "${dest}/udm-iptv.deb"
 else
+	if [ -z "${UDM_IPTV_PACKAGE:-}" ] && [ "${UDM_IPTV_VERSION}" = "latest" ]; then
+		latest_tag=$(api_get "${api}/releases/latest" | json_field tag_name)
+		[ -n "${latest_tag}" ] || {
+			echo "error: Could not resolve the latest release of ${UDM_IPTV_REPOSITORY}."
+			exit 1
+		}
+		UDM_IPTV_VERSION=${latest_tag#v}
+		echo "Latest release is ${latest_tag}."
+	fi
+
 	UDM_IPTV_PACKAGE="${UDM_IPTV_PACKAGE:-https://github.com/${UDM_IPTV_REPOSITORY}/releases/download/v${UDM_IPTV_VERSION}/udm-iptv_${UDM_IPTV_VERSION}_all.deb}"
 
 	case "${UDM_IPTV_PACKAGE}" in
