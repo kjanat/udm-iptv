@@ -276,7 +276,7 @@ else
 	old_version="${current_version}~integration"
 	dpkg-deb -R "${deb}" "${old_root}"
 	sed -i "s/^Version: .*/Version: ${old_version}/" "${old_root}/DEBIAN/control"
-	dpkg-deb --root-owner-group -b "${old_root}" "${old_deb}"
+	dpkg-deb -Zxz --root-owner-group -b "${old_root}" "${old_deb}"
 fi
 echo "package upgrade=${old_version} -> ${current_version}"
 group_end
