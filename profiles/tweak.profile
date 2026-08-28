@@ -1,4 +1,5 @@
 #!/bin/sh -e
+# shellcheck disable=SC2154 # RET is set by db_get.
 # Profile for Tweak (NL)
 #
 # Copyright (C) 2022 Fabian Mastenbroek.
