@@ -96,8 +96,16 @@ group_begin() {
 
 cleanup() {
 	local status=$?
+	local name
 	trap - EXIT
 	group_end
+	if ((status != 0)); then
+		for name in "${from_name}" "${to_name}"; do
+			if docker inspect "${name}" >/dev/null 2>&1; then
+				dump "${name}"
+			fi
+		done
+	fi
 	docker rm -f "${from_name}" "${to_name}" >/dev/null 2>&1 || true
 	docker volume rm "${vol_data}" >/dev/null 2>&1 || true
 	rm -rf "${work}"
