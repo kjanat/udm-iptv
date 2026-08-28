@@ -12,6 +12,7 @@ UDM_IPTV_STATE_DIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
 UDM_IPTV_REPOSITORY="${UDM_IPTV_REPOSITORY:-fabianishere/udm-iptv}"
 UDM_IPTV_BRANCH="${UDM_IPTV_BRANCH:-HEAD}"
 UDM_IPTV_LOCK_TIMEOUT="${UDM_IPTV_LOCK_TIMEOUT:-1800}"
+UDM_IPTV_SYSTEMD_TIMEOUT="${UDM_IPTV_SYSTEMD_TIMEOUT:-60}"
 
 dest=
 
@@ -69,8 +70,20 @@ else
 	sh -c "${installer}"
 fi
 
-systemctl enable udm-iptv
-systemctl restart udm-iptv
+waited=0
+while ! systemctl enable udm-iptv || ! systemctl restart udm-iptv; do
+	if [ "${waited}" -ge "${UDM_IPTV_SYSTEMD_TIMEOUT}" ]; then
+		echo "error: Could not enable and restart udm-iptv after ${waited}s."
+		exit 1
+	fi
+
+	if [ "${waited}" -eq 0 ]; then
+		echo "Waiting for systemd to finish reloading..."
+	fi
+
+	sleep 2
+	waited=$((waited + 2))
+done
 
 state=$(systemctl is-active udm-iptv || true)
 echo "Restored udm-iptv, the service is ${state}."

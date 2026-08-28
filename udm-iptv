@@ -21,10 +21,151 @@ udm_iptv_configure() {
 }
 
 # Upgrade udm-iptv installation to latest version
+udm_iptv_upgrade_usage() {
+	cat <<EOF
+Usage: $0 upgrade [OPTIONS...]
+Upgrade the udm-iptv installation.
+Package source (choose at most one):
+  --latest              Install the latest published release (default)
+  --version VERSION     Install a published release version
+  --package URL_OR_PATH Install a package from a URL or local path
+  --pr PR               Install the successful build of a pull request
+  --run RUN             Install a workflow run, or "latest"
+Other options:
+  --repository OWNER/REPO  Repository to install from
+  --branch REF             Ref from which to load a fallback installer
+  --token-file PATH        Read the Actions API token from a file
+  --timeout SECONDS        Workflow-run wait timeout
+  -h, --help               Show this message and exit
+EOF
+}
+
 udm_iptv_upgrade() {
+	UDM_IPTV_VERSION="${UDM_IPTV_VERSION:-latest}"
+	UDM_IPTV_PACKAGE="${UDM_IPTV_PACKAGE:-}"
+	UDM_IPTV_PR="${UDM_IPTV_PR:-}"
+	UDM_IPTV_RUN="${UDM_IPTV_RUN:-}"
+	UDM_IPTV_TOKEN="${UDM_IPTV_TOKEN:-${GITHUB_TOKEN:-}}"
+	UDM_IPTV_TIMEOUT_SECONDS="${UDM_IPTV_TIMEOUT_SECONDS:-900}"
+	source=
+
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--latest)
+			[ -z "${source}" ] || {
+				echo "error: Choose only one package source." >&2
+				return 2
+			}
+			source=latest
+			UDM_IPTV_VERSION=latest
+			UDM_IPTV_PACKAGE=
+			UDM_IPTV_PR=
+			UDM_IPTV_RUN=
+			shift
+			;;
+		--version | --package | --pr | --run)
+			[ "$#" -ge 2 ] || {
+				echo "error: $1 requires a value." >&2
+				return 2
+			}
+			[ -z "${source}" ] || {
+				echo "error: Choose only one package source." >&2
+				return 2
+			}
+			source=${1#--}
+			case "$1" in
+			--version)
+				UDM_IPTV_VERSION=$2
+				UDM_IPTV_PACKAGE=
+				UDM_IPTV_PR=
+				UDM_IPTV_RUN=
+				;;
+			--package)
+				UDM_IPTV_PACKAGE=$2
+				UDM_IPTV_PR=
+				UDM_IPTV_RUN=
+				;;
+			--pr)
+				UDM_IPTV_PACKAGE=
+				UDM_IPTV_PR=$2
+				UDM_IPTV_RUN=
+				;;
+			--run)
+				UDM_IPTV_PACKAGE=
+				UDM_IPTV_PR=
+				UDM_IPTV_RUN=$2
+				;;
+			*)
+				echo "error: Unknown package source $1." >&2
+				return 2
+				;;
+			esac
+			shift 2
+			;;
+		--repository | --branch | --token-file | --timeout)
+			[ "$#" -ge 2 ] || {
+				echo "error: $1 requires a value." >&2
+				return 2
+			}
+			case "$1" in
+			--repository) UDM_IPTV_REPOSITORY=$2 ;;
+			--branch) UDM_IPTV_BRANCH=$2 ;;
+			--token-file)
+				[ -r "$2" ] || {
+					echo "error: Cannot read token file $2." >&2
+					return 2
+				}
+				UDM_IPTV_TOKEN=$(cat "$2")
+				;;
+			--timeout)
+				case "$2" in
+				"" | *[!0-9]*)
+					echo "error: Timeout must be a non-negative integer." >&2
+					return 2
+					;;
+				*) ;;
+				esac
+				UDM_IPTV_TIMEOUT_SECONDS=$2
+				;;
+			*)
+				echo "error: Unknown upgrade option $1." >&2
+				return 2
+				;;
+			esac
+			shift 2
+			;;
+		-h | --help)
+			udm_iptv_upgrade_usage
+			return 0
+			;;
+		--)
+			shift
+			break
+			;;
+		*)
+			echo "error: Unknown upgrade option $1." >&2
+			udm_iptv_upgrade_usage >&2
+			return 2
+			;;
+		esac
+	done
+
+	[ "$#" -eq 0 ] || {
+		echo "error: Upgrade does not accept positional arguments." >&2
+		return 2
+	}
+
+	export UDM_IPTV_VERSION UDM_IPTV_REPOSITORY UDM_IPTV_BRANCH
+	export UDM_IPTV_PACKAGE UDM_IPTV_PR UDM_IPTV_RUN
+	export UDM_IPTV_TOKEN UDM_IPTV_TIMEOUT_SECONDS UDM_IPTV_STATE_DIR
+
 	echo "Running udm-iptv installer..."
-	installer=$(curl -fsSL "https://raw.githubusercontent.com/${UDM_IPTV_REPOSITORY}/${UDM_IPTV_BRANCH}/install.sh")
-	sh -c "${installer}"
+	if [ -r /usr/lib/udm-iptv/install.sh ]; then
+		sh /usr/lib/udm-iptv/install.sh
+	else
+		installer=$(curl -fsSL "https://raw.githubusercontent.com/${UDM_IPTV_REPOSITORY}/${UDM_IPTV_BRANCH}/install.sh")
+		sh -c "${installer}"
+	fi
 }
 
 # Save the current answers and configuration outside the root filesystem
@@ -87,8 +228,46 @@ udm_iptv_restore() {
 }
 
 # Remove the udm-iptv installation from the system
+udm_iptv_uninstall_usage() {
+	cat <<EOF
+Usage: $0 uninstall [OPTIONS...]
+Remove the udm-iptv installation.
+Options:
+  --purge       Remove the package and all persisted state (default)
+  --keep-data   Remove the package but retain /data for manual restoration
+  -h, --help    Show this message and exit
+EOF
+}
+
 udm_iptv_uninstall() {
-	apt-get remove -y dialog igmpproxy udm-iptv
+	keep_data=false
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--purge)
+			keep_data=false
+			;;
+		--keep-data)
+			keep_data=true
+			;;
+		-h | --help)
+			udm_iptv_uninstall_usage
+			return 0
+			;;
+		*)
+			echo "error: Unknown uninstall option $1." >&2
+			udm_iptv_uninstall_usage >&2
+			return 2
+			;;
+		esac
+		shift
+	done
+
+	if [ "${keep_data}" = true ]; then
+		apt-get remove -y udm-iptv
+		echo "Retained saved state in ${UDM_IPTV_STATE_DIR}."
+	else
+		apt-get purge -y udm-iptv
+	fi
 }
 
 # Restart the udm-iptv daemon via systemd

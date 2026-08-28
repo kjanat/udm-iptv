@@ -6,5 +6,6 @@ udm-iptv usr/bin
 udm-iptv-diag usr/bin
 udhcpc.hook usr/lib/udm-iptv
 udm-iptv-restore usr/lib/udm-iptv
+install.sh usr/lib/udm-iptv
 udm-iptv-restore.service etc/systemd/system
 udm-iptv.conf etc

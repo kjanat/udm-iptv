@@ -218,12 +218,13 @@ edit `/etc/udm-iptv.conf` by hand instead of using `udm-iptv configure`.
 
 The restore reads the following environment variables:
 
-| Variable              | Description                                                                               |
-| --------------------- | ----------------------------------------------------------------------------------------- |
-| UDM_IPTV_STATE_DIR    | Directory holding the saved answers, configuration and package (default `/data/udm-iptv`) |
-| UDM_IPTV_REPOSITORY   | Repository to fall back to when no package was saved (default `fabianishere/udm-iptv`)    |
-| UDM_IPTV_BRANCH       | Branch or commit to take that installer from (default `HEAD`)                             |
-| UDM_IPTV_LOCK_TIMEOUT | Seconds to wait for the package manager to free the dpkg lock (default `1800`)            |
+| Variable                 | Description                                                                               |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| UDM_IPTV_STATE_DIR       | Directory holding the saved answers, configuration and package (default `/data/udm-iptv`) |
+| UDM_IPTV_REPOSITORY      | Repository to fall back to when no package was saved (default `fabianishere/udm-iptv`)    |
+| UDM_IPTV_BRANCH          | Branch or commit to take that installer from (default `HEAD`)                             |
+| UDM_IPTV_LOCK_TIMEOUT    | Seconds to wait for the package manager to free the dpkg lock (default `1800`)            |
+| UDM_IPTV_SYSTEMD_TIMEOUT | Seconds to retry service activation while systemd reloads (default `60`)                  |
 
 `udm-iptv-restore.service` runs `/data/udm-iptv/udm-iptv-restore` by its literal
 path, so a different `UDM_IPTV_STATE_DIR` needs the unit adjusted to match.
@@ -261,8 +262,19 @@ Use the following command to upgrade `udm-iptv`:
 udm-iptv upgrade
 ```
 
-It fetches the installer from `UDM_IPTV_REPOSITORY` at `UDM_IPTV_BRANCH`, the
-same pair the restore uses.
+By default this resolves and installs the latest published release. The command
+also accepts an explicit release, package, pull request or workflow run:
+
+```sh
+udm-iptv upgrade --version 3.0.6
+udm-iptv upgrade --package /data/udm-iptv/udm-iptv.deb
+udm-iptv upgrade --pr fabianishere/udm-iptv#123 --token-file /tmp/.ghtok
+udm-iptv upgrade --run latest --token-file /tmp/.ghtok
+```
+
+Run `udm-iptv upgrade --help` for the complete option list. Firmware restoration
+always uses the saved package and never upgrades automatically; this keeps a
+firmware update separate from a package update.
 
 If that command does not exist, please re-run the installation script.
 
@@ -272,6 +284,12 @@ To fully remove an `udm-iptv` installation from your UniFi device, run the follo
 
 ```sh
 udm-iptv uninstall
+```
+
+Or to remove the package but keep the configuration and answers, run:
+
+```sh
+udm-iptv uninstall --keep-data
 ```
 
 ## Troubleshooting
