@@ -143,7 +143,7 @@ wait_systemd() {
 		fi
 		if [ "${status}" = "running" ] \
 			&& docker exec "${name}" test -S /run/systemd/private \
-			&& docker exec "${name}" systemctl is-active --quiet udm-iptv-test.target; then
+			&& docker exec "${name}" systemctl is-active --quiet udm-iptv-test.target 2>/dev/null; then
 			echo "test target active in ${name}"
 			return 0
 		fi
@@ -183,8 +183,8 @@ wait_active() {
 	docker exec "${name}" systemctl start --no-block udm-iptv
 	n=0
 	while [ "${n}" -lt 180 ]; do
-		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv \
-			&& docker exec "${name}" systemctl is-active --quiet udm-iptv; then
+		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv 2>/dev/null \
+			&& docker exec "${name}" systemctl is-active --quiet udm-iptv 2>/dev/null; then
 			docker exec "${name}" systemctl is-enabled udm-iptv
 			docker exec "${name}" systemctl is-active udm-iptv
 			return 0
