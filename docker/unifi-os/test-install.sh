@@ -167,6 +167,9 @@ wait_pkg() {
 			echo "package present in ${name}"
 			return 0
 		fi
+		if [ $((n % 10)) -eq 0 ]; then
+			workflow_emit debug "Waiting for the restored package in ${name}: elapsed=${n}s"
+		fi
 		sleep 2
 		n=$((n + 2))
 	done
@@ -177,7 +180,7 @@ wait_pkg() {
 
 wait_active() {
 	name=$1
-	timeout 30 docker exec "${name}" systemctl start udm-iptv || true
+	docker exec "${name}" systemctl start --no-block udm-iptv
 	n=0
 	while [ "${n}" -lt 180 ]; do
 		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv \
@@ -185,6 +188,9 @@ wait_active() {
 			docker exec "${name}" systemctl is-enabled udm-iptv
 			docker exec "${name}" systemctl is-active udm-iptv
 			return 0
+		fi
+		if [ $((n % 10)) -eq 0 ]; then
+			workflow_emit debug "Waiting for udm-iptv in ${name}: elapsed=${n}s"
 		fi
 		sleep 2
 		n=$((n + 2))
@@ -196,7 +202,7 @@ wait_active() {
 
 assert_restored() {
 	name=$1
-	timeout 120 docker exec "${name}" systemctl start udm-iptv-restore.service || true
+	docker exec "${name}" systemctl start --no-block udm-iptv-restore.service
 	wait_pkg "${name}"
 	docker exec "${name}" test -e /etc/systemd/system/udm-iptv-restore.service
 	docker exec "${name}" systemctl is-enabled --quiet udm-iptv-restore
