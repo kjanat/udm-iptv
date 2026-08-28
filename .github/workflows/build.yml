@@ -1,6 +1,6 @@
 name: Build
 on: pull_request
-concurrency: { group: "unifi-os-${{ github.event.pull_request.number }}", queue: single }
+concurrency: { group: "unifi-os-${{ github.event.pull_request.number }}-${{ github.workflow }}", queue: single }
 jobs:
   build:
     runs-on: ubuntu-latest

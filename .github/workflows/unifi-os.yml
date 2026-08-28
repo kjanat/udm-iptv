@@ -12,7 +12,7 @@ on:
         options: [udm, udmpro, udmse, udmpromax, udmbeast, all]
 
 concurrency:
-  group: unifi-os-${{ github.event.pull_request.number || github.ref }}
+  group: unifi-os-${{ github.event.pull_request.number || github.ref }}-${{ github.workflow }}
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 permissions: { contents: read, packages: read }
 
