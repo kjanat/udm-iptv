@@ -99,8 +99,21 @@ db_version 2.0
 db_capb backup
 db_capb escape
 
-# Restore existing configuration
+# Restore saved answers before the configuration flow runs. During a firmware
+# restore, the package has not been unpacked yet, but /data survives and already
+# contains the exact answers that produced the persisted configuration.
 CONFIGFILE=/etc/udm-iptv.conf
+STATEDIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
+restored=
+if [ ! -e "${CONFIGFILE}" ] && [ -r "${STATEDIR}/debconf.preseed" ]; then
+    while read -r _ question _ value <&7; do
+        [ -n "${question}" ] || continue
+        db_set "${question}" "${value}" || true
+    done 7< "${STATEDIR}/debconf.preseed"
+    restored=yes
+fi
+
+# Restore existing configuration
 if [ -e "${CONFIGFILE}" ]; then
     # shellcheck source=udm-iptv.conf
     . "${CONFIGFILE}" || true
@@ -202,13 +215,15 @@ while true; do
         db_input high udm-iptv/profile || true
         ;;
     3)  # Perform profile configuration
-        db_get udm-iptv/profile
-        profile="/usr/lib/udm-iptv/profiles/${RET:-}.profile"
-        if [ -r "${profile}" ]; then
-            # shellcheck source=profiles/custom.profile
-            . "${profile}"
-        else
-            echo "warning: no profile at ${profile}, keeping the current answers" >&2
+        if [ -z "${restored}" ]; then
+            db_get udm-iptv/profile
+            profile="/usr/lib/udm-iptv/profiles/${RET:-}.profile"
+            if [ -r "${profile}" ]; then
+                # shellcheck source=profiles/custom.profile
+                . "${profile}"
+            elif [ -d /usr/lib/udm-iptv/profiles ]; then
+                echo "warning: no profile at ${profile}, keeping the current answers" >&2
+            fi
         fi
         ;;
     4)  # Select LAN interfaces
