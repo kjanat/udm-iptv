@@ -11,6 +11,7 @@ on:
         type: choice
         options: [udm, udmpro, udmse, udmpromax, udmbeast, all]
 
+concurrency: { group: "unifi-os-${{ github.ref }}", queue: single }
 permissions: { contents: read, packages: read }
 
 jobs:
