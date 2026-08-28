@@ -3,6 +3,8 @@ set -eu
 
 export container=docker
 
+test_target=udm-iptv-test.target
+
 printf 'APT::Get::Assume-Yes "true";\n' >/etc/apt/apt.conf.d/99yes
 printf '#!/bin/sh\nexit 101\n' >/usr/sbin/policy-rc.d
 chmod 755 /usr/sbin/policy-rc.d
@@ -30,10 +32,10 @@ if [ -f /data/udm-iptv/udm-iptv-restore.service ]; then
 fi
 
 if [ -x /lib/systemd/systemd ]; then
-	exec /lib/systemd/systemd --system
+	exec /lib/systemd/systemd --system --unit="${test_target}"
 fi
 if [ -x /sbin/init ]; then
-	exec /sbin/init
+	exec /sbin/init --unit="${test_target}"
 fi
 
 echo "error: no systemd in this image" >&2
