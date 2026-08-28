@@ -9,6 +9,7 @@ jobs:
   build:
     name: Build
     runs-on: [ubuntu-latest]
+    permissions: { contents: read, id-token: write, attestations: write, artifact-metadata: write }
     steps:
       - name: Checkout Sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -20,6 +21,9 @@ jobs:
       - name: Build Package
         working-directory: udm-iptv
         run: debuild -uc -us --lintian-opts --profile debian
+      - name: Attest Packages
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with: { subject-path: "udm-iptv_*.deb" }
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -34,6 +38,7 @@ jobs:
     name: Publish Release
     runs-on: [ubuntu-latest]
     needs: build
+    permissions: { contents: write }
     steps:
       - name: Checkout Sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
