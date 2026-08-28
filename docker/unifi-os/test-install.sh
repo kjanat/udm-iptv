@@ -20,14 +20,13 @@ else
 fi
 deb=$(readlink -f "${deb}")
 id="udm-iptv-${sku}-$$"
-vol_etc="${id}-etc"
 vol_data="${id}-data"
 from_name="${id}-from"
 to_name="${id}-to"
 
 cleanup() {
 	docker rm -f "${from_name}" "${to_name}" >/dev/null 2>&1 || true
-	docker volume rm "${vol_etc}" "${vol_data}" >/dev/null 2>&1 || true
+	docker volume rm "${vol_data}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -48,7 +47,6 @@ boot() {
 		--stop-signal SIGRTMIN+3 \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 		--tmpfs /run:exec --tmpfs /run/lock --tmpfs /tmp:exec \
-		-v "${vol_etc}:/etc" \
 		-v "${vol_data}:/data" \
 		-v "${deb}:/tmp/udm-iptv.deb:ro" \
 		-v "${repo}/install.sh:/tmp/install.sh:ro" \
@@ -63,14 +61,16 @@ wait_systemd() {
 	name=$1
 	n=0
 	while [ "${n}" -lt 60 ]; do
-		if docker exec "${name}" test -d /run/systemd/system; then
+		if [ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null || echo false)" = "true" ] \
+			&& docker exec "${name}" test -d /run/systemd/system; then
 			return 0
 		fi
 		sleep 2
 		n=$((n + 2))
 	done
 	echo "error: systemd did not start in ${name}" >&2
-	docker logs "${name}"
+	docker inspect -f '{{.State.Status}} {{.State.Error}}' "${name}" >&2 || true
+	docker logs "${name}" >&2 || true
 	return 1
 }
 
@@ -88,8 +88,9 @@ wait_active() {
 		n=$((n + 2))
 	done
 	echo "error: udm-iptv is not enabled and active in ${name}" >&2
-	docker exec "${name}" systemctl status udm-iptv-restore.service udm-iptv.service || true
-	docker exec "${name}" journalctl -u udm-iptv-restore -u udm-iptv --no-pager || true
+	docker exec "${name}" systemctl status udm-iptv-restore.service udm-iptv.service >&2 || true
+	docker exec "${name}" journalctl -u udm-iptv-restore -u udm-iptv --no-pager >&2 || true
+	docker logs "${name}" >&2 || true
 	return 1
 }
 
@@ -108,13 +109,7 @@ echo "to=${to_image}"
 ensure_arm64 "${from_image}"
 ensure_arm64 "${to_image}"
 
-docker volume create "${vol_etc}" >/dev/null
 docker volume create "${vol_data}" >/dev/null
-
-docker run --rm --platform linux/arm64 \
-	-v "${vol_etc}:/mnt/etc" \
-	"${from_image}" \
-	sh -c 'cp -a /etc/. /mnt/etc/'
 
 boot "${from_name}" "${from_image}"
 wait_systemd "${from_name}"
@@ -128,6 +123,7 @@ docker exec "${from_name}" test -e /data/udm-iptv/debconf.preseed
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv-restore
 docker exec "${from_name}" cp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
+docker exec "${from_name}" cp /etc/systemd/system/udm-iptv-restore.service /data/udm-iptv/udm-iptv-restore.service
 wait_active "${from_name}"
 docker stop "${from_name}"
 
