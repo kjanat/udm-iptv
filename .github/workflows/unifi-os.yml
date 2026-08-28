@@ -73,9 +73,12 @@ jobs:
 
   test-install:
     needs: [build-deb, publish, catalog]
-    if: always() && needs.build-deb.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    if: needs.build-deb.result == 'success' && needs.catalog.result == 'success' && needs.publish.result == 'success'
     runs-on: ubuntu-latest
-    strategy: { matrix: { include: "${{ fromJSON(needs.catalog.outputs.pairs) }}" } }
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.catalog.outputs.pairs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

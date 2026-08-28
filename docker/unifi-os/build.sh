@@ -34,7 +34,7 @@ build_one() {
 
 	python3 "${here}/extract.py" "${bin}" "${fwdir}"
 	rm -rf "${root}"
-	unsquashfs -d "${root}" "${fwdir}/rootfs.squashfs"
+	unsquashfs -no-xattrs -d "${root}" "${fwdir}/rootfs.squashfs"
 
 	tar --numeric-owner -C "${root}" -cf - . | docker import \
 		--platform linux/arm64 \
