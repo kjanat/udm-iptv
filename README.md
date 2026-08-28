@@ -218,12 +218,13 @@ edit `/etc/udm-iptv.conf` by hand instead of using `udm-iptv configure`.
 
 The restore reads the following environment variables:
 
-| Variable              | Description                                                                               |
-| --------------------- | ----------------------------------------------------------------------------------------- |
-| UDM_IPTV_STATE_DIR    | Directory holding the saved answers, configuration and package (default `/data/udm-iptv`) |
-| UDM_IPTV_REPOSITORY   | Repository to fall back to when no package was saved (default `fabianishere/udm-iptv`)    |
-| UDM_IPTV_BRANCH       | Branch or commit to take that installer from (default `HEAD`)                             |
-| UDM_IPTV_LOCK_TIMEOUT | Seconds to wait for the package manager to free the dpkg lock (default `1800`)            |
+| Variable                 | Description                                                                               |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| UDM_IPTV_STATE_DIR       | Directory holding the saved answers, configuration and package (default `/data/udm-iptv`) |
+| UDM_IPTV_REPOSITORY      | Repository to fall back to when no package was saved (default `fabianishere/udm-iptv`)    |
+| UDM_IPTV_BRANCH          | Branch or commit to take that installer from (default `HEAD`)                             |
+| UDM_IPTV_LOCK_TIMEOUT    | Seconds to wait for the package manager to free the dpkg lock (default `1800`)            |
+| UDM_IPTV_SYSTEMD_TIMEOUT | Seconds to retry service activation while systemd reloads (default `60`)                  |
 
 `udm-iptv-restore.service` runs `/data/udm-iptv/udm-iptv-restore` by its literal
 path, so a different `UDM_IPTV_STATE_DIR` needs the unit adjusted to match.
