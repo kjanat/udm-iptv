@@ -18,7 +18,7 @@ jobs:
       - name: Setup Dependencies
         run: sudo apt-get install devscripts debhelper build-essential
       - name: Build Package
-        working-directory: udm-iptv  
+        working-directory: udm-iptv
         run: debuild -uc -us --lintian-opts --profile debian
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -45,11 +45,13 @@ jobs:
       - name: Format Release Name
         id: format_release
         run: |
-          echo "release=${GITHUB_REF#"refs/tags/"}"    >> "${GITHUB_OUTPUT}"
           delimiter="$(openssl rand -hex 8)"
-          echo "changelog<<${delimiter}"               >> "${GITHUB_OUTPUT}"
-          dpkg-parsechangelog -c 1 -l debian/changelog >> "${GITHUB_OUTPUT}"
-          echo "${delimiter}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "release=${GITHUB_REF#"refs/tags/"}"
+            echo "changelog<<${delimiter}"
+            dpkg-parsechangelog -c 1 -l debian/changelog
+            echo "${delimiter}"
+          } >> "${GITHUB_OUTPUT}"
       - name: Create Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         env: { GITHUB_TOKEN: "${{ github.token }}" }
