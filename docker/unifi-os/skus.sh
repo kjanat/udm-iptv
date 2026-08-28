@@ -2,7 +2,7 @@
 set -eu
 
 here=$(dirname -- "$0")
-here=$(cd -- "$here" && pwd)
+here=$(cd -- "${here}" && pwd)
 catalog="${here}/firmware.tsv"
 wanted="${1:-all}"
 keys=$(

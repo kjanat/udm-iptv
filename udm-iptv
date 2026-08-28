@@ -177,11 +177,15 @@ udm_iptv_persist() {
 
 	mkdir -p "${UDM_IPTV_STATE_DIR}"
 
-	awk '
-        /^Name: udm-iptv/ { name = $2; have = 0 }
-        /^Value:/ && name { $1 = ""; sub(/^ /, ""); value = $0; have = 1 }
-        /^$/ { if (name && have) print name "\t" value; name = ""; have = 0 }
-    ' /var/cache/debconf/config.dat >"${UDM_IPTV_STATE_DIR}/.values"
+	if [ -n "${UDM_IPTV_DEBCONF_VALUES:-}" ]; then
+		cp "${UDM_IPTV_DEBCONF_VALUES}" "${UDM_IPTV_STATE_DIR}/.values"
+	else
+		awk '
+            /^Name: udm-iptv/ { name = $2; have = 0 }
+            /^Value:/ && name { $1 = ""; sub(/^ /, ""); value = $0; have = 1 }
+            /^$/ { if (name && have) print name "\t" value; name = ""; have = 0 }
+        ' /var/cache/debconf/config.dat >"${UDM_IPTV_STATE_DIR}/.values"
+	fi
 
 	awk '
         /^Name: udm-iptv/ { name = $2 }

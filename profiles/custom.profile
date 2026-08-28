@@ -1,4 +1,5 @@
 #!/bin/sh -e
+# shellcheck disable=SC2154 # RET is set by db_get.
 # Script to configure custom profile
 #
 # Copyright (C) 2022 Fabian Mastenbroek.

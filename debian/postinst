@@ -12,6 +12,20 @@
 
 CONFIGFILE=/etc/udm-iptv.conf
 STATEDIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
+PROFILEDIR=/usr/lib/udm-iptv/profiles
+PROFILEPENDING=/var/cache/udm-iptv/profile.pending
+
+# Helper used by the custom profile when IPTV is carried on the native VLAN.
+_if_inet_list_upper() {
+    link=$(readlink "$1") || link=
+    if [ -n "${link}" ]; then
+        basename "${link}"
+    fi
+    for path in "$1"/upper_*; do
+        [ -e "${path}" ] || continue
+        _if_inet_list_upper "${path}"
+    done
+}
 
 # A firmware update removes the package but not /data, so a first install that
 # finds saved answers is a restore rather than a new configuration. The answers
@@ -30,6 +44,29 @@ if [ "$1" = "configure" ] && [ -z "${2:-}" ] && [ -e "${STATEDIR}/debconf.presee
 
     echo "Restored the configuration saved in ${STATEDIR}."
     restored=yes
+    rm -f "${PROFILEPENDING}"
+fi
+
+# On a first install, dpkg runs the debconf config script before unpacking the
+# package, so the selected profile is not available yet. Apply the deferred
+# profile now that the package payload exists, before generating the config.
+if [ "$1" = "configure" ] && [ -z "${restored:-}" ] && [ -r "${PROFILEPENDING}" ]; then
+    read -r profile_id < "${PROFILEPENDING}" || profile_id=
+    case "${profile_id}" in
+        ""|*[!a-z0-9_-]*)
+            echo "Invalid deferred profile: ${profile_id}" >&2
+            exit 2
+            ;;
+        *) ;;
+    esac
+    profile="${PROFILEDIR}/${profile_id}.profile"
+    if [ ! -r "${profile}" ]; then
+        echo "Deferred profile is unavailable: ${profile}" >&2
+        exit 2
+    fi
+    # shellcheck source=profiles/custom.profile
+    . "${profile}"
+    rm -f "${PROFILEPENDING}"
 fi
 
 # Substitute a debconf answer into a configuration file with the syntax of
@@ -124,12 +161,20 @@ replace_conf "${tmpconf}" "IPTV_IGMPPROXY_IGMP_VERSION" "${RET}"
 target=$(readlink -f "${CONFIGFILE}")
 mv "${tmpconf}" "${target}"
 
-# Nothing new to save when the answers just came out of the saved copy. Closing
-# the debconf session first flushes it, since persist reads the database rather
-# than this script's session.
+# Nothing new needs saving when the answers just came out of the saved copy.
+# During a normal install, the active debconf transaction is not committed until
+# this maintainer script exits, so pass its current answers directly to persist.
 if [ -d /data ] && [ -z "${restored:-}" ]; then
+    questions=$(mktemp -t iptv.XXXX.questions)
+    values=$(mktemp -t iptv.XXXX.values)
+    awk '/^Name: udm-iptv/ { print $2 }' /var/cache/debconf/templates.dat > "${questions}"
+    while read -r question <&8; do
+        db_get "${question}"
+        printf '%s\t%s\n' "${question}" "${RET}" >> "${values}"
+    done 8< "${questions}"
+    UDM_IPTV_DEBCONF_VALUES="${values}" /usr/bin/udm-iptv persist || true
+    rm -f "${questions}" "${values}"
     db_stop
-    /usr/bin/udm-iptv persist || true
 fi
 
 # dh_installsystemd only manages units below /lib, and the unit that has to
