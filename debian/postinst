@@ -161,12 +161,20 @@ replace_conf "${tmpconf}" "IPTV_IGMPPROXY_IGMP_VERSION" "${RET}"
 target=$(readlink -f "${CONFIGFILE}")
 mv "${tmpconf}" "${target}"
 
-# Nothing new to save when the answers just came out of the saved copy. Closing
-# the debconf session first flushes it, since persist reads the database rather
-# than this script's session.
+# Nothing new needs saving when the answers just came out of the saved copy.
+# During a normal install, the active debconf transaction is not committed until
+# this maintainer script exits, so pass its current answers directly to persist.
 if [ -d /data ] && [ -z "${restored:-}" ]; then
+    questions=$(mktemp -t iptv.XXXX.questions)
+    values=$(mktemp -t iptv.XXXX.values)
+    awk '/^Name: udm-iptv/ { print $2 }' /var/cache/debconf/templates.dat > "${questions}"
+    while read -r question <&8; do
+        db_get "${question}"
+        printf '%s\t%s\n' "${question}" "${RET}" >> "${values}"
+    done 8< "${questions}"
+    UDM_IPTV_DEBCONF_VALUES="${values}" /usr/bin/udm-iptv persist || true
+    rm -f "${questions}" "${values}"
     db_stop
-    /usr/bin/udm-iptv persist || true
 fi
 
 # dh_installsystemd only manages units below /lib, and the unit that has to
