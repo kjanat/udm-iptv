@@ -43,6 +43,8 @@ build_one() {
 		- "${image}:${tag}"
 
 	docker tag "${image}:${tag}" "${image}:${key}-${board}-${version}"
+	rm -rf "${root}"
+	rm -f "${fwdir}/rootfs.squashfs" "${fwdir}/uboot.bin" "${fwdir}/kernel.bin" "${bin}"
 	echo "${image}:${tag}"
 }
 

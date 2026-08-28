@@ -25,24 +25,6 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with: { name: build-artifacts, if-no-files-found: error, path: "*.deb" }
 
-  publish:
-    if: github.event_name == 'workflow_dispatch'
-    needs: build-deb
-    runs-on: ubuntu-latest
-    permissions: { contents: read, packages: write }
-    defaults: { run: { working-directory: docker/unifi-os } }
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: sudo apt-get update && sudo apt-get install -y squashfs-tools
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
-        with: { platforms: arm64 }
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ github.token }}" }
-      - run: ./build.sh "${SKU}"
-        env: { SKU: "${{ inputs.sku }}", UNIFI_OS_CACHE: "${{ runner.temp }}/unifi-os" }
-      - run: ./publish.sh "${SKU}"
-        env: { SKU: "${{ inputs.sku }}" }
-
   catalog:
     runs-on: ubuntu-latest
     outputs:
@@ -72,9 +54,9 @@ jobs:
             yq -I=0 '.table | map(select(strenv(SKU) == "all" or strenv(SKU) == "" or .model == strenv(SKU))) | group_by(.model) | map(sort_by(.ver | split(".") | map(tonumber))) | map({"model": .[0].model, "from_image": (strenv(UNIFI_OS_IMAGE) + ":" + .[-2].model + "-" + .[-2].ver), "to_image": (strenv(UNIFI_OS_IMAGE) + ":" + .[-1].model + "-" + .[-1].ver)})' docker/unifi-os/firmware.json
 
   test-install:
-    needs: [build-deb, publish, catalog]
-    if: needs.build-deb.result == 'success' && needs.catalog.result == 'success' && needs.publish.result == 'success'
+    needs: [build-deb, catalog]
     runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
     strategy:
       fail-fast: false
       matrix:
@@ -83,10 +65,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with: { name: build-artifacts, path: build-artifacts }
+      - run: sudo apt-get update && sudo apt-get install -y squashfs-tools
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
         with: { platforms: arm64 }
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ github.token }}" }
+      - run: docker/unifi-os/build.sh "${MODEL}"
+        env:
+          MODEL: ${{ matrix.model }}
+          UNIFI_OS_CACHE: ${{ runner.temp }}/unifi-os
+          UNIFI_OS_IMAGE: ghcr.io/kjanat/unifi-os
       - run: |
           set -- build-artifacts/udm-iptv_*.deb
           docker/unifi-os/test-install.sh "${MODEL}" "$1"
@@ -94,3 +80,9 @@ jobs:
           FROM_IMAGE: ${{ matrix.from_image }}
           TO_IMAGE: ${{ matrix.to_image }}
           MODEL: ${{ matrix.model }}
+      - if: github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ github.token }}" }
+      - if: github.event_name == 'workflow_dispatch'
+        run: docker/unifi-os/publish.sh "${MODEL}"
+        env: { MODEL: ${{ matrix.model }} }
