@@ -211,6 +211,12 @@ assert_restored() {
 	local name=$1
 	docker exec "${name}" systemctl start --no-block udm-iptv-restore.service
 	wait_pkg "${name}"
+	if docker exec "${name}" journalctl -u udm-iptv-restore.service --no-pager \
+		| grep -Fq "warning: no profile at "; then
+		report_error "restore emitted a missing-profile warning in ${name}"
+		dump "${name}"
+		return 1
+	fi
 	docker exec "${name}" test -e /etc/systemd/system/udm-iptv-restore.service
 	docker exec "${name}" systemctl is-enabled --quiet udm-iptv-restore
 	wait_active "${name}"
