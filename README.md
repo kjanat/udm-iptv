@@ -11,12 +11,33 @@ the [following guide](https://github.com/basmeerman/unifi-usg-kpn).
 
 ## Contents
 
-1. [Global Design](#global-design)
-2. [Prerequisites](#prerequisites)
-3. [Setting up Internet Connection](#setting-up-internet-connection)
-4. [Configuring Internal LAN](#configuring-internal-lan)
-5. [Configuring Helper Tool](#configuring-helper-tool)
-6. [Troubleshooting and Known Issues](#troubleshooting)
+1. [Tested Devices](#tested-devices)
+2. [Global Design](#global-design)
+3. [Prerequisites](#prerequisites)
+4. [Setting up Internet Connection](#setting-up-internet-connection)
+5. [Configuring Internal LAN](#configuring-internal-lan)
+6. [Configuring Helper Tool](#configuring-helper-tool)
+7. [Troubleshooting and Known Issues](#troubleshooting)
+
+## Tested Devices
+
+The installation and firmware-restoration lifecycle is exercised in CI using
+firmware images from Ubiquiti for these models:
+
+| Model       | Firmware platform |
+| ----------- | ----------------- |
+| UDM         | `UDM`             |
+| UDM Pro     | `UDMPRO`          |
+| UDM SE      | `UDMPROSE`        |
+| UDM Pro Max | `UDMPROMAX`       |
+| UDM Beast   | `UDMEA4C`         |
+
+For every pull request, the test installs the package on the previous firmware,
+persists it, transitions to the newest firmware that predates the pull request,
+and exercises the real restore unit. UDM Pro has additionally been verified on
+physical hardware across UniFi OS 5.1.26 to 5.1.31, including automatic package
+restoration and working live television. The other models have not yet been
+verified on physical hardware by this fork.
 
 ## Global Design
 
