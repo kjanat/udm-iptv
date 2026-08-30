@@ -467,7 +467,7 @@ if ! grep -Fq "Downloading ${package_url}..." <<<"${force_output}" \
 fi
 
 reconfigure_output=$(docker exec -e DEBIAN_FRONTEND=noninteractive "${from_name}" \
-	udm-iptv reconfigure)
+	udm-iptv reconfigure 2>&1)
 echo "${reconfigure_output}"
 saved_count=$(grep -Ec '^Saved [0-9]+ answers to /data/udm-iptv\.$' \
 	<<<"${reconfigure_output}")
