@@ -1,3 +1,16 @@
+udm-iptv (4.0.0) stable; urgency=medium
+
+  * Release the kjanat/udm-iptv fork independently
+  * Persist configuration, debconf answers and the package under /data
+  * Automatically restore udm-iptv after UniFi OS firmware updates
+  * Add explicit persist, restore, upgrade and uninstall lifecycle commands
+  * Support releases, local packages, pull requests and workflow-run artifacts
+  * Harden restore deadlines, package cleanup and service health checks
+  * Test real firmware transitions using Ubiquiti firmware images in CI
+  * Add package checksums and build attestations to the release workflow
+
+ -- Kaj Kowalski <info@kajkowalski.nl>  Mon, 31 Aug 2026 00:00:27 +0200
+
 udm-iptv (3.0.6) stable; urgency=medium
 
   * Support for UniFi Dream Router 7 (UDR7)

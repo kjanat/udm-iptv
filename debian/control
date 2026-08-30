@@ -1,12 +1,12 @@
 Source: udm-iptv
 Section: utils
 Priority: optional
-Maintainer: Fabian Mastenbroek <mail.fabianm@gmail.com>
+Maintainer: Kaj Kowalski <info@kajkowalski.nl>
 Build-Depends: debhelper (>= 11)
 Standards-Version: 4.1.4
-Vcs-Git: https://github.com/fabianishere/udm-iptv.git
-Vcs-Browser: https://github.com/fabianishere/udm-iptv.git
-Homepage: https://github.com/fabianishere/udm-iptv
+Vcs-Git: https://github.com/kjanat/udm-iptv.git
+Vcs-Browser: https://github.com/kjanat/udm-iptv.git
+Homepage: https://github.com/kjanat/udm-iptv
 
 Package: udm-iptv
 Architecture: all
