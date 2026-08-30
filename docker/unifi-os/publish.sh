@@ -4,7 +4,7 @@ set -eu
 here=$(dirname -- "$0")
 here=$(cd -- "${here}" && pwd)
 catalog="${here}/firmware.tsv"
-image="${UNIFI_OS_IMAGE:-ghcr.io/kjanat/unifi-os}"
+image="${UNIFI_OS_IMAGE:-ghcr.io/${GITHUB_REPOSITORY_OWNER:-fabianishere}/unifi-os}"
 package="${image#ghcr.io/}"
 user_package=${package#*/}
 sku="${1:-}"

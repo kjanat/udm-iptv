@@ -5,8 +5,67 @@ here=$(dirname -- "$0")
 here=$(cd -- "${here}" && pwd)
 catalog="${here}/firmware.tsv"
 cache="${UNIFI_OS_CACHE:-${HOME}/.cache/unifi-os}"
-image="${UNIFI_OS_IMAGE:-ghcr.io/kjanat/unifi-os}"
+image="${UNIFI_OS_IMAGE:-ghcr.io/${GITHUB_REPOSITORY_OWNER:-fabianishere}/unifi-os}"
 sku="${1:-}"
+
+have_root() {
+	if [ "$(id -u)" -eq 0 ]; then
+		return 0
+	fi
+	command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
+}
+
+remove_root() {
+	remove_path=$1
+	if have_root; then
+		if [ "$(id -u)" -eq 0 ]; then
+			rm -rf "${remove_path}"
+		else
+			sudo -n rm -rf "${remove_path}"
+		fi
+	elif [ -d "${remove_path}" ]; then
+		docker run --rm -v "${remove_path}:/rootfs" ubuntu:24.04 \
+			find /rootfs -mindepth 1 -delete
+		rmdir "${remove_path}"
+	fi
+}
+
+extract_rootfs() {
+	extract_source=$1
+	extract_target=$2
+	if have_root; then
+		if [ "$(id -u)" -eq 0 ]; then
+			unsquashfs -xattrs -d "${extract_target}" "${extract_source}"
+		else
+			sudo -n unsquashfs -xattrs -d "${extract_target}" "${extract_source}"
+		fi
+	else
+		mkdir -p "${extract_target}"
+		docker run --rm \
+			-v "${extract_source}:/input/rootfs.squashfs:ro" \
+			-v "${extract_target}:/rootfs" \
+			ubuntu:24.04 sh -eu -c \
+			'apt-get update -qq
+			apt-get install -qq -y squashfs-tools
+			unsquashfs -xattrs -d /rootfs /input/rootfs.squashfs'
+	fi
+}
+
+archive_rootfs() {
+	archive_source=$1
+	if have_root; then
+		if [ "$(id -u)" -eq 0 ]; then
+			tar --xattrs --xattrs-include='*' --numeric-owner \
+				-C "${archive_source}" -cf - .
+		else
+			sudo -n tar --xattrs --xattrs-include='*' --numeric-owner \
+				-C "${archive_source}" -cf - .
+		fi
+	else
+		docker run --rm -v "${archive_source}:/rootfs:ro" ubuntu:24.04 \
+			tar --xattrs --xattrs-include='*' --numeric-owner -C /rootfs -cf - .
+	fi
+}
 
 if [ -z "${sku}" ]; then
 	echo "usage: $0 <sku|all>" >&2
@@ -15,15 +74,41 @@ if [ -z "${sku}" ]; then
 	exit 1
 fi
 
+image_matches_catalog() {
+	match_image=$1
+	match_key=$2
+	match_board=$3
+	match_version=$4
+	match_url=$5
+	match_expected=$(printf '%s\t%s\t%s\t%s\n' \
+		"${match_key}" "${match_board}" "${match_version}" "${match_url}" \
+		| sha256sum | cut -d ' ' -f 1)
+	match_actual=$(docker image inspect --format \
+		'{{ index .Config.Labels "io.github.udm-iptv.catalog-fingerprint" }}' \
+		"${match_image}" 2>/dev/null) || return 1
+	[ "${match_actual}" = "${match_expected}" ]
+}
+
 build_one() {
 	key=$1
 	board=$2
 	version=$3
 	url=$4
 	tag="${key}-${version}"
+	ref="${image}:${tag}"
 	fwdir="${cache}/firmware/${tag}"
 	root="${cache}/rootfs/${tag}"
 	bin="${fwdir}/firmware.bin"
+	fingerprint=$(printf '%s\t%s\t%s\t%s\n' \
+		"${key}" "${board}" "${version}" "${url}" \
+		| sha256sum | cut -d ' ' -f 1)
+
+	if image_matches_catalog \
+		"${ref}" "${key}" "${board}" "${version}" "${url}"; then
+		docker tag "${ref}" "${image}:${key}-${board}-${version}"
+		echo "Using validated ${ref}"
+		return 0
+	fi
 
 	mkdir -p "${fwdir}" "${cache}/rootfs"
 	if [ ! -s "${bin}" ]; then
@@ -35,19 +120,21 @@ build_one() {
 	fi
 
 	python3 "${here}/extract.py" "${bin}" "${fwdir}"
-	rm -rf "${root}"
-	unsquashfs -no-xattrs -d "${root}" "${fwdir}/rootfs.squashfs"
+	remove_root "${root}"
+	extract_rootfs "${fwdir}/rootfs.squashfs" "${root}"
 
-	tar --numeric-owner -C "${root}" -cf - . | docker import \
+	archive_rootfs "${root}" | docker import \
 		--platform linux/arm64 \
 		--change "CMD [\"/bin/bash\"]" \
 		--change "ENV DEBIAN_FRONTEND=noninteractive" \
-		- "${image}:${tag}"
+		--change "LABEL org.opencontainers.image.description=\"Extracted UniFi OS root filesystem for package lifecycle tests; not a bootable firmware image\"" \
+		--change "LABEL io.github.udm-iptv.catalog-fingerprint=\"${fingerprint}\"" \
+		- "${ref}"
 
-	docker tag "${image}:${tag}" "${image}:${key}-${board}-${version}"
-	rm -rf "${root}"
+	docker tag "${ref}" "${image}:${key}-${board}-${version}"
+	remove_root "${root}"
 	rm -f "${fwdir}/rootfs.squashfs" "${fwdir}/uboot.bin" "${fwdir}/kernel.bin"
-	echo "${image}:${tag}"
+	echo "${ref}"
 }
 
 found=0

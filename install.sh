@@ -99,6 +99,14 @@ await_run() {
 	return 1
 }
 
+dest=
+cleanup() {
+	if [ -n "${dest}" ]; then
+		rm -rf "${dest}"
+	fi
+}
+trap cleanup EXIT
+
 dest=$(mktemp -d)
 
 if [ -n "${UDM_IPTV_RUN}" ] || [ -n "${UDM_IPTV_PR}" ]; then
@@ -207,9 +215,6 @@ if [ -d "$(dirname "${UDM_IPTV_STATE_DIR}")" ]; then
 	mkdir -p "${UDM_IPTV_STATE_DIR}"
 	cp "${dest}/udm-iptv.deb" "${UDM_IPTV_STATE_DIR}/udm-iptv.deb"
 fi
-
-# Delete downloaded packages
-rm -rf "${dest}"
 
 echo "Installation successful... You can find your configuration at /etc/udm-iptv.conf."
 echo
