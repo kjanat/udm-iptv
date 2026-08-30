@@ -1,3 +1,9 @@
+udm-iptv (4.0.1) stable; urgency=low
+
+  * Preserve installer logs around interactive configuration menus
+
+ -- Kaj Kowalski <info@kajkowalski.nl>  Mon, 31 Aug 2026 01:02:58 +0200
+
 udm-iptv (4.0.0) stable; urgency=medium
 
   * Release the kjanat/udm-iptv fork independently
