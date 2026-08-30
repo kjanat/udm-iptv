@@ -436,6 +436,46 @@ log_config "${from_name}" "before package upgrade"
 docker exec "${from_name}" udm-iptv upgrade --package /tmp/udm-iptv.deb
 log_config "${from_name}" "after package upgrade"
 assert_version "${from_name}" "${current_version}"
+
+no_op_output=$(docker exec "${from_name}" \
+	udm-iptv upgrade --version "${current_version}")
+echo "${no_op_output}"
+if ! grep -Fq "udm-iptv ${current_version} is already installed. Use --force to reinstall." \
+	<<<"${no_op_output}"; then
+	report_error "same-version upgrade did not stop early in ${from_name}"
+	exit 1
+fi
+if grep -Eq '^(Downloading|Installing packages)' <<<"${no_op_output}"; then
+	report_error "same-version upgrade downloaded or installed a package in ${from_name}"
+	exit 1
+fi
+
+package_url=http://127.0.0.1:18081/udm-iptv.deb
+docker exec "${from_name}" sh -c \
+	'busybox httpd -f -p 127.0.0.1:18081 -h /tmp >/tmp/udm-iptv-httpd.log 2>&1 & echo $! >/tmp/udm-iptv-httpd.pid'
+docker exec "${from_name}" sh -c \
+	'for attempt in 1 2 3 4 5; do busybox wget -q -O /dev/null http://127.0.0.1:18081/udm-iptv.deb && exit 0; sleep 1; done; exit 1'
+force_output=$(docker exec -e DEBIAN_FRONTEND=noninteractive "${from_name}" \
+	udm-iptv upgrade --force --package "${package_url}")
+docker exec "${from_name}" sh -c 'kill "$(cat /tmp/udm-iptv-httpd.pid)"'
+echo "${force_output}"
+if ! grep -Fq "Downloading ${package_url}..." <<<"${force_output}" \
+	|| ! grep -Fq 'Installing packages...' <<<"${force_output}" \
+	|| grep -Fq 'is already installed' <<<"${force_output}"; then
+	report_error "forced same-version upgrade did not download and reinstall in ${from_name}"
+	exit 1
+fi
+
+reconfigure_output=$(docker exec -e DEBIAN_FRONTEND=noninteractive "${from_name}" \
+	udm-iptv reconfigure)
+echo "${reconfigure_output}"
+saved_count=$(grep -Ec '^Saved [0-9]+ answers to /data/udm-iptv\.$' \
+	<<<"${reconfigure_output}")
+if [[ ${saved_count} -ne 1 ]]; then
+	report_error "reconfigure did not save answers exactly once in ${from_name}"
+	exit 1
+fi
+
 docker exec "${from_name}" cmp /tmp/udm-iptv.deb /data/udm-iptv/udm-iptv.deb
 docker exec "${from_name}" cmp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 docker exec "${from_name}" cmp /data/udm-iptv/debconf.preseed /data/udm-iptv/debconf.preseed.installed

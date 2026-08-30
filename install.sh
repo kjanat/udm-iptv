@@ -25,6 +25,7 @@ UDM_IPTV_RUN="${UDM_IPTV_RUN:-}"
 UDM_IPTV_PR="${UDM_IPTV_PR:-}"
 UDM_IPTV_TOKEN="${UDM_IPTV_TOKEN:-${GITHUB_TOKEN:-}}"
 UDM_IPTV_TIMEOUT_SECONDS="${UDM_IPTV_TIMEOUT_SECONDS:-900}"
+UDM_IPTV_FORCE="${UDM_IPTV_FORCE:-false}"
 
 case "${UDM_IPTV_PR}" in
 	*/*\#*)
@@ -57,6 +58,18 @@ api_get() {
 
 json_field() {
 	sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" | head -n 1
+}
+
+skip_installed=false
+check_installed_version() {
+	version=$1
+	skip_installed=false
+	[ "${UDM_IPTV_FORCE}" != true ] || return 0
+	installed=$(dpkg-query -W -f='${Version}' udm-iptv 2>/dev/null) || installed=
+	if [ "${installed}" = "${version}" ]; then
+		echo "udm-iptv ${version} is already installed. Use --force to reinstall."
+		skip_installed=true
+	fi
 }
 
 resolve_head() {
@@ -180,6 +193,10 @@ else
 		UDM_IPTV_VERSION=${latest_tag#v}
 		echo "Latest release is ${latest_tag}."
 	fi
+	if [ -z "${UDM_IPTV_PACKAGE:-}" ]; then
+		check_installed_version "${UDM_IPTV_VERSION}"
+		[ "${skip_installed}" != true ] || exit 0
+	fi
 
 	UDM_IPTV_PACKAGE="${UDM_IPTV_PACKAGE:-https://github.com/${UDM_IPTV_REPOSITORY}/releases/download/v${UDM_IPTV_VERSION}/udm-iptv_${UDM_IPTV_VERSION}_all.deb}"
 
@@ -195,6 +212,10 @@ else
 	esac
 fi
 
+package_version=$(dpkg-deb -f "${dest}/udm-iptv.deb" Version)
+check_installed_version "${package_version}"
+[ "${skip_installed}" != true ] || exit 0
+
 # Fix permissions on the packages
 chown _apt:root "${dest}/udm-iptv.deb"
 
@@ -207,8 +228,13 @@ apt-get update >/dev/null || true
 apt-get install -q -y dialog >/dev/null || echo "Failed to install dialog... Using readline frontend"
 
 # Install udm-iptv
-DIALOGOPTS="${DIALOGOPTS:+${DIALOGOPTS} }--keep-tite" \
-	apt-get install -o Acquire::AllowUnsizedPackages=1 -q "${dest}/udm-iptv.deb"
+if [ "${UDM_IPTV_FORCE}" = true ]; then
+	DIALOGOPTS="${DIALOGOPTS:+${DIALOGOPTS} }--keep-tite" \
+		apt-get install --reinstall -o Acquire::AllowUnsizedPackages=1 -q "${dest}/udm-iptv.deb"
+else
+	DIALOGOPTS="${DIALOGOPTS:+${DIALOGOPTS} }--keep-tite" \
+		apt-get install -o Acquire::AllowUnsizedPackages=1 -q "${dest}/udm-iptv.deb"
+fi
 
 # Keep the package next to the saved answers so that a firmware update can be
 # recovered from without network access

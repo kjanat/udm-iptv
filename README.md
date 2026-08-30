@@ -296,6 +296,9 @@ udm-iptv upgrade --pr kjanat/udm-iptv#123 --token-file /tmp/.ghtok
 udm-iptv upgrade --run latest --token-file /tmp/.ghtok
 ```
 
+An upgrade stops before downloading when the selected release is already
+installed. Use `udm-iptv upgrade --force` to download and reinstall it anyway.
+
 Run `udm-iptv upgrade --help` for the complete option list. Firmware restoration
 always uses the saved package and never upgrades automatically; this keeps a
 firmware update separate from a package update.
