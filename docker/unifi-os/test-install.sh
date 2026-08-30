@@ -43,6 +43,7 @@ from_name="${id}-from"
 to_name="${id}-to"
 group_open=0
 restore_lock_seconds=60
+declare -A dumped_containers=()
 
 workflow_escape() {
 	local value=$1
@@ -103,7 +104,8 @@ cleanup() {
 	group_end
 	if ((status != 0)); then
 		for name in "${from_name}" "${to_name}"; do
-			if docker inspect "${name}" >/dev/null 2>&1; then
+			if docker inspect "${name}" >/dev/null 2>&1 \
+				&& [[ -z ${dumped_containers[${name}]+x} ]]; then
 				dump "${name}"
 			fi
 		done
@@ -117,8 +119,18 @@ trap cleanup EXIT
 
 dump() {
 	local name=$1
+	local image_tag
+	local label=${name}
 	local status
-	group_begin "Diagnostics: ${name}"
+	if [[ ${name} == "${from_name}" ]]; then
+		image_tag=${from_image##*:}
+		label="${sku} ${image_tag#"${sku}-"} (before upgrade)"
+	elif [[ ${name} == "${to_name}" ]]; then
+		image_tag=${to_image##*:}
+		label="${sku} ${image_tag#"${sku}-"} (after upgrade)"
+	fi
+	dumped_containers["${name}"]=1
+	group_begin "Diagnostics: ${label}"
 	status=$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null) || status=gone
 	echo "container status=${status}" >&2
 	docker logs "${name}" >&2 || true
@@ -237,6 +249,15 @@ wait_pkg() {
 	return 1
 }
 
+report_runtime_kernel_limitation() {
+	local journal=$1
+	if ! grep -Fq "IP_OPTIONS: Protocol not available" <<<"${journal}"; then
+		return 1
+	fi
+	grep -F "IP_OPTIONS: Protocol not available" <<<"${journal}" | tail -n 1
+	echo "runtime health requires a device kernel with multicast routing"
+}
+
 assert_service_runtime_boundary() {
 	local name=$1
 	local n=0
@@ -266,19 +287,22 @@ assert_service_runtime_boundary() {
 				if ! docker exec "${name}" systemctl is-active --quiet udm-iptv 2>/dev/null \
 					|| [[ ${observed_main_pid} != "${main_pid}" ]] \
 					|| [[ ${observed_restarts} != "${restarts}" ]]; then
+					journal=$(docker exec "${name}" \
+						journalctl -b -u udm-iptv --no-pager)
+					if report_runtime_kernel_limitation "${journal}"; then
+						return 0
+					fi
 					report_error "real proxy did not remain stable in ${name}"
 					dump "${name}"
 					return 1
 				fi
 				docker exec "${name}" systemctl is-active udm-iptv
 			else
-				if ! grep -Fq "IP_OPTIONS: Protocol not available" <<<"${journal}"; then
+				if ! report_runtime_kernel_limitation "${journal}"; then
 					report_error "real proxy failed for an unexpected reason in ${name}"
 					dump "${name}"
 					return 1
 				fi
-				grep -F "IP_OPTIONS: Protocol not available" <<<"${journal}" | tail -n 1
-				echo "runtime health requires a device kernel with multicast routing"
 			fi
 			return 0
 		fi

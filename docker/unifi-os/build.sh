@@ -5,7 +5,7 @@ here=$(dirname -- "$0")
 here=$(cd -- "${here}" && pwd)
 catalog="${here}/firmware.tsv"
 cache="${UNIFI_OS_CACHE:-${HOME}/.cache/unifi-os}"
-image="${UNIFI_OS_IMAGE:-ghcr.io/kjanat/unifi-os}"
+image="${UNIFI_OS_IMAGE:-ghcr.io/${GITHUB_REPOSITORY_OWNER:-fabianishere}/unifi-os}"
 sku="${1:-}"
 
 have_root() {
@@ -74,15 +74,41 @@ if [ -z "${sku}" ]; then
 	exit 1
 fi
 
+image_matches_catalog() {
+	match_image=$1
+	match_key=$2
+	match_board=$3
+	match_version=$4
+	match_url=$5
+	match_expected=$(printf '%s\t%s\t%s\t%s\n' \
+		"${match_key}" "${match_board}" "${match_version}" "${match_url}" \
+		| sha256sum | cut -d ' ' -f 1)
+	match_actual=$(docker image inspect --format \
+		'{{ index .Config.Labels "io.github.udm-iptv.catalog-fingerprint" }}' \
+		"${match_image}" 2>/dev/null) || return 1
+	[ "${match_actual}" = "${match_expected}" ]
+}
+
 build_one() {
 	key=$1
 	board=$2
 	version=$3
 	url=$4
 	tag="${key}-${version}"
+	ref="${image}:${tag}"
 	fwdir="${cache}/firmware/${tag}"
 	root="${cache}/rootfs/${tag}"
 	bin="${fwdir}/firmware.bin"
+	fingerprint=$(printf '%s\t%s\t%s\t%s\n' \
+		"${key}" "${board}" "${version}" "${url}" \
+		| sha256sum | cut -d ' ' -f 1)
+
+	if image_matches_catalog \
+		"${ref}" "${key}" "${board}" "${version}" "${url}"; then
+		docker tag "${ref}" "${image}:${key}-${board}-${version}"
+		echo "Using validated ${ref}"
+		return 0
+	fi
 
 	mkdir -p "${fwdir}" "${cache}/rootfs"
 	if [ ! -s "${bin}" ]; then
@@ -102,12 +128,13 @@ build_one() {
 		--change "CMD [\"/bin/bash\"]" \
 		--change "ENV DEBIAN_FRONTEND=noninteractive" \
 		--change "LABEL org.opencontainers.image.description=\"Extracted UniFi OS root filesystem for package lifecycle tests; not a bootable firmware image\"" \
-		- "${image}:${tag}"
+		--change "LABEL io.github.udm-iptv.catalog-fingerprint=\"${fingerprint}\"" \
+		- "${ref}"
 
-	docker tag "${image}:${tag}" "${image}:${key}-${board}-${version}"
+	docker tag "${ref}" "${image}:${key}-${board}-${version}"
 	remove_root "${root}"
 	rm -f "${fwdir}/rootfs.squashfs" "${fwdir}/uboot.bin" "${fwdir}/kernel.bin"
-	echo "${image}:${tag}"
+	echo "${ref}"
 }
 
 found=0
