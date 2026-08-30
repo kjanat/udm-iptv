@@ -1,7 +1,5 @@
 [Unit]
 Description=Reinstall udm-iptv after a firmware update
-Wants=network-online.target
-After=network-online.target
 RequiresMountsFor=/data/udm-iptv
 # A firmware update discards the writable overlay below /usr, so a missing
 # daemon is what distinguishes an updated system from an ordinary boot.

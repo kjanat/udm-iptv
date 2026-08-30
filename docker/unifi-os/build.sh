@@ -8,11 +8,62 @@ cache="${UNIFI_OS_CACHE:-${HOME}/.cache/unifi-os}"
 image="${UNIFI_OS_IMAGE:-ghcr.io/kjanat/unifi-os}"
 sku="${1:-}"
 
-as_root() {
+have_root() {
 	if [ "$(id -u)" -eq 0 ]; then
-		"$@"
+		return 0
+	fi
+	command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
+}
+
+remove_root() {
+	remove_path=$1
+	if have_root; then
+		if [ "$(id -u)" -eq 0 ]; then
+			rm -rf "${remove_path}"
+		else
+			sudo -n rm -rf "${remove_path}"
+		fi
+	elif [ -d "${remove_path}" ]; then
+		docker run --rm -v "${remove_path}:/rootfs" ubuntu:24.04 \
+			find /rootfs -mindepth 1 -delete
+		rmdir "${remove_path}"
+	fi
+}
+
+extract_rootfs() {
+	extract_source=$1
+	extract_target=$2
+	if have_root; then
+		if [ "$(id -u)" -eq 0 ]; then
+			unsquashfs -xattrs -d "${extract_target}" "${extract_source}"
+		else
+			sudo -n unsquashfs -xattrs -d "${extract_target}" "${extract_source}"
+		fi
 	else
-		sudo -n "$@"
+		mkdir -p "${extract_target}"
+		docker run --rm \
+			-v "${extract_source}:/input/rootfs.squashfs:ro" \
+			-v "${extract_target}:/rootfs" \
+			ubuntu:24.04 sh -eu -c \
+			'apt-get update -qq
+			apt-get install -qq -y squashfs-tools
+			unsquashfs -xattrs -d /rootfs /input/rootfs.squashfs'
+	fi
+}
+
+archive_rootfs() {
+	archive_source=$1
+	if have_root; then
+		if [ "$(id -u)" -eq 0 ]; then
+			tar --xattrs --xattrs-include='*' --numeric-owner \
+				-C "${archive_source}" -cf - .
+		else
+			sudo -n tar --xattrs --xattrs-include='*' --numeric-owner \
+				-C "${archive_source}" -cf - .
+		fi
+	else
+		docker run --rm -v "${archive_source}:/rootfs:ro" ubuntu:24.04 \
+			tar --xattrs --xattrs-include='*' --numeric-owner -C /rootfs -cf - .
 	fi
 }
 
@@ -43,10 +94,10 @@ build_one() {
 	fi
 
 	python3 "${here}/extract.py" "${bin}" "${fwdir}"
-	as_root rm -rf "${root}"
-	as_root unsquashfs -xattrs -d "${root}" "${fwdir}/rootfs.squashfs"
+	remove_root "${root}"
+	extract_rootfs "${fwdir}/rootfs.squashfs" "${root}"
 
-	as_root tar --xattrs --xattrs-include='*' --numeric-owner -C "${root}" -cf - . | docker import \
+	archive_rootfs "${root}" | docker import \
 		--platform linux/arm64 \
 		--change "CMD [\"/bin/bash\"]" \
 		--change "ENV DEBIAN_FRONTEND=noninteractive" \
@@ -54,7 +105,7 @@ build_one() {
 		- "${image}:${tag}"
 
 	docker tag "${image}:${tag}" "${image}:${key}-${board}-${version}"
-	as_root rm -rf "${root}"
+	remove_root "${root}"
 	rm -f "${fwdir}/rootfs.squashfs" "${fwdir}/uboot.bin" "${fwdir}/kernel.bin"
 	echo "${image}:${tag}"
 }
