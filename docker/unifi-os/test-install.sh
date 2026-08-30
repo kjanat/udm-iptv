@@ -11,25 +11,12 @@ if [[ -z ${sku} || -z ${deb} ]]; then
 	exit 1
 fi
 
-if [[ -n ${FROM_IMAGE:-} && -n ${TO_IMAGE:-} ]]; then
-	from_image=${FROM_IMAGE}
-	to_image=${TO_IMAGE}
-else
-	pair=$("${here}/upgrade-pair.sh" "${sku}")
-	from_image=
-	to_image=
-	while IFS='=' read -r name value; do
-		case ${name} in
-			from_image) from_image=${value} ;;
-			to_image) to_image=${value} ;;
-			*) ;;
-		esac
-	done <<<"${pair}"
-	if [[ -z ${from_image} || -z ${to_image} ]]; then
-		echo "error: upgrade pair did not return both images" >&2
-		exit 1
-	fi
+if [[ -z ${FROM_IMAGE:-} || -z ${TO_IMAGE:-} ]]; then
+	echo "error: FROM_IMAGE and TO_IMAGE are required" >&2
+	exit 1
 fi
+from_image=${FROM_IMAGE}
+to_image=${TO_IMAGE}
 deb=$(readlink -f "${deb}")
 work=$(mktemp -d)
 old_root="${work}/old"

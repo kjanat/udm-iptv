@@ -3,7 +3,6 @@ set -eu
 
 here=$(dirname -- "$0")
 here=$(cd -- "${here}" && pwd)
-catalog="${here}/firmware.tsv"
 cache="${UNIFI_OS_CACHE:-${HOME}/.cache/unifi-os}"
 image="${UNIFI_OS_IMAGE:-ghcr.io/${GITHUB_REPOSITORY_OWNER:-fabianishere}/unifi-os}"
 sku="${1:-}"
@@ -68,9 +67,11 @@ archive_rootfs() {
 }
 
 if [ -z "${sku}" ]; then
-	echo "usage: $0 <sku|all>" >&2
-	echo "skus:" >&2
-	"${here}/skus.sh" >&2
+	echo "usage: UNIFI_OS_FIRMWARES='<json>' $0 <sku>" >&2
+	exit 1
+fi
+if [ -z "${UNIFI_OS_FIRMWARES:-}" ]; then
+	echo "error: UNIFI_OS_FIRMWARES is required" >&2
 	exit 1
 fi
 
@@ -80,8 +81,10 @@ image_matches_catalog() {
 	match_board=$3
 	match_version=$4
 	match_url=$5
-	match_expected=$(printf '%s\t%s\t%s\t%s\n' \
+	match_checksum=$6
+	match_expected=$(printf '%s\t%s\t%s\t%s\t%s\n' \
 		"${match_key}" "${match_board}" "${match_version}" "${match_url}" \
+		"${match_checksum}" \
 		| sha256sum | cut -d ' ' -f 1)
 	match_actual=$(docker image inspect --format \
 		'{{ index .Config.Labels "io.github.udm-iptv.catalog-fingerprint" }}' \
@@ -94,26 +97,37 @@ build_one() {
 	board=$2
 	version=$3
 	url=$4
+	checksum=$5
 	tag="${key}-${version}"
 	ref="${image}:${tag}"
 	fwdir="${cache}/firmware/${tag}"
 	root="${cache}/rootfs/${tag}"
 	bin="${fwdir}/firmware.bin"
-	fingerprint=$(printf '%s\t%s\t%s\t%s\n' \
-		"${key}" "${board}" "${version}" "${url}" \
+	fingerprint=$(printf '%s\t%s\t%s\t%s\t%s\n' \
+		"${key}" "${board}" "${version}" "${url}" "${checksum}" \
 		| sha256sum | cut -d ' ' -f 1)
 
 	if image_matches_catalog \
-		"${ref}" "${key}" "${board}" "${version}" "${url}"; then
+		"${ref}" "${key}" "${board}" "${version}" "${url}" "${checksum}"; then
 		docker tag "${ref}" "${image}:${key}-${board}-${version}"
 		echo "Using validated ${ref}"
 		return 0
 	fi
 
 	mkdir -p "${fwdir}" "${cache}/rootfs"
+	if [ -s "${bin}" ] \
+		&& ! printf '%s  %s\n' "${checksum}" "${bin}" | sha256sum -c - >/dev/null 2>&1; then
+		echo "Discarding cached firmware with an invalid checksum: ${bin}" >&2
+		rm -f "${bin}"
+	fi
 	if [ ! -s "${bin}" ]; then
 		echo "Downloading ${url}"
 		curl -fL --retry 3 -A "curl/8.5.0" -o "${bin}.partial" "${url}"
+		if ! printf '%s  %s\n' "${checksum}" "${bin}.partial" | sha256sum -c - >/dev/null; then
+			rm -f "${bin}.partial"
+			echo "error: firmware checksum mismatch for ${url}" >&2
+			exit 1
+		fi
 		mv "${bin}.partial" "${bin}"
 	else
 		echo "Using cached ${bin}"
@@ -138,13 +152,17 @@ build_one() {
 }
 
 found=0
-while IFS="$(printf '\t')" read -r key board version url; do
+catalog=$(printf '%s\n' "${UNIFI_OS_FIRMWARES}" | jq -r --arg model "${sku}" \
+	'.[] | [$model, .board, .version, .url, .sha256] | @tsv')
+while IFS="$(printf '\t')" read -r key board version url checksum; do
 	[ -n "${key}" ] || continue
 	if [ "${sku}" = "all" ] || [ "${sku}" = "${key}" ]; then
-		build_one "${key}" "${board}" "${version}" "${url}"
+		build_one "${key}" "${board}" "${version}" "${url}" "${checksum}"
 		found=1
 	fi
-done <"${catalog}"
+done <<END
+${catalog}
+END
 
 if [ "${found}" -eq 0 ]; then
 	echo "error: unknown sku ${sku}" >&2
