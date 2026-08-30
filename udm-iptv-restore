@@ -79,20 +79,44 @@ if [ -e "${UDM_IPTV_STATE_DIR}/udm-iptv.deb" ]; then
 	apt-get install -o Acquire::AllowUnsizedPackages=1 -q -y "${dest}/udm-iptv.deb"
 else
 	echo "No package saved in ${UDM_IPTV_STATE_DIR}, running the installer..."
+	network_started=$(date +%s)
 	network_waited=0
-	while ! installer=$(curl -fsSL \
-		"https://raw.githubusercontent.com/${UDM_IPTV_REPOSITORY}/${UDM_IPTV_BRANCH}/install.sh"); do
+	network_wait_reported=0
+	while :; do
+		network_remaining=$((UDM_IPTV_NETWORK_TIMEOUT - network_waited))
+		if [ "${network_remaining}" -le 0 ]; then
+			echo "error: Installer download did not succeed after ${network_waited}s."
+			exit 1
+		fi
+
+		network_attempt_timeout=30
+		if [ "${network_remaining}" -lt "${network_attempt_timeout}" ]; then
+			network_attempt_timeout=${network_remaining}
+		fi
+		if installer=$(curl -fsSL --connect-timeout 10 \
+			--max-time "${network_attempt_timeout}" \
+			"https://raw.githubusercontent.com/${UDM_IPTV_REPOSITORY}/${UDM_IPTV_BRANCH}/install.sh"); then
+			break
+		fi
+
+		network_waited=$(($(date +%s) - network_started))
 		if [ "${network_waited}" -ge "${UDM_IPTV_NETWORK_TIMEOUT}" ]; then
 			echo "error: Installer download did not succeed after ${network_waited}s."
 			exit 1
 		fi
 
-		if [ "${network_waited}" -eq 0 ]; then
+		if [ "${network_wait_reported}" -eq 0 ]; then
 			echo "Waiting for network access to download the installer..."
+			network_wait_reported=1
 		fi
 
-		sleep 15
-		network_waited=$((network_waited + 15))
+		network_sleep=15
+		network_remaining=$((UDM_IPTV_NETWORK_TIMEOUT - network_waited))
+		if [ "${network_remaining}" -lt "${network_sleep}" ]; then
+			network_sleep=${network_remaining}
+		fi
+		sleep "${network_sleep}"
+		network_waited=$(($(date +%s) - network_started))
 	done
 	sh -c "${installer}"
 fi

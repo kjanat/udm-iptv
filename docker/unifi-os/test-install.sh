@@ -42,6 +42,7 @@ vol_etc_overlay="${id}-etc-overlay"
 from_name="${id}-from"
 to_name="${id}-to"
 group_open=0
+restore_lock_seconds=60
 
 workflow_escape() {
 	local value=$1
@@ -240,6 +241,10 @@ assert_service_runtime_boundary() {
 	local name=$1
 	local n=0
 	local journal
+	local main_pid
+	local observed_main_pid
+	local observed_restarts
+	local restarts
 	while ((n < 180)); do
 		journal=$(docker exec "${name}" journalctl -b -u udm-iptv --no-pager)
 		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv 2>/dev/null \
@@ -249,6 +254,22 @@ assert_service_runtime_boundary() {
 			&& grep -Fq "Starting IGMP Proxy" <<<"${journal}"; then
 			docker exec "${name}" systemctl is-enabled udm-iptv
 			if docker exec "${name}" systemctl is-active --quiet udm-iptv 2>/dev/null; then
+				main_pid=$(docker exec "${name}" systemctl show \
+					--property MainPID --value udm-iptv)
+				restarts=$(docker exec "${name}" systemctl show \
+					--property NRestarts --value udm-iptv)
+				sleep 10
+				observed_main_pid=$(docker exec "${name}" systemctl show \
+					--property MainPID --value udm-iptv)
+				observed_restarts=$(docker exec "${name}" systemctl show \
+					--property NRestarts --value udm-iptv)
+				if ! docker exec "${name}" systemctl is-active --quiet udm-iptv 2>/dev/null \
+					|| [[ ${observed_main_pid} != "${main_pid}" ]] \
+					|| [[ ${observed_restarts} != "${restarts}" ]]; then
+					report_error "real proxy did not remain stable in ${name}"
+					dump "${name}"
+					return 1
+				fi
 				docker exec "${name}" systemctl is-active udm-iptv
 			else
 				if ! grep -Fq "IP_OPTIONS: Protocol not available" <<<"${journal}"; then
@@ -274,10 +295,11 @@ assert_service_runtime_boundary() {
 
 assert_restored() {
 	local name=$1
-	local expect_lock_wait=${2:-false}
+	local lock_seconds=${2:-0}
+	local deadline=$((180 + lock_seconds))
 	local n=0
 	local restore_journal
-	while ((n < 180)); do
+	while ((n < deadline)); do
 		restore_journal=$(docker exec "${name}" \
 			journalctl -b -u udm-iptv-restore.service --no-pager)
 		if grep -Fq "Finished Reinstall udm-iptv after a firmware update." \
@@ -293,7 +315,7 @@ assert_restored() {
 		sleep 2
 		((n += 2))
 	done
-	if ((n >= 180)); then
+	if ((n >= deadline)); then
 		report_error "restore service did not finish in ${name}"
 		dump "${name}"
 		return 1
@@ -305,7 +327,7 @@ assert_restored() {
 		dump "${name}"
 		return 1
 	fi
-	if [[ ${expect_lock_wait} == true ]] \
+	if ((lock_seconds > 0)) \
 		&& ! grep -Fq "Waiting for another package manager to finish..." \
 			<<<"${restore_journal}"; then
 		report_error "restore did not wait for the package-manager lock in ${name}"
@@ -412,7 +434,7 @@ docker stop "${from_name}"
 group_end
 
 group_begin "Restore across extracted rootfs swap to ${to_image}"
-boot "${to_name}" "${to_image}" none 60
+boot "${to_name}" "${to_image}" none "${restore_lock_seconds}"
 wait_systemd "${to_name}"
 if [[ $(docker inspect -f '{{.HostConfig.NetworkMode}}' "${to_name}") != none ]]; then
 	report_error "restore container still has Docker networking"
@@ -422,7 +444,7 @@ if docker exec "${to_name}" test -e /usr/lib/udm-iptv/udm-iptvd; then
 	report_error "package still on /usr after firmware swap"
 	exit 1
 fi
-assert_restored "${to_name}" true
+assert_restored "${to_name}" "${restore_lock_seconds}"
 docker exec "${to_name}" test ! -e /data/udm-iptv/udm-iptv-restore.service
 docker exec "${to_name}" cmp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 group_end
