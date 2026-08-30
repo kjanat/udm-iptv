@@ -16,7 +16,8 @@ UDM_IPTV_BRANCH="${UDM_IPTV_BRANCH:-HEAD}"
 
 # (Re)configure the udm-iptv installation
 udm_iptv_configure() {
-	dpkg-reconfigure -p low udm-iptv
+	DIALOGOPTS="${DIALOGOPTS:+${DIALOGOPTS} }--keep-tite" \
+		dpkg-reconfigure -p low udm-iptv
 	udm_iptv_persist
 }
 
