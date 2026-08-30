@@ -20,7 +20,7 @@ permissions: { contents: read, packages: read }
 env:
   SKU: ${{ case(github.event_name == 'workflow_dispatch', inputs.sku, 'all') }}
   UNIFI_OS_IMAGE: "ghcr.io/${{ github.repository_owner }}/unifi-os"
-
+  PR_CREATED_AT: "${{ github.event.pull_request.created_at }}"
 jobs:
   build-deb:
     runs-on: ubuntu-latest
@@ -36,48 +36,28 @@ jobs:
 
   catalog:
     runs-on: ubuntu-latest
-    outputs:
-      rows: ${{ steps.rows.outputs.result }}
-      models: ${{ steps.models.outputs.result }}
-      pairs: ${{ steps.pairs.outputs.result }}
+    outputs: { matrix: "${{ steps.matrix.outputs.matrix }}" }
     timeout-minutes: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: column --table-columns=model,id,ver,url --json < docker/unifi-os/firmware.tsv > docker/unifi-os/firmware.json
-      - id: rows
-        uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4
-        with: { cmd: "yq -I=0 '.table' docker/unifi-os/firmware.json" }
-      - id: models
-        uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4
+      - id: matrix
+        uses: $/.github/actions/unifi-os-matrix
         with:
-          cmd: >-
-            yq -I=0 '
-              [.table[].model] | unique |
-                map(select(
-                  strenv(SKU) == "all" or
-                  strenv(SKU) == "" or
-                  . == strenv(SKU)
-                ))
-            ' docker/unifi-os/firmware.json
-      - id: pairs
-        uses: mikefarah/yq@c14f446382944492701b16c1ddb48bb9dbe683e3 # v4
-        with:
-          cmd: >-
-            yq -I=0 '
-              .table
-                | map(select(strenv(SKU) == "all" or strenv(SKU) == "" or .model == strenv(SKU)))
-                | group_by(.model)
-                | map(sort_by(.ver | split(".") | map(tonumber)))
-                | map({"model": .[0].model, "from_image": (strenv(UNIFI_OS_IMAGE) + ":" + .[-2].model + "-" + .[-2].ver), "to_image": (strenv(UNIFI_OS_IMAGE) + ":" + .[-1].model + "-" + .[-1].ver)})
-            ' docker/unifi-os/firmware.json
+          cutoff: "${{ env.PR_CREATED_AT }}"
+          sku: "${{ env.SKU }}"
+          image: "${{ env.UNIFI_OS_IMAGE }}"
 
   test-install:
     needs: [build-deb, catalog]
     runs-on: ubuntu-latest
     permissions: { contents: read, packages: write }
     defaults: { run: { working-directory: docker/unifi-os } }
-    strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.catalog.outputs.pairs) }}" } }
-    env: { MODEL: "${{ matrix.model }}", FROM_IMAGE: "${{ matrix.from_image }}", TO_IMAGE: "${{ matrix.to_image }}" }
+    strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.catalog.outputs.matrix) }}" } }
+    env:
+      MODEL: "${{ matrix.model }}"
+      FROM_IMAGE: "${{ matrix.from_image }}"
+      TO_IMAGE: "${{ matrix.to_image }}"
+      UNIFI_OS_FIRMWARES: "${{ toJSON(matrix.firmwares) }}"
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -93,39 +73,17 @@ jobs:
             continue-on-error: true
             run: docker pull "${TO_IMAGE}"
       - id: firmware-images
-        shell: bash
-        run: |
-          cache_needed=false
-          while IFS=$'\t' read -r model board version url; do
-            [[ "${model}" == "${MODEL}" ]] || continue
-            image="${UNIFI_OS_IMAGE}:${model}-${version}"
-            expected=$(printf '%s\t%s\t%s\t%s\n' \
-              "${model}" "${board}" "${version}" "${url}" |
-              sha256sum | cut -d ' ' -f 1)
-            actual=
-            actual=$(docker image inspect --format \
-              '{{ index .Config.Labels "io.github.udm-iptv.catalog-fingerprint" }}' \
-              "${image}") || actual=
-            if [[ "${actual}" == "${expected}" ]]; then
-              docker tag "${image}" "${UNIFI_OS_IMAGE}:${model}-${board}-${version}"
-              echo "Using validated ${image}"
-            else
-              echo "Image ${image} is unavailable or does not match the firmware catalog"
-              cache_needed=true
-            fi
-          done < firmware.tsv
-          echo "cache-needed=${cache_needed}" >> "${GITHUB_OUTPUT}"
-      - id: firmware-key
-        shell: bash
-        run: |
-          key=$(awk -F '\t' -v model="${MODEL}" '$1 == model' firmware.tsv | sha256sum | cut -d ' ' -f 1)
-          echo "key=${key}" >> "${GITHUB_OUTPUT}"
+        uses: $/.github/actions/unifi-os-image-cache
+        with:
+          image: "${{ env.UNIFI_OS_IMAGE }}"
+          model: "${{ matrix.model }}"
+          firmwares: "${{ toJSON(matrix.firmwares) }}"
       - id: firmware-cache
         if: steps.firmware-images.outputs.cache-needed == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/unifi-os/firmware
-          key: unifi-os-firmware-${{ runner.os }}-${{ runner.arch }}-${{ matrix.model }}-${{ steps.firmware-key.outputs.key }}
+          key: unifi-os-firmware-${{ runner.os }}-${{ runner.arch }}-${{ matrix.model }}-${{ join(matrix.firmwares.*.sha256, '-') }}
       - if: steps.firmware-images.outputs.cache-needed == 'true'
         run: sudo apt-get update && sudo apt-get install -y squashfs-tools
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
@@ -140,5 +98,8 @@ jobs:
           key: ${{ steps.firmware-cache.outputs.cache-primary-key }}
       - run: ./test-install.sh "${MODEL}" udm-iptv_*.deb
       - if: github.event_name == 'workflow_dispatch'
-        run: ./publish.sh "${MODEL}"
-        env: { MODEL: "${{ matrix.model }}" }
+        uses: $/.github/actions/unifi-os-publish
+        with:
+          image: "${{ env.UNIFI_OS_IMAGE }}"
+          model: "${{ matrix.model }}"
+          firmwares: "${{ toJSON(matrix.firmwares) }}"
