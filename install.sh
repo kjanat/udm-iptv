@@ -207,7 +207,8 @@ apt-get update >/dev/null || true
 apt-get install -q -y dialog >/dev/null || echo "Failed to install dialog... Using readline frontend"
 
 # Install udm-iptv
-apt-get install -o Acquire::AllowUnsizedPackages=1 -q "${dest}/udm-iptv.deb"
+DIALOGOPTS="${DIALOGOPTS:+${DIALOGOPTS} }--keep-tite" \
+	apt-get install -o Acquire::AllowUnsizedPackages=1 -q "${dest}/udm-iptv.deb"
 
 # Keep the package next to the saved answers so that a firmware update can be
 # recovered from without network access
