@@ -36,9 +36,22 @@ if ! [ -e "${UDM_IPTV_STATE_DIR}/debconf.preseed" ]; then
 fi
 
 # UniFi OS reinstalls its own packages on the first boot after a firmware update
-# and holds the dpkg lock for as long as that takes.
+# and holds package-manager locks for as long as that takes.
+package_manager_busy() {
+	for lock in \
+		/var/lib/dpkg/lock \
+		/var/lib/dpkg/lock-frontend \
+		/var/cache/apt/archives/lock \
+		/var/lib/apt/lists/lock; do
+		if fuser "${lock}" >/dev/null 2>&1; then
+			return 0
+		fi
+	done
+	return 1
+}
+
 waited=0
-while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+while package_manager_busy; do
 	if [ "${waited}" -ge "${UDM_IPTV_LOCK_TIMEOUT}" ]; then
 		echo "error: Another package manager still holds the lock after ${waited}s."
 		exit 1
@@ -62,7 +75,6 @@ if [ -e "${UDM_IPTV_STATE_DIR}/udm-iptv.deb" ]; then
 	chown _apt:root "${dest}/udm-iptv.deb"
 
 	echo "Installing the package saved in ${UDM_IPTV_STATE_DIR}..."
-	apt-get update >/dev/null 2>&1 || true
 	apt-get install -o Acquire::AllowUnsizedPackages=1 -q -y "${dest}/udm-iptv.deb"
 else
 	echo "No package saved in ${UDM_IPTV_STATE_DIR}, running the installer..."
