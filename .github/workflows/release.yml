@@ -54,13 +54,17 @@ jobs:
           {
             echo "release=${GITHUB_REF#"refs/tags/"}"
             echo "changelog<<${delimiter}"
-            dpkg-parsechangelog -c 1 -l debian/changelog
+            sed -n '1,/^ -- /{ /^  /{ s/^  //; p; } }' debian/changelog
             echo "${delimiter}"
           } >> "${GITHUB_OUTPUT}"
-      - name: Create Release
+      - name: Create Draft Release and Upload Assets
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         with:
+          draft: true
           name: udm-iptv ${{ steps.format_release.outputs.release }}
           body: ${{ steps.format_release.outputs.changelog }}
           files: build-artifacts/udm-iptv_*.deb
+      - name: Publish Release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release edit "${GITHUB_REF#"refs/tags/"}" --draft=false
