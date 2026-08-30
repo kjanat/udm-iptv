@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: udm-iptv
 Upstream-Contact: Fabian Mastenbroek <mail.fabianm@gmail.com>
-Source: https://github.com/fabianishere/udm-iptv
+Source: https://github.com/kjanat/udm-iptv
 
 Files: *
 Copyright: 2021 Fabian Mastenbroek

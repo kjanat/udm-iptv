@@ -4,7 +4,7 @@ set -eu
 here=$(dirname -- "$0")
 here=$(cd -- "${here}" && pwd)
 cache="${UNIFI_OS_CACHE:-${HOME}/.cache/unifi-os}"
-image="${UNIFI_OS_IMAGE:-ghcr.io/${GITHUB_REPOSITORY_OWNER:-fabianishere}/unifi-os}"
+image="${UNIFI_OS_IMAGE:-ghcr.io/${GITHUB_REPOSITORY_OWNER:-kjanat}/unifi-os}"
 sku="${1:-}"
 
 have_root() {

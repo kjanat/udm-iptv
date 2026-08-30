@@ -102,10 +102,13 @@ multicast IPTV traffic between WAN and LAN.
 
 ### Installation
 
+This fork is released from `kjanat/udm-iptv`; the installer, upgrade command
+and firmware restore fallback resolve to this repository by default.
+
 SSH into your machine and execute the commands below in UniFi OS (not in UbiOS).
 
 ```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/fabianishere/udm-iptv/master/install.sh)"
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/kjanat/udm-iptv/master/install.sh)"
 ```
 
 This script will install the `udm-iptv` package onto your device.
@@ -142,8 +145,8 @@ The installer reads the following environment variables:
 
 | Variable                 | Description                                                                            |
 | ------------------------ | -------------------------------------------------------------------------------------- |
-| UDM_IPTV_VERSION         | Release to install (default `3.0.6`)                                                   |
-| UDM_IPTV_REPOSITORY      | Repository to install from (default `fabianishere/udm-iptv`)                           |
+| UDM_IPTV_VERSION         | Release to install (default `4.0.0`)                                                   |
+| UDM_IPTV_REPOSITORY      | Repository to install from (default `kjanat/udm-iptv`)                                 |
 | UDM_IPTV_PACKAGE         | Package to install, as a URL or a path on the device                                   |
 | UDM_IPTV_STATE_DIR       | Directory to save the answers, configuration and package in (default `/data/udm-iptv`) |
 | UDM_IPTV_PR              | Pull request whose build to install, as a number or `owner/repo#number`                |
@@ -164,8 +167,8 @@ Install the build of a pull request, waiting for the workflow if it is still
 running:
 
 ```sh
-ssh unifi 'UDM_IPTV_PR="fabianishere/udm-iptv#123" UDM_IPTV_TOKEN=$(cat /tmp/.ghtok) \
-    sh -c "$(curl -fsSL https://raw.githubusercontent.com/fabianishere/udm-iptv/master/install.sh)"'
+ssh unifi 'UDM_IPTV_PR="kjanat/udm-iptv#123" UDM_IPTV_TOKEN=$(cat /tmp/.ghtok) \
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/kjanat/udm-iptv/master/install.sh)"'
 ```
 
 Remove the token when you are done:
@@ -221,7 +224,7 @@ The restore reads the following environment variables:
 | Variable                 | Description                                                                               |
 | ------------------------ | ----------------------------------------------------------------------------------------- |
 | UDM_IPTV_STATE_DIR       | Directory holding the saved answers, configuration and package (default `/data/udm-iptv`) |
-| UDM_IPTV_REPOSITORY      | Repository to fall back to when no package was saved (default `fabianishere/udm-iptv`)    |
+| UDM_IPTV_REPOSITORY      | Repository to fall back to when no package was saved (default `kjanat/udm-iptv`)          |
 | UDM_IPTV_BRANCH          | Branch or commit to take that installer from (default `HEAD`)                             |
 | UDM_IPTV_LOCK_TIMEOUT    | Seconds to wait for the package manager to free the dpkg lock (default `1800`)            |
 | UDM_IPTV_SYSTEMD_TIMEOUT | Seconds to retry service activation while systemd reloads (default `60`)                  |
@@ -266,9 +269,9 @@ By default this resolves and installs the latest published release. The command
 also accepts an explicit release, package, pull request or workflow run:
 
 ```sh
-udm-iptv upgrade --version 3.0.6
+udm-iptv upgrade --version 4.0.0
 udm-iptv upgrade --package /data/udm-iptv/udm-iptv.deb
-udm-iptv upgrade --pr fabianishere/udm-iptv#123 --token-file /tmp/.ghtok
+udm-iptv upgrade --pr kjanat/udm-iptv#123 --token-file /tmp/.ghtok
 udm-iptv upgrade --run latest --token-file /tmp/.ghtok
 ```
 
@@ -315,8 +318,8 @@ instructions before opening a discussion.
 
 ### Getting Help or Reporting an Issue
 
-If your issues persist, you may seek help on our [Discussions](https://github.com/fabianishere/udm-iptv/discussions) page.
-Please keep [GitHub Issues](https://github.com/fabianishere/udm-iptv/issues)
+If your issues persist, you may seek help on our [Discussions](https://github.com/kjanat/udm-iptv/discussions) page.
+Please keep [GitHub Issues](https://github.com/kjanat/udm-iptv/issues)
 only for bugs or feature requests related to the project (no configuration-related issues).
 
 When opening a discussion or reporting an issue, **please share the name of your
@@ -331,9 +334,9 @@ udm-iptv diagnose
 Questions, suggestions and contributions are welcome and appreciated!
 You can contribute in various meaningful ways:
 
-- Report a bug through [GitHub issues](https://github.com/fabianishere/udm-iptv/issues).
+- Report a bug through [GitHub issues](https://github.com/kjanat/udm-iptv/issues).
 - Contribute improvements to the documentation (e.g., configuration for other ISPs).
-- Help answer questions on our [Discussions](https://github.com/fabianishere/udm-iptv/discussions) page.
+- Help answer questions on our [Discussions](https://github.com/kjanat/udm-iptv/discussions) page.
 
 ## License
 
