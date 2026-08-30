@@ -11,11 +11,16 @@ inputs:
   firmwares:
     description: JSON array containing the tested firmware pair
     required: true
+  token:
+    description: GitHub token used to access the container registry
+    required: true
+    default: ${{ github.token }}
 runs:
   using: composite
   steps:
     - shell: bash
       env:
+        GH_TOKEN: ${{ inputs.token }}
         UNIFI_OS_IMAGE: ${{ inputs.image }}
         MODEL: ${{ inputs.model }}
         UNIFI_OS_FIRMWARES: ${{ inputs.firmwares }}
