@@ -353,6 +353,10 @@ ISP as well as the diagnostics reported by our diagnostic tool**:
 udm-iptv diagnose
 ```
 
+The report includes the installed package and firmware versions, network state,
+pending systemd jobs, service state and restart counters, and logs from the
+current boot. A failed installation prints the same report automatically.
+
 ## Contributing
 
 Questions, suggestions and contributions are welcome and appreciated!

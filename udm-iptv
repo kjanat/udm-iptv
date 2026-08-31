@@ -315,6 +315,21 @@ udm_iptv_diagnose() {
 	fi
 
 	echo "Please share the following output with the developers:"
+	echo "=== Package and System ==="
+	printf "Package: "
+	dpkg-query -W -f='${binary:Package} ${Version} (${db:Status-Status})\n' udm-iptv 2>/dev/null \
+		|| echo "unavailable"
+	printf "Firmware: "
+	if [ -r /etc/version ]; then
+		head -n 1 /etc/version
+	else
+		echo "unknown"
+	fi
+	printf "Kernel: "
+	uname -a
+	printf "System state: "
+	systemctl is-system-running || true
+
 	echo "=== Configuration ==="
 	echo "WAN Interface: ${IPTV_WAN_INTERFACE}"
 	echo "WAN VLAN: ${IPTV_WAN_VLAN} (dev ${IPTV_WAN_VLAN_INTERFACE}${mac})"
@@ -331,8 +346,18 @@ udm_iptv_diagnose() {
 	ip -4 addr show dev "${target}" || true
 	ip route show dev "${target}" || true
 
-	echo "=== Service Logs ==="
-	journalctl -u udm-iptv | tail
+	echo "=== Service State ==="
+	systemctl show --no-pager \
+		-p Id -p LoadState -p UnitFileState -p ActiveState -p SubState \
+		-p Result -p Job -p MainPID -p ExecMainStatus -p NRestarts \
+		udm-iptv.service udm-iptv-restore.service || true
+
+	echo "=== Pending Service Jobs ==="
+	systemctl list-jobs --no-pager || true
+
+	echo "=== Service Logs (current boot) ==="
+	journalctl -b -n 100 -u udm-iptv-restore.service -u udm-iptv.service --no-pager \
+		|| true
 }
 
 # Print the help message of this program.
