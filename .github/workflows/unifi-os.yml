@@ -95,7 +95,14 @@ jobs:
         with:
           path: ${{ runner.temp }}/unifi-os/firmware
           key: ${{ steps.firmware-cache.outputs.cache-primary-key }}
+      - id: container-logs
+        name: Follow integration container logs
+        uses: ./.github/actions/unifi-os-container-logs
+        with: { model: "${{ matrix.model }}" }
+        background: true
       - run: ./test-install.sh "${MODEL}" udm-iptv_*.deb
+      - name: Stop following integration container logs
+        cancel: container-logs
       - if: github.event_name != 'pull_request'
         uses: $/.github/actions/unifi-os-publish
         with:

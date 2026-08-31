@@ -1,0 +1,13 @@
+---
+name: Follow UniFi OS integration container logs
+description: Stream integration container output in a separate workflow step
+inputs:
+  model:
+    description: Device model used in integration container names
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env: { MODEL: "${{ inputs.model }}" }
+      run: '"${GITHUB_ACTION_PATH}/follow.bash"'
