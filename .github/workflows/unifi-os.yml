@@ -3,6 +3,7 @@ name: UniFi OS
 on:
   pull_request:
   push: { branches: [master] }
+  schedule: [{ cron: "17 3 * * *" }]
   workflow_dispatch:
     inputs:
       sku:
@@ -21,6 +22,7 @@ permissions: { contents: read, packages: read }
 env:
   SKU: ${{ case(github.event_name == 'workflow_dispatch', inputs.sku, 'all') }}
   UNIFI_OS_IMAGE: "ghcr.io/${{ github.repository_owner }}/unifi-os"
+  UNIFI_OS_LATEST_MODEL: udmpro
   PR_CREATED_AT: "${{ github.event.pull_request.created_at }}"
 jobs:
   build-deb:
@@ -109,3 +111,4 @@ jobs:
           image: "${{ env.UNIFI_OS_IMAGE }}"
           model: "${{ matrix.model }}"
           firmwares: "${{ toJSON(matrix.firmwares) }}"
+          latest: "${{ matrix.model == env.UNIFI_OS_LATEST_MODEL }}"
