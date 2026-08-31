@@ -118,7 +118,16 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../templates:16001
-msgid "Enable igmpproxy debugging?"
+msgid "Enable IGMP proxy debugging?"
+msgstr ""
+
+#. Type: boolean
+#. Description
+#: ../templates:16001
+msgid ""
+"Choose No for normal use. Choose Yes only while troubleshooting IPTV or when "
+"asked to collect detailed proxy logs. Debugging produces verbose service logs "
+"but does not otherwise improve playback."
 msgstr ""
 
 #. Type: boolean
