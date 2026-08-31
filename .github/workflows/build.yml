@@ -3,6 +3,7 @@ on: pull_request
 concurrency:
   group: unifi-os-${{ github.event.pull_request.number }}-${{ github.workflow }}
   cancel-in-progress: true
+permissions: { contents: read }
 jobs:
   build:
     runs-on: ubuntu-latest
