@@ -80,9 +80,12 @@ _Description: Enable quickleave for the IGMP proxy?
  the stream watched by another decoder.
 
 Template: udm-iptv/igmpproxy-debug
-_Description: Enable igmpproxy debugging?
 Type: boolean
 Default: false
+_Description: Enable IGMP proxy debugging?
+ Choose No for normal use. Choose Yes only while troubleshooting IPTV or when
+ asked to collect detailed proxy logs. Debugging produces verbose service logs
+ but does not otherwise improve playback.
 
 Template: udm-iptv/igmpproxy-igmp-version
 _Description: IGMP version:
