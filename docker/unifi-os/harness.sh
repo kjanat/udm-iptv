@@ -6,11 +6,13 @@ export container=docker
 test_target=udm-iptv-test.target
 etc_lower=/run/udm-iptv-test/etc-lower
 etc_overlay=/var/lib/udm-iptv-test/etc-overlay
+started_at=/run/udm-iptv-test/started-at
 
 # UniFi OS keeps a writable overlay across ordinary boots and firmware updates.
 # Reuse only that overlay between the extracted roots so the new firmware still
 # supplies its own /etc while package-created files survive naturally.
 mkdir -p "${etc_lower}" "${etc_overlay}/upper" "${etc_overlay}/work"
+date -u '+%Y-%m-%d %H:%M:%S UTC' >"${started_at}"
 mount --bind /etc "${etc_lower}"
 mount --bind -o remount,ro "${etc_lower}"
 mount -t overlay overlay \

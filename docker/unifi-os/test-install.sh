@@ -245,8 +245,20 @@ report_runtime_kernel_limitation() {
 	echo "runtime health requires a device kernel with multicast routing"
 }
 
+service_journal() {
+	local name=$1
+	local started_at
+	started_at=$(docker exec "${name}" cat /run/udm-iptv-test/started-at)
+	docker exec "${name}" journalctl \
+		--since "${started_at}" \
+		-u udm-iptv.service \
+		--no-pager
+}
+
 assert_service_runtime_boundary() {
 	local name=$1
+	local active_state
+	local job
 	local n=0
 	local journal
 	local main_pid
@@ -254,14 +266,21 @@ assert_service_runtime_boundary() {
 	local observed_restarts
 	local restarts
 	while ((n < 180)); do
-		journal=$(docker exec "${name}" journalctl -b -u udm-iptv --no-pager)
+		journal=$(service_journal "${name}")
 		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv 2>/dev/null \
 			&& docker exec "${name}" test "$(docker exec "${name}" sh -c \
 				'command -v improxy')" = \
-				/usr/sbin/improxy \
-			&& grep -Fq "Starting IGMP Proxy" <<<"${journal}"; then
-			docker exec "${name}" systemctl is-enabled udm-iptv
-			if docker exec "${name}" systemctl is-active --quiet udm-iptv 2>/dev/null; then
+				/usr/sbin/improxy; then
+			active_state=$(docker exec "${name}" systemctl show \
+				--property ActiveState --value udm-iptv)
+			job=$(docker exec "${name}" systemctl show \
+				--property Job --value udm-iptv)
+			if [[ -n ${job} ]]; then
+				workflow_emit debug \
+					"Waiting for udm-iptv in ${name}: state=${active_state}, job=${job}, elapsed=${n}s"
+			elif [[ ${active_state} == active ]] \
+				&& grep -Fq "Starting IGMP Proxy" <<<"${journal}"; then
+				docker exec "${name}" systemctl is-enabled udm-iptv
 				main_pid=$(docker exec "${name}" systemctl show \
 					--property MainPID --value udm-iptv)
 				restarts=$(docker exec "${name}" systemctl show \
@@ -274,8 +293,7 @@ assert_service_runtime_boundary() {
 				if ! docker exec "${name}" systemctl is-active --quiet udm-iptv 2>/dev/null \
 					|| [[ ${observed_main_pid} != "${main_pid}" ]] \
 					|| [[ ${observed_restarts} != "${restarts}" ]]; then
-					journal=$(docker exec "${name}" \
-						journalctl -b -u udm-iptv --no-pager)
+					journal=$(service_journal "${name}")
 					if report_runtime_kernel_limitation "${journal}"; then
 						return 0
 					fi
@@ -284,14 +302,16 @@ assert_service_runtime_boundary() {
 					return 1
 				fi
 				docker exec "${name}" systemctl is-active udm-iptv
-			else
+				return 0
+			elif [[ ${active_state} == failed || ${active_state} == inactive ]]; then
 				if ! report_runtime_kernel_limitation "${journal}"; then
-					report_error "real proxy failed for an unexpected reason in ${name}"
+					report_error \
+						"real proxy is ${active_state} without a pending start job in ${name}"
 					dump "${name}"
 					return 1
 				fi
+				return 0
 			fi
-			return 0
 		fi
 		if ((n % 10 == 0)); then
 			workflow_emit debug "Waiting for udm-iptv in ${name}: elapsed=${n}s"
