@@ -2,6 +2,7 @@
 name: UniFi OS
 on:
   pull_request:
+  push: { branches: [master] }
   workflow_dispatch:
     inputs:
       sku:
@@ -95,7 +96,7 @@ jobs:
           path: ${{ runner.temp }}/unifi-os/firmware
           key: ${{ steps.firmware-cache.outputs.cache-primary-key }}
       - run: ./test-install.sh "${MODEL}" udm-iptv_*.deb
-      - if: github.event_name == 'workflow_dispatch'
+      - if: github.event_name != 'pull_request'
         uses: $/.github/actions/unifi-os-publish
         with:
           image: "${{ env.UNIFI_OS_IMAGE }}"
