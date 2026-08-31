@@ -133,6 +133,13 @@ sh -c "$(curl -fsSL https://raw.githubusercontent.com/kjanat/udm-iptv/master/ins
 ```
 
 This script will install the `udm-iptv` package onto your device.
+The package also enables Bash completion for new SSH sessions. To enable it in
+the current session immediately, run:
+
+```sh
+. /etc/profile.d/udm-iptv-completion.sh
+```
+
 The installation process supports various pre-defined configuration profiles for
 popular IPTV providers. Below is a list of supported IPTV providers:
 

@@ -1,0 +1,93 @@
+# Bash completion for udm-iptv.
+# shellcheck shell=bash
+
+_udm_iptv_seen() {
+	local sought=$1
+	local word
+
+	for word in "${COMP_WORDS[@]:2:COMP_CWORD-2}"; do
+		[[ ${word} == "${sought}" ]] && return 0
+	done
+
+	return 1
+}
+
+_udm_iptv_complete_files() {
+	local current=$1
+
+	compopt -o filenames 2>/dev/null || true
+	mapfile -t COMPREPLY < <(compgen -f -- "${current}" || true)
+}
+
+_udm_iptv() {
+	local current=${COMP_WORDS[COMP_CWORD]}
+	local previous=${COMP_WORDS[COMP_CWORD - 1]:-}
+	local command=${COMP_WORDS[1]:-}
+	local option
+	local source_selected=false
+	local -a options=()
+
+	COMPREPLY=()
+
+	if ((COMP_CWORD == 1)); then
+		mapfile -t COMPREPLY < <(compgen -W \
+			'configure reconfigure upgrade persist restore uninstall restart diagnose -h --help' \
+			-- "${current}" || true)
+		return
+	fi
+
+	_udm_iptv_seen -- && return
+
+	case ${command} in
+	upgrade)
+		case ${previous} in
+		--package | --token-file)
+			_udm_iptv_complete_files "${current}"
+			return
+			;;
+		--run)
+			mapfile -t COMPREPLY < <(compgen -W 'latest' -- "${current}" || true)
+			return
+			;;
+		--version | --repository | --branch | --pr | --timeout)
+			return
+			;;
+		*) ;;
+		esac
+
+		if ! _udm_iptv_seen -h && ! _udm_iptv_seen --help; then
+			options+=(-h --help)
+		fi
+		_udm_iptv_seen --force || options+=(--force)
+		_udm_iptv_seen --repository || options+=(--repository)
+		_udm_iptv_seen --branch || options+=(--branch)
+		_udm_iptv_seen --token-file || options+=(--token-file)
+		_udm_iptv_seen --timeout || options+=(--timeout)
+
+		for option in --latest --version --package --pr --run; do
+			if _udm_iptv_seen "${option}"; then
+				source_selected=true
+				break
+			fi
+		done
+		if [[ ${source_selected} == false ]]; then
+			options+=(--latest --version --package --pr --run)
+		fi
+		;;
+	uninstall)
+		if ! _udm_iptv_seen -h && ! _udm_iptv_seen --help; then
+			options+=(-h --help)
+		fi
+		if ! _udm_iptv_seen --purge && ! _udm_iptv_seen --keep-data; then
+			options+=(--purge --keep-data)
+		fi
+		;;
+	*)
+		return
+		;;
+	esac
+
+	mapfile -t COMPREPLY < <(compgen -W "${options[*]}" -- "${current}" || true)
+}
+
+complete -F _udm_iptv udm-iptv

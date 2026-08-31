@@ -406,6 +406,27 @@ assert_version() {
 	echo "package version ${actual} in ${name}"
 }
 
+assert_bash_completion() {
+	local name=$1
+
+	if ! docker exec "${name}" test -r \
+		/usr/share/bash-completion/completions/udm-iptv \
+		|| ! docker exec "${name}" test -r \
+			/etc/profile.d/udm-iptv-completion.sh \
+		|| ! docker exec "${name}" bash --login -c '
+            complete -p udm-iptv >/dev/null
+            COMP_WORDS=(udm-iptv up)
+            COMP_CWORD=1
+            _udm_iptv
+            [[ " ${COMPREPLY[*]} " == *" upgrade "* ]]
+        '; then
+		report_error "Bash completion is not available in ${name}"
+		return 1
+	fi
+
+	echo "Bash completion available in ${name}"
+}
+
 assert_removed() {
 	local name=$1
 	if docker exec "${name}" test -e /usr/bin/udm-iptv; then
@@ -459,6 +480,7 @@ docker exec \
 	"${from_name}" \
 	sh /tmp/install.sh
 assert_version "${from_name}" "${old_version}"
+assert_bash_completion "${from_name}"
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.deb
 docker exec "${from_name}" test -e /data/udm-iptv/debconf.preseed
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
