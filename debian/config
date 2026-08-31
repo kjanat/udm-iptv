@@ -266,17 +266,13 @@ while true; do
         ;;
     6)  # Configure igmpproxy
         db_get udm-iptv/igmpproxy-program
+        db_beginblock
         if [ "${RET}" = "improxy" ]; then
-            db_beginblock
             db_input medium udm-iptv/igmpproxy-igmp-version || true
-            db_input medium udm-iptv/igmpproxy-debug || true
-            db_endblock
-        else
-            db_beginblock
-            db_input low udm-iptv/igmpproxy-quickleave || true
-            db_input medium udm-iptv/igmpproxy-debug || true
-            db_endblock
         fi
+        db_input low udm-iptv/igmpproxy-quickleave || true
+        db_input medium udm-iptv/igmpproxy-debug || true
+        db_endblock
         ;;
     7)  # Complete configuration
         exit 0

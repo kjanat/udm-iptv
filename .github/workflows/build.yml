@@ -14,6 +14,9 @@ jobs:
         with: { path: udm-iptv }
       - name: Setup Dependencies
         run: sudo apt-get install devscripts debhelper build-essential
+      - name: Test DHCP Route Hook
+        working-directory: udm-iptv
+        run: sudo ./tests/udhcpc-hook.sh
       - name: Build Package
         working-directory: udm-iptv
         run: debuild -uc -us --lintian-opts --profile debian

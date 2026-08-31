@@ -263,18 +263,18 @@ udm-iptv configure
 
 See below for a reference of the available options to configure:
 
-| Option                            | Description                                                                                                                                                      |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| IPTV_WAN_INTERFACE                | Interface on which IPTV traffic enters the router                                                                                                                |
-| IPTV_WAN_RANGES                   | IP ranges from which the IPTV traffic originates (separated by spaces)                                                                                           |
-| IPTV_WAN_VLAN                     | ID of VLAN which carries IPTV traffic (use 0 if no VLAN is used)                                                                                                 |
-| IPTV_WAN_DHCP                     | Boolean to indicate whether DHCP is enabled on the IPTV WAN (VLAN) interface                                                                                     |
-| IPTV_WAN_DHCP_OPTIONS             | [DHCP options](https://busybox.net/downloads/BusyBox.html#udhcpc) to send when requesting an IP address                                                          |
-| IPTV_WAN_STATIC_IP                | Static IP address to assign to the IPTV WAN (VLAN) interface (if DHCP is disabled)                                                                               |
-| IPTV_WAN_MAC                      | Custom MAC address to assign to the IPTV WAN VLAN interface                                                                                                      |
-| IPTV_LAN_INTERFACES               | Interfaces on which IPTV should be made available                                                                                                                |
-| IPTV_IGMPPROXY_DEBUG              | Enable debugging for igmpproxy                                                                                                                                   |
-| IPTV_IGMPPROXY_DISABLE_QUICKLEAVE | Boolean to disables the quickleave feature for the IGMP Proxy. Set this to true if you have more than one IPTV decoder. Supported by both improxy and igmpproxy. |
+| Option                            | Description                                                                                                                                                           |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| IPTV_WAN_INTERFACE                | Interface on which IPTV traffic enters the router                                                                                                                     |
+| IPTV_WAN_RANGES                   | IP ranges from which the IPTV traffic originates (separated by spaces)                                                                                                |
+| IPTV_WAN_VLAN                     | ID of VLAN which carries IPTV traffic (use 0 if no VLAN is used)                                                                                                      |
+| IPTV_WAN_DHCP                     | Boolean to indicate whether DHCP is enabled on the IPTV WAN (VLAN) interface                                                                                          |
+| IPTV_WAN_DHCP_OPTIONS             | [DHCP options](https://busybox.net/downloads/BusyBox.html#udhcpc) to send when requesting an IP address                                                               |
+| IPTV_WAN_STATIC_IP                | Static IP address to assign to the IPTV WAN (VLAN) interface (if DHCP is disabled)                                                                                    |
+| IPTV_WAN_MAC                      | Custom MAC address to assign to the IPTV WAN VLAN interface                                                                                                           |
+| IPTV_LAN_INTERFACES               | Interfaces on which IPTV should be made available                                                                                                                     |
+| IPTV_IGMPPROXY_DEBUG              | Enable debugging for igmpproxy                                                                                                                                        |
+| IPTV_IGMPPROXY_DISABLE_QUICKLEAVE | Boolean to disable the quickleave feature for the IGMP Proxy. Set this to true unless exactly one IPTV decoder is connected. Supported by both improxy and igmpproxy. |
 
 The configuration is written to `/etc/udm-iptv.conf` (within UniFi OS).
 
@@ -331,7 +331,7 @@ instructions before opening a discussion.
    Make sure that you have configured `IPTV_LAN_INTERFACES` correctly to forward
    to right interfaces (e.g., `br4` for VLAN 4).
 3. **If you have more than one IPTV decoder, disable the quickleave feature**
-   Quickleave is enabled in the default configuration for improxy (the default IGMP proxy) and igmpproxy.
+   Quickleave can be enabled for improxy (the default IGMP proxy) and igmpproxy.
    If you have multiple IPTV decoders, quickleave will stop a stream for all decoders when just one decoder changes to a different stream.
 4. **Check if your kernel supports multicast routing**\
    If `MRT_INIT failed; Errno(92): Protocol not available` appears in

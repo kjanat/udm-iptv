@@ -426,6 +426,8 @@ docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv-restore
 docker exec "${from_name}" test ! -e /data/udm-iptv/udm-iptv-restore.service
 log_config "${from_name}" "after initial installation"
+docker exec "${from_name}" grep -Fqx \
+	'IPTV_IGMPPROXY_DISABLE_QUICKLEAVE="true"' /etc/udm-iptv.conf
 docker exec "${from_name}" cp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 docker exec "${from_name}" cp /data/udm-iptv/debconf.preseed /data/udm-iptv/debconf.preseed.installed
 docker exec "${from_name}" udm-iptv persist
@@ -436,6 +438,31 @@ log_config "${from_name}" "before package upgrade"
 docker exec "${from_name}" udm-iptv upgrade --package /tmp/udm-iptv.deb
 log_config "${from_name}" "after package upgrade"
 assert_version "${from_name}" "${current_version}"
+
+docker exec "${from_name}" mkdir -p /etc/systemd/system/udm-iptv.service.d
+docker exec "${from_name}" sh -c \
+	'printf "[Service]\nExecStart=\nExecStart=/bin/false\n" >/etc/systemd/system/udm-iptv.service.d/fail.conf'
+docker exec "${from_name}" systemctl daemon-reload
+docker exec "${from_name}" systemctl restart udm-iptv.service || true
+set +e
+failed_install_output=$(docker exec \
+	-e DEBIAN_FRONTEND=noninteractive \
+	-e UDM_IPTV_SERVICE_START_TIMEOUT_SECONDS=2 \
+	"${from_name}" udm-iptv upgrade --force --package /tmp/udm-iptv.deb 2>&1)
+failed_install_status=$?
+set -e
+echo "${failed_install_output}"
+if [[ ${failed_install_status} -eq 0 ]] \
+	|| ! grep -Fq 'the service is not healthy' <<<"${failed_install_output}" \
+	|| grep -Fq 'Installation successful' <<<"${failed_install_output}"; then
+	report_error "installer reported success for a failed service in ${from_name}"
+	exit 1
+fi
+docker exec "${from_name}" rm /etc/systemd/system/udm-iptv.service.d/fail.conf
+docker exec "${from_name}" systemctl daemon-reload
+docker exec "${from_name}" systemctl reset-failed udm-iptv.service
+docker exec "${from_name}" systemctl restart udm-iptv.service
+assert_service_runtime_boundary "${from_name}"
 
 no_op_output=$(docker exec "${from_name}" \
 	udm-iptv upgrade --version "${current_version}")

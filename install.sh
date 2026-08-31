@@ -72,6 +72,79 @@ check_installed_version() {
 	fi
 }
 
+service_failure() {
+	echo "error: udm-iptv was installed, but the service is not healthy: $1" >&2
+	systemctl status udm-iptv.service --no-pager >&2 || true
+	exit 1
+}
+
+proxy_process() {
+	process_pid=$1
+	if [ ! -r "/proc/${process_pid}/cmdline" ]; then
+		echo unknown
+		return
+	fi
+	process_arguments=$(tr '\000' '\n' <"/proc/${process_pid}/cmdline")
+	while IFS= read -r process_argument; do
+		case "${process_argument}" in
+			improxy | */improxy | igmpproxy | */igmpproxy)
+				echo "${process_argument}"
+				return 0
+				;;
+			*) ;;
+		esac
+	done <<EOF
+${process_arguments}
+EOF
+	echo unknown
+}
+
+verify_service() {
+	start_timeout=${UDM_IPTV_SERVICE_START_TIMEOUT_SECONDS:-30}
+	stability_seconds=${UDM_IPTV_SERVICE_STABILITY_SECONDS:-6}
+	enabled_state=$(systemctl is-enabled udm-iptv.service 2>&1) || true
+	[ "${enabled_state}" = "enabled" ] \
+		|| service_failure "unit state is ${enabled_state:-unknown}"
+
+	waited=0
+	ready=false
+	active_state=unknown
+	main_pid=0
+	main_process=unknown
+	while [ "${waited}" -lt "${start_timeout}" ]; do
+		active_state=$(systemctl is-active udm-iptv.service 2>&1) || true
+		if [ "${active_state}" = "active" ]; then
+			main_pid=$(systemctl show udm-iptv.service --property MainPID --value)
+			if [ -n "${main_pid}" ] && [ "${main_pid}" -gt 0 ]; then
+				main_process=$(proxy_process "${main_pid}")
+				if [ "${main_process}" != "unknown" ]; then
+					ready=true
+					break
+				fi
+			fi
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+	[ "${ready}" = "true" ] \
+		|| service_failure "proxy did not become ready within ${start_timeout} seconds (unit ${active_state}, process ${main_process})"
+
+	restarts=$(systemctl show udm-iptv.service --property NRestarts --value)
+
+	# RestartSec is five seconds. Observe beyond it so a briefly active crash loop
+	# cannot be reported as a successful installation.
+	sleep "${stability_seconds}"
+	observed_state=$(systemctl is-active udm-iptv.service 2>&1) || true
+	observed_main_pid=$(systemctl show udm-iptv.service --property MainPID --value)
+	observed_process=$(proxy_process "${observed_main_pid}")
+	observed_restarts=$(systemctl show udm-iptv.service --property NRestarts --value)
+	[ "${observed_state}" = "active" ] \
+		&& [ "${observed_main_pid}" = "${main_pid}" ] \
+		&& [ "${observed_process}" = "${main_process}" ] \
+		&& [ "${observed_restarts}" = "${restarts}" ] \
+		|| service_failure "unit did not remain stable"
+}
+
 resolve_head() {
 	api_get "${api}/pulls/${UDM_IPTV_PR}" | json_field sha
 }
@@ -235,6 +308,8 @@ else
 	DIALOGOPTS="${DIALOGOPTS:+${DIALOGOPTS} }--keep-tite" \
 		apt-get install -o Acquire::AllowUnsizedPackages=1 -q "${dest}/udm-iptv.deb"
 fi
+
+verify_service
 
 # Keep the package next to the saved answers so that a firmware update can be
 # recovered from without network access

@@ -3,6 +3,8 @@
 # Copyright (c) 2008 Natanael Copa <natanael.copa@gmail.com>
 # Augmented by Fabian Mastenbroek <mail.fabianm@gmail.com>
 
+set -eu
+
 export broadcast
 export dns
 export domain
@@ -22,6 +24,7 @@ if ! command -v ip > /dev/null 2>&1; then
 fi
 
 deconfig() {
+    ip -4 route flush dev "${interface}" proto dhcp
     ip -4 addr flush dev "${interface}"
 }
 
@@ -38,57 +41,115 @@ calc_metric() {
     echo $((200 + index))
 }
 
+normalize_destination() {
+    destination=$1
+    case "${destination}" in
+    */*)
+        address=${destination%/*}
+        prefix=${destination##*/}
+        ;;
+    *)
+        echo "${destination}"
+        return
+        ;;
+    esac
+
+    case "${prefix}" in
+    "" | *[!0-9]*) return 1 ;;
+    *) ;;
+    esac
+    [ "${prefix}" -le 32 ] || return 1
+
+    IFS=. read -r octet1 octet2 octet3 octet4 remainder <<EOF
+${address}
+EOF
+    [ -z "${remainder}" ] || return 1
+    set -- "${octet1}" "${octet2}" "${octet3}" "${octet4}"
+
+    network=
+    remaining=${prefix}
+    for octet in "$@"; do
+        case "${octet}" in
+        "" | *[!0-9]*) return 1 ;;
+        *) ;;
+        esac
+        [ "${octet}" -le 255 ] || return 1
+
+        if [ "${remaining}" -ge 8 ]; then
+            network_octet=${octet}
+        elif [ "${remaining}" -le 0 ]; then
+            network_octet=0
+        else
+            mask_octet=$((256 - (1 << (8 - remaining))))
+            network_octet=$((octet & mask_octet))
+        fi
+        network="${network}${network:+.}${network_octet}"
+        remaining=$((remaining - 8))
+    done
+
+    printf '%s/%s\n' "${network}" "${prefix}"
+}
+
 route_add() {
     add_to="$1"
     add_gw="$2"
     add_num="$3"
-
-    add_metric="${IF_METRIC:-}"
-    if [ -z "${add_metric}" ]; then
-        add_metric=$(calc_metric)
-    fi
+    add_metric="$4"
+    add_to=$(normalize_destination "${add_to}")
 
     # special case for /32 subnets:
     # /32 instructs kernel to always use routing for all outgoing packets
     # (they can never be sent to local subnet - there is no local subnet for /32).
     # Used in datacenters, avoids the need for private ip-addresses between two hops.
-    if [ "${subnet}" = "255.255.255.255" ]; then
-        ip -4 route add "${add_gw}" dev "${interface}"
+    if [ "${subnet:-}" = "255.255.255.255" ] && [ "${add_gw}" != "0.0.0.0" ]; then
+        ip -4 route replace "${add_gw}" dev "${interface}" proto dhcp \
+            metric "${add_metric}"
     fi
-    ip -4 route add "${add_to}" via "${add_gw}" dev "${interface}" \
-        metric $((add_num + add_metric))
+
+    if [ "${add_gw}" = "0.0.0.0" ]; then
+        ip -4 route replace "${add_to}" dev "${interface}" proto dhcp \
+            metric $((add_num + add_metric))
+    else
+        ip -4 route replace "${add_to}" via "${add_gw}" dev "${interface}" \
+            proto dhcp metric $((add_num + add_metric))
+    fi
 }
 
 routes() {
-    [ -z "${router}" ] && [ -z "${staticroutes}" ] && return
+    # Reconcile only routes owned by this DHCP client. This removes routes that
+    # disappeared or changed order on renewal without touching kernel or manual
+    # routes on the interface.
+    ip -4 route flush dev "${interface}" proto dhcp
+
     for skip_iface in ${NO_GATEWAY:-}; do
         [ "${skip_iface}" = "${interface}" ] && return
     done
-    while ip -4 route del default via dev "${interface}" 2>/dev/null; do
-        :
-    done
+
     route_index=0
+    route_metric=${IF_METRIC:-$(calc_metric)}
     # RFC3442:
     # If the DHCP server returns both a Classless Static Routes option
     # and a Router option, the DHCP client MUST ignore the Router option.
-    if [ -n "${staticroutes}" ]; then
+    if [ -n "${staticroutes:-}" ]; then
         # static routes format: dest1/mask gw1 ... destn/mask gwn
         set --
         for route_field in ${staticroutes}; do
             set -- "$@" "${route_field}"
         done
-        while [ -n "$1" ] && [ -n "$2" ]; do
+        while [ "$#" -ge 2 ]; do
             static_dest="$1"
             static_gw="$2"
-            if [ "${static_gw}" != "0.0.0.0" ]; then
-                route_add "${static_dest}" "${static_gw}" "${route_index}"
-                route_index=$((route_index + 1))
-            fi
+            route_add "${static_dest}" "${static_gw}" "${route_index}" "${route_metric}"
+            route_index=$((route_index + 1))
             shift 2
         done
+        [ "$#" -eq 0 ] || {
+            echo "Invalid classless static route option" >&2
+            return 1
+        }
     else
-        for default_gw in ${router}; do
-            route_add 0.0.0.0/0 "${default_gw}" "${route_index}"
+        for default_gw in ${router:-}; do
+            route_add 0.0.0.0/0 "${default_gw}" "${route_index}" "${route_metric}"
             route_index=$((route_index + 1))
         done
     fi
@@ -101,17 +162,12 @@ bound() {
 }
 
 renew() {
-    if ! ip -4 addr show dev "${interface}" | grep "${ip}"/"${mask}"; then
+    if ! ip -4 addr show dev "${interface}" | grep -Fq "${ip}/${mask}"; then
         ip -4 addr flush dev "${interface}"
         ip -4 addr add "${ip}"/"${mask}" ${broadcast:+broadcast ${broadcast}} dev "${interface}"
     fi
 
-    for gateway in ${router}; do
-        if ! ip -4 route show | grep ^default | grep "${gateway}"; then
-            routes
-            break
-        fi
-    done
+    routes
 }
 
 case "$1" in
