@@ -166,7 +166,7 @@ The installer reads the following environment variables:
 
 | Variable                 | Description                                                                            |
 | ------------------------ | -------------------------------------------------------------------------------------- |
-| UDM_IPTV_VERSION         | Release to install (default `4.0.1`)                                                   |
+| UDM_IPTV_VERSION         | Release to install (default `4.0.2`)                                                   |
 | UDM_IPTV_REPOSITORY      | Repository to install from (default `kjanat/udm-iptv`)                                 |
 | UDM_IPTV_PACKAGE         | Package to install, as a URL or a path on the device                                   |
 | UDM_IPTV_STATE_DIR       | Directory to save the answers, configuration and package in (default `/data/udm-iptv`) |
@@ -290,7 +290,7 @@ By default this resolves and installs the latest published release. The command
 also accepts an explicit release, package, pull request or workflow run:
 
 ```sh
-udm-iptv upgrade --version 4.0.1
+udm-iptv upgrade --version 4.0.2
 udm-iptv upgrade --package /data/udm-iptv/udm-iptv.deb
 udm-iptv upgrade --pr kjanat/udm-iptv#123 --token-file /tmp/.ghtok
 udm-iptv upgrade --run latest --token-file /tmp/.ghtok

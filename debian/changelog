@@ -1,3 +1,12 @@
+udm-iptv (4.0.2) stable; urgency=low
+
+  * Skip downloads and package installation when the selected version is already
+    installed
+  * Add upgrade --force for an intentional same-version download and reinstall
+  * Save persisted configuration once during reconfiguration
+
+ -- Kaj Kowalski <info@kajkowalski.nl>  Mon, 31 Aug 2026 09:45:17 +0200
+
 udm-iptv (4.0.1) stable; urgency=low
 
   * Preserve installer logs around interactive configuration menus
