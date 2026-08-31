@@ -49,7 +49,7 @@ jobs:
 
   test-install:
     needs: [build-deb, catalog]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     permissions: { contents: read, packages: write }
     defaults: { run: { working-directory: docker/unifi-os } }
     strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.catalog.outputs.matrix) }}" } }
@@ -86,8 +86,6 @@ jobs:
           key: unifi-os-firmware-${{ runner.os }}-${{ runner.arch }}-${{ matrix.model }}-${{ join(matrix.firmwares.*.sha256, '-') }}
       - if: steps.firmware-images.outputs.cache-needed == 'true'
         run: sudo apt-get update && sudo apt-get install -y squashfs-tools
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
-        with: { platforms: arm64 }
       - if: steps.firmware-images.outputs.cache-needed == 'true'
         run: ./build.sh "${MODEL}"
         env: { UNIFI_OS_CACHE: "${{ runner.temp }}/unifi-os" }
