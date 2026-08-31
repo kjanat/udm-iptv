@@ -48,10 +48,10 @@ if [ -n "${UDM_IPTV_TEST_LOCK_SECONDS:-}" ]; then
 fi
 
 # The extracted root cannot reach the hardware-dependent multi-user target.
-# Pull persistent multi-user units into the small test target without naming,
-# copying, enabling or starting any package unit on its behalf. Broken links
-# identify units removed with the package; intact firmware units below /lib are
-# deliberately left to the hardware-dependent production target.
+# Pull the enabled package service and persistent /etc units into the small test
+# target without copying, enabling or starting any unit on its behalf. Broken
+# links identify units removed with the package; other intact firmware units
+# below /lib are deliberately left to the hardware-dependent production target.
 mkdir -p "/run/systemd/system/${test_target}.wants"
 for enabled in /etc/systemd/system/multi-user.target.wants/*; do
 	[ -L "${enabled}" ] || continue
@@ -63,7 +63,7 @@ for enabled in /etc/systemd/system/multi-user.target.wants/*; do
 	target=$(readlink -f "${enabled}")
 	if [ -e "${enabled}" ]; then
 		case ${target} in
-			/etc/systemd/system/*) ;;
+			/etc/systemd/system/* | */systemd/system/udm-iptv.service) ;;
 			*) continue ;;
 		esac
 	fi
