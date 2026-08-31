@@ -44,12 +44,6 @@ user_package=${package#*/}
 visibility=$(gh api "/user/packages/container/${user_package}" --jq .visibility)
 echo "visibility=${visibility}"
 if [[ ${visibility} != public ]]; then
-	gh api --method POST "/user/packages/container/${user_package}/visibility" \
-		-f visibility=public
-	visibility=$(gh api "/user/packages/container/${user_package}" --jq .visibility)
-	echo "visibility=${visibility}"
-fi
-if [[ ${visibility} != public ]]; then
-	echo "error: package ${UNIFI_OS_IMAGE} is ${visibility}, expected public" >&2
+	echo "error: package ${UNIFI_OS_IMAGE} is ${visibility}; set its visibility to public in GitHub Packages" >&2
 	exit 1
 fi

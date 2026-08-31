@@ -6,8 +6,6 @@ work=$(mktemp -d)
 trap 'rm -rf "${work}"' EXIT
 mkdir "${work}/bin"
 log="${work}/commands"
-visibility="${work}/visibility"
-echo private >"${visibility}"
 
 cat >"${work}/bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -20,17 +18,13 @@ cat >"${work}/bin/gh" <<'EOF'
 printf 'gh' >>"${COMMAND_LOG}"
 printf ' %q' "$@" >>"${COMMAND_LOG}"
 printf '\n' >>"${COMMAND_LOG}"
-if [[ " $* " == *' --method POST '* ]]; then
-	echo public >"${VISIBILITY_FILE}"
-else
-	cat "${VISIBILITY_FILE}"
-fi
+echo "${GH_VISIBILITY}"
 EOF
 chmod +x "${work}/bin/docker" "${work}/bin/gh"
 
 PATH="${work}/bin:${PATH}" \
 	COMMAND_LOG="${log}" \
-	VISIBILITY_FILE="${visibility}" \
+	GH_VISIBILITY=public \
 	MODEL=udmpro \
 	UNIFI_OS_IMAGE=ghcr.io/example/unifi-os \
 	PUBLISH_LATEST=true \
@@ -47,11 +41,11 @@ for command in \
 	'docker push ghcr.io/example/unifi-os:udmpro-UDMPRO-latest' \
 	'docker tag ghcr.io/example/unifi-os:udmpro-5.1.31 ghcr.io/example/unifi-os:latest' \
 	'docker push ghcr.io/example/unifi-os:latest' \
-	'gh api --method POST /user/packages/container/unifi-os/visibility -f visibility=public'; do
+	'gh api /user/packages/container/unifi-os --jq .visibility'; do
 	grep -Fqx "${command}" "${log}"
 done
 
-if grep -Fq -- '--method DELETE' "${log}"; then
-	echo "error: publishing attempted to delete the package" >&2
+if grep -Eq -- '--method (POST|PUT|PATCH|DELETE)' "${log}"; then
+	echo "error: publishing attempted to mutate the package" >&2
 	exit 1
 fi
