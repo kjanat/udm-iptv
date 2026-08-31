@@ -17,7 +17,6 @@ UDM_IPTV_BRANCH="${UDM_IPTV_BRANCH:-HEAD}"
 # (Re)configure the udm-iptv installation
 udm_iptv_configure() {
 	dpkg-reconfigure -p low udm-iptv
-	udm_iptv_persist
 }
 
 # Upgrade udm-iptv installation to latest version
@@ -32,6 +31,7 @@ Package source (choose at most one):
   --pr PR               Install the successful build of a pull request
   --run RUN             Install a workflow run, or "latest"
 Other options:
+  --force                  Re-download and reinstall the selected version
   --repository OWNER/REPO  Repository to install from
   --branch REF             Ref from which to load a fallback installer
   --token-file PATH        Read the Actions API token from a file
@@ -47,10 +47,15 @@ udm_iptv_upgrade() {
 	UDM_IPTV_RUN="${UDM_IPTV_RUN:-}"
 	UDM_IPTV_TOKEN="${UDM_IPTV_TOKEN:-${GITHUB_TOKEN:-}}"
 	UDM_IPTV_TIMEOUT_SECONDS="${UDM_IPTV_TIMEOUT_SECONDS:-900}"
+	UDM_IPTV_FORCE="${UDM_IPTV_FORCE:-false}"
 	source=
 
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
+		--force)
+			UDM_IPTV_FORCE=true
+			shift
+			;;
 		--latest)
 			[ -z "${source}" ] || {
 				echo "error: Choose only one package source." >&2
@@ -157,7 +162,8 @@ udm_iptv_upgrade() {
 
 	export UDM_IPTV_VERSION UDM_IPTV_REPOSITORY UDM_IPTV_BRANCH
 	export UDM_IPTV_PACKAGE UDM_IPTV_PR UDM_IPTV_RUN
-	export UDM_IPTV_TOKEN UDM_IPTV_TIMEOUT_SECONDS UDM_IPTV_STATE_DIR
+	export UDM_IPTV_TOKEN UDM_IPTV_TIMEOUT_SECONDS UDM_IPTV_FORCE
+	export UDM_IPTV_STATE_DIR
 
 	echo "Running udm-iptv installer..."
 	if [ -r /usr/lib/udm-iptv/install.sh ]; then
