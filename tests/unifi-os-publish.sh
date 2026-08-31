@@ -35,10 +35,14 @@ PATH="${work}/bin:${PATH}" \
 	"${repo}/.github/actions/unifi-os-publish/publish.bash"
 
 for command in \
+	'docker tag ghcr.io/example/unifi-os:udmpro-5.1.26 ghcr.io/example/unifi-os:UDMPRO-5.1.26' \
+	'docker push ghcr.io/example/unifi-os:UDMPRO-5.1.26' \
+	'docker tag ghcr.io/example/unifi-os:udmpro-5.1.31 ghcr.io/example/unifi-os:UDMPRO-5.1.31' \
+	'docker push ghcr.io/example/unifi-os:UDMPRO-5.1.31' \
 	'docker tag ghcr.io/example/unifi-os:udmpro-5.1.31 ghcr.io/example/unifi-os:udmpro-latest' \
 	'docker push ghcr.io/example/unifi-os:udmpro-latest' \
-	'docker tag ghcr.io/example/unifi-os:udmpro-5.1.31 ghcr.io/example/unifi-os:udmpro-UDMPRO-latest' \
-	'docker push ghcr.io/example/unifi-os:udmpro-UDMPRO-latest' \
+	'docker tag ghcr.io/example/unifi-os:udmpro-5.1.31 ghcr.io/example/unifi-os:UDMPRO-latest' \
+	'docker push ghcr.io/example/unifi-os:UDMPRO-latest' \
 	'docker tag ghcr.io/example/unifi-os:udmpro-5.1.31 ghcr.io/example/unifi-os:latest' \
 	'docker push ghcr.io/example/unifi-os:latest' \
 	'gh api /user/packages/container/unifi-os --jq .visibility'; do
@@ -47,5 +51,10 @@ done
 
 if grep -Eq -- '--method (POST|PUT|PATCH|DELETE)' "${log}"; then
 	echo "error: publishing attempted to mutate the package" >&2
+	exit 1
+fi
+
+if grep -Eq -- 'udmpro-UDMPRO-' "${log}"; then
+	echo "error: publishing combined model-board tags" >&2
 	exit 1
 fi

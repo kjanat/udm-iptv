@@ -19,7 +19,9 @@ latest_board=
 latest_version=
 while IFS=$'\t' read -r board version; do
 	docker push "${UNIFI_OS_IMAGE}:${MODEL}-${version}"
-	docker push "${UNIFI_OS_IMAGE}:${MODEL}-${board}-${version}"
+	docker tag "${UNIFI_OS_IMAGE}:${MODEL}-${version}" \
+		"${UNIFI_OS_IMAGE}:${board}-${version}"
+	docker push "${UNIFI_OS_IMAGE}:${board}-${version}"
 	latest_board=${board}
 	latest_version=${version}
 done <<<"${firmwares}"
@@ -30,7 +32,7 @@ if [[ -z ${latest_board} || -z ${latest_version} ]]; then
 fi
 
 source_image="${UNIFI_OS_IMAGE}:${MODEL}-${latest_version}"
-for alias in "${MODEL}-latest" "${MODEL}-${latest_board}-latest"; do
+for alias in "${MODEL}-latest" "${latest_board}-latest"; do
 	docker tag "${source_image}" "${UNIFI_OS_IMAGE}:${alias}"
 	docker push "${UNIFI_OS_IMAGE}:${alias}"
 done
