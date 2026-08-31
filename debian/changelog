@@ -1,3 +1,10 @@
+udm-iptv (4.1.1) stable; urgency=low
+
+  * Explain when IGMP proxy debugging should be enabled and why it should
+    normally remain disabled
+
+ -- Kaj Kowalski <info@kajkowalski.nl>  Mon, 31 Aug 2026 14:51:36 +0200
+
 udm-iptv (4.1.0) stable; urgency=medium
 
   * Reconcile RFC 3442 classless routes on every DHCP lease without disturbing
