@@ -1,3 +1,16 @@
+udm-iptv (4.1.0) stable; urgency=medium
+
+  * Reconcile DHCP classless routes on every lease without disturbing manually
+    managed routes
+  * Disable IGMP quickleave by default and support it with both proxy implementations
+    to prevent interruptions in multi-decoder setups
+  * Report installation success only after the IPTV service is enabled, active and
+    stable with a running proxy
+  * Run firmware lifecycle tests natively on ARM64 across five UniFi OS models
+  * Restrict build workflow permissions and improve live lifecycle diagnostics
+
+ -- Kaj Kowalski <info@kajkowalski.nl>  Mon, 31 Aug 2026 14:13:51 +0200
+
 udm-iptv (4.0.2) stable; urgency=low
 
   * Skip downloads and package installation when the selected version is already
