@@ -17,6 +17,9 @@ jobs:
       - name: Test DHCP Route Hook
         working-directory: udm-iptv
         run: sudo ./tests/udhcpc-hook.sh
+      - name: Test UniFi OS image publishing
+        working-directory: udm-iptv
+        run: ./tests/unifi-os-publish.sh
       - name: Build Package
         working-directory: udm-iptv
         run: debuild -uc -us --lintian-opts --profile debian

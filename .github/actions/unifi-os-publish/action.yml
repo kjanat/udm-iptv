@@ -1,6 +1,6 @@
 ---
 name: Publish UniFi OS firmware images
-description: Push a tested firmware pair and keep its GHCR package private
+description: Push tested firmware images and their stable aliases to GHCR
 inputs:
   image:
     description: Container image repository
@@ -11,6 +11,10 @@ inputs:
   firmwares:
     description: JSON array containing the tested firmware pair
     required: true
+  latest:
+    description: Also point the repository-wide latest tag at this model
+    required: false
+    default: "false"
   token:
     description: GitHub token used to access the container registry
     required: true
@@ -24,4 +28,5 @@ runs:
         UNIFI_OS_IMAGE: ${{ inputs.image }}
         MODEL: ${{ inputs.model }}
         UNIFI_OS_FIRMWARES: ${{ inputs.firmwares }}
+        PUBLISH_LATEST: ${{ inputs.latest }}
       run: '"${GITHUB_ACTION_PATH}/publish.bash"'
