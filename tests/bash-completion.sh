@@ -52,7 +52,7 @@ assert_contains "${upgrade}" --branch
 assert_contains "${upgrade}" --token-file
 assert_contains "${upgrade}" --timeout
 
-version=$(complete_udm_iptv udm-iptv upgrade --version 4.1.2 '')
+version=$(complete_udm_iptv udm-iptv upgrade --version 4.2.0 '')
 assert_excludes "${version}" --latest
 assert_excludes "${version}" --package
 assert_excludes "${version}" --pr

@@ -1,3 +1,11 @@
+udm-iptv (4.2.0) stable; urgency=low
+
+  * Add context-aware Bash completion for commands, options and local paths
+  * Load completions automatically in new UniFi OS SSH sessions
+  * Exercise both source and installed-package completion behavior in CI
+
+ -- Kaj Kowalski <info@kajkowalski.nl>  Mon, 31 Aug 2026 23:18:02 +0200
+
 udm-iptv (4.1.2) stable; urgency=medium
 
   * Expand diagnostics with package, firmware, kernel and systemd lifecycle

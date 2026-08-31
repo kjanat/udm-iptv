@@ -18,7 +18,7 @@ if command -v unifi-os >/dev/null 2>&1; then
 	exit 1
 fi
 
-UDM_IPTV_VERSION="${UDM_IPTV_VERSION:-4.1.2}"
+UDM_IPTV_VERSION="${UDM_IPTV_VERSION:-4.2.0}"
 UDM_IPTV_REPOSITORY="${UDM_IPTV_REPOSITORY:-kjanat/udm-iptv}"
 UDM_IPTV_STATE_DIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
 UDM_IPTV_RUN="${UDM_IPTV_RUN:-}"
