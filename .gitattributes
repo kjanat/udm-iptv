@@ -1,0 +1,6 @@
+completions/udm-iptv linguist-language=Shell
+.github/actions/**/*.bash linguist-language=Shell -linguist-vendored
+debian/config linguist-language=Shell -linguist-vendored
+debian/postinst linguist-language=Shell -linguist-vendored
+debian/postrm linguist-language=Shell -linguist-vendored
+debian/rules linguist-language=Makefile -linguist-vendored
