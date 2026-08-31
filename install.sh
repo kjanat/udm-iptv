@@ -74,7 +74,11 @@ check_installed_version() {
 
 service_failure() {
 	echo "error: udm-iptv was installed, but the service is not healthy: $1" >&2
-	systemctl status udm-iptv.service --no-pager >&2 || true
+	if command -v udm-iptv >/dev/null 2>&1; then
+		udm-iptv diagnose >&2 || systemctl status udm-iptv.service --no-pager >&2 || true
+	else
+		systemctl status udm-iptv.service --no-pager >&2 || true
+	fi
 	exit 1
 }
 

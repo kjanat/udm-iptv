@@ -138,6 +138,25 @@ log_config() {
 	docker exec "${name}" cat /etc/udm-iptv.conf
 }
 
+assert_diagnostics() {
+	local name=$1
+	local output
+	output=$(docker exec "${name}" udm-iptv diagnose 2>&1)
+	echo "${output}"
+	if ! grep -Fq '=== Package and System ===' <<<"${output}" \
+		|| ! grep -Fq "Package: udm-iptv ${current_version} (installed)" <<<"${output}" \
+		|| ! grep -Fq '=== Service State ===' <<<"${output}" \
+		|| ! grep -Fq 'Id=udm-iptv.service' <<<"${output}" \
+		|| ! grep -Fq 'UnitFileState=enabled' <<<"${output}" \
+		|| ! grep -Fq 'ActiveState=active' <<<"${output}" \
+		|| ! grep -Fq 'NRestarts=' <<<"${output}" \
+		|| ! grep -Fq '=== Pending Service Jobs ===' <<<"${output}" \
+		|| ! grep -Fq '=== Service Logs (current boot) ===' <<<"${output}"; then
+		report_error "production diagnostics are incomplete in ${name}"
+		return 1
+	fi
+}
+
 ensure_arm64() {
 	local image=$1
 	if docker run --rm --platform linux/arm64 "${image}" uname -m; then
@@ -458,6 +477,7 @@ log_config "${from_name}" "before package upgrade"
 docker exec "${from_name}" udm-iptv upgrade --package /tmp/udm-iptv.deb
 log_config "${from_name}" "after package upgrade"
 assert_version "${from_name}" "${current_version}"
+assert_diagnostics "${from_name}"
 
 docker exec "${from_name}" mkdir -p /etc/systemd/system/udm-iptv.service.d
 docker exec "${from_name}" sh -c \
@@ -474,8 +494,12 @@ set -e
 echo "${failed_install_output}"
 if [[ ${failed_install_status} -eq 0 ]] \
 	|| ! grep -Fq 'the service is not healthy' <<<"${failed_install_output}" \
+	|| ! grep -Fq '=== Service State ===' <<<"${failed_install_output}" \
+	|| ! grep -Fq 'Id=udm-iptv.service' <<<"${failed_install_output}" \
+	|| ! grep -Fq 'ExecMainStatus=1' <<<"${failed_install_output}" \
+	|| ! grep -Fq '=== Service Logs (current boot) ===' <<<"${failed_install_output}" \
 	|| grep -Fq 'Installation successful' <<<"${failed_install_output}"; then
-	report_error "installer reported success for a failed service in ${from_name}"
+	report_error "installer did not report complete diagnostics for a failed service in ${from_name}"
 	exit 1
 fi
 docker exec "${from_name}" rm /etc/systemd/system/udm-iptv.service.d/fail.conf
