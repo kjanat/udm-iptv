@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: udm-iptv\n"
 "Report-Msgid-Bugs-To: udm-iptv@packages.debian.org\n"
-"POT-Creation-Date: 2023-06-27 12:15+0000\n"
+"POT-Creation-Date: 2026-08-31 09:50+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -100,10 +100,19 @@ msgstr ""
 msgid "IGMP Proxy implementation:"
 msgstr ""
 
-#. Type: select
+#. Type: boolean
 #. Description
 #: ../templates:15001
-msgid "Enable quickleave for igmpproxy?"
+msgid "Enable quickleave for the IGMP proxy?"
+msgstr ""
+
+#. Type: boolean
+#. Description
+#: ../templates:15001
+msgid ""
+"Only enable quickleave when exactly one IPTV decoder is connected. With "
+"multiple decoders, changing channels on one decoder can otherwise interrupt "
+"the stream watched by another decoder."
 msgstr ""
 
 #. Type: boolean

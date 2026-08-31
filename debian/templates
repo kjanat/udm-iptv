@@ -72,9 +72,12 @@ Choices: ${choices}
 Default: improxy
 
 Template: udm-iptv/igmpproxy-quickleave
-_Description: Enable quickleave for igmpproxy?
 Type: boolean
-Default: true
+Default: false
+_Description: Enable quickleave for the IGMP proxy?
+ Only enable quickleave when exactly one IPTV decoder is connected. With
+ multiple decoders, changing channels on one decoder can otherwise interrupt
+ the stream watched by another decoder.
 
 Template: udm-iptv/igmpproxy-debug
 _Description: Enable igmpproxy debugging?

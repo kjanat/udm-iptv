@@ -245,8 +245,20 @@ report_runtime_kernel_limitation() {
 	echo "runtime health requires a device kernel with multicast routing"
 }
 
+service_journal() {
+	local name=$1
+	local started_at
+	started_at=$(docker exec "${name}" cat /run/udm-iptv-test/started-at)
+	docker exec "${name}" journalctl \
+		--since "${started_at}" \
+		-u udm-iptv.service \
+		--no-pager
+}
+
 assert_service_runtime_boundary() {
 	local name=$1
+	local active_state
+	local job
 	local n=0
 	local journal
 	local main_pid
@@ -254,14 +266,21 @@ assert_service_runtime_boundary() {
 	local observed_restarts
 	local restarts
 	while ((n < 180)); do
-		journal=$(docker exec "${name}" journalctl -b -u udm-iptv --no-pager)
+		journal=$(service_journal "${name}")
 		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv 2>/dev/null \
 			&& docker exec "${name}" test "$(docker exec "${name}" sh -c \
 				'command -v improxy')" = \
-				/usr/sbin/improxy \
-			&& grep -Fq "Starting IGMP Proxy" <<<"${journal}"; then
-			docker exec "${name}" systemctl is-enabled udm-iptv
-			if docker exec "${name}" systemctl is-active --quiet udm-iptv 2>/dev/null; then
+				/usr/sbin/improxy; then
+			active_state=$(docker exec "${name}" systemctl show \
+				--property ActiveState --value udm-iptv)
+			job=$(docker exec "${name}" systemctl show \
+				--property Job --value udm-iptv)
+			if [[ -n ${job} ]]; then
+				workflow_emit debug \
+					"Waiting for udm-iptv in ${name}: state=${active_state}, job=${job}, elapsed=${n}s"
+			elif [[ ${active_state} == active ]] \
+				&& grep -Fq "Starting IGMP Proxy" <<<"${journal}"; then
+				docker exec "${name}" systemctl is-enabled udm-iptv
 				main_pid=$(docker exec "${name}" systemctl show \
 					--property MainPID --value udm-iptv)
 				restarts=$(docker exec "${name}" systemctl show \
@@ -274,8 +293,7 @@ assert_service_runtime_boundary() {
 				if ! docker exec "${name}" systemctl is-active --quiet udm-iptv 2>/dev/null \
 					|| [[ ${observed_main_pid} != "${main_pid}" ]] \
 					|| [[ ${observed_restarts} != "${restarts}" ]]; then
-					journal=$(docker exec "${name}" \
-						journalctl -b -u udm-iptv --no-pager)
+					journal=$(service_journal "${name}")
 					if report_runtime_kernel_limitation "${journal}"; then
 						return 0
 					fi
@@ -284,14 +302,16 @@ assert_service_runtime_boundary() {
 					return 1
 				fi
 				docker exec "${name}" systemctl is-active udm-iptv
-			else
+				return 0
+			elif [[ ${active_state} == failed || ${active_state} == inactive ]]; then
 				if ! report_runtime_kernel_limitation "${journal}"; then
-					report_error "real proxy failed for an unexpected reason in ${name}"
+					report_error \
+						"real proxy is ${active_state} without a pending start job in ${name}"
 					dump "${name}"
 					return 1
 				fi
+				return 0
 			fi
-			return 0
 		fi
 		if ((n % 10 == 0)); then
 			workflow_emit debug "Waiting for udm-iptv in ${name}: elapsed=${n}s"
@@ -426,6 +446,8 @@ docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.conf
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv-restore
 docker exec "${from_name}" test ! -e /data/udm-iptv/udm-iptv-restore.service
 log_config "${from_name}" "after initial installation"
+docker exec "${from_name}" grep -Fqx \
+	'IPTV_IGMPPROXY_DISABLE_QUICKLEAVE="true"' /etc/udm-iptv.conf
 docker exec "${from_name}" cp /etc/udm-iptv.conf /data/udm-iptv/udm-iptv.conf.installed
 docker exec "${from_name}" cp /data/udm-iptv/debconf.preseed /data/udm-iptv/debconf.preseed.installed
 docker exec "${from_name}" udm-iptv persist
@@ -436,6 +458,31 @@ log_config "${from_name}" "before package upgrade"
 docker exec "${from_name}" udm-iptv upgrade --package /tmp/udm-iptv.deb
 log_config "${from_name}" "after package upgrade"
 assert_version "${from_name}" "${current_version}"
+
+docker exec "${from_name}" mkdir -p /etc/systemd/system/udm-iptv.service.d
+docker exec "${from_name}" sh -c \
+	'printf "[Service]\nExecStart=\nExecStart=/bin/false\n" >/etc/systemd/system/udm-iptv.service.d/fail.conf'
+docker exec "${from_name}" systemctl daemon-reload
+docker exec "${from_name}" systemctl restart udm-iptv.service || true
+set +e
+failed_install_output=$(docker exec \
+	-e DEBIAN_FRONTEND=noninteractive \
+	-e UDM_IPTV_SERVICE_START_TIMEOUT_SECONDS=2 \
+	"${from_name}" udm-iptv upgrade --force --package /tmp/udm-iptv.deb 2>&1)
+failed_install_status=$?
+set -e
+echo "${failed_install_output}"
+if [[ ${failed_install_status} -eq 0 ]] \
+	|| ! grep -Fq 'the service is not healthy' <<<"${failed_install_output}" \
+	|| grep -Fq 'Installation successful' <<<"${failed_install_output}"; then
+	report_error "installer reported success for a failed service in ${from_name}"
+	exit 1
+fi
+docker exec "${from_name}" rm /etc/systemd/system/udm-iptv.service.d/fail.conf
+docker exec "${from_name}" systemctl daemon-reload
+docker exec "${from_name}" systemctl reset-failed udm-iptv.service
+docker exec "${from_name}" systemctl restart udm-iptv.service
+assert_service_runtime_boundary "${from_name}"
 
 no_op_output=$(docker exec "${from_name}" \
 	udm-iptv upgrade --version "${current_version}")

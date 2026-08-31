@@ -7,7 +7,7 @@
 	"ruff": {},
 	"yaml": { "printWidth": 160 },
 	"plugins": [
-		"https://plugins.dprint.dev/kjanat/shfmt-1.0.0.wasm",
+		"https://plugins.dprint.dev/kjanat/shfmt-1.1.0.wasm",
 		"npm:@dprint/json@0.23.0",
 		"npm:@dprint/markdown@0.23.2",
 		"npm:@dprint/ruff@0.8.5",
