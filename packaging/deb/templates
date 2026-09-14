@@ -1,0 +1,9 @@
+Template: udm-iptv/profile
+Type: select
+Choices: BT (GB), Init7 (CH), KPN / XS4ALL / Freedom (NL), MagentaTV (DE), MEO (PT), PostTV (LU), Solcon (NL), Swisscom (CH), Telenor (NO), Tweak (NL), Vivo GVT (BR), Vivo SP (BR), Custom
+Choices-C: bt, init7, kpn, magentatv, meo, posttv, solcon, swisscom, telenor, tweak, vivogvt, vivo, custom
+Default: kpn
+_Description: IPTV provider profile:
+ Select the provider defaults to apply. Hardware-specific WAN and LAN interfaces
+ are detected on the console. Choose Custom to review every setting interactively
+ later with "udm-iptv configure".

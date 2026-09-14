@@ -1,0 +1,18 @@
+#!/bin/sh -e
+
+# shellcheck source=/dev/null
+. /usr/share/debconf/confmodule
+
+binary=/data/udm-iptv/bin/udm-iptv
+config=/data/udm-iptv/config.json
+legacy=/data/udm-iptv/legacy.conf
+
+db_get udm-iptv/profile
+profile=${RET:-kpn}
+db_stop
+
+if [ ! -e "${config}" ] && [ ! -e "${legacy}" ] && [ ! -e /etc/udm-iptv.conf ]; then
+	"${binary}" configure --profile "${profile}" --non-interactive
+fi
+
+exec "${binary}" install --force --non-interactive

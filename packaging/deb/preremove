@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = remove ] && [ -x /data/udm-iptv/bin/udm-iptv ]; then
+	/data/udm-iptv/bin/udm-iptv uninstall --keep-config
+fi

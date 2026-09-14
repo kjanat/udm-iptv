@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+state=/data/udm-iptv
+if [ -f /etc/udm-iptv.conf ] && [ ! -f "${state}/config.json" ]; then
+	mkdir -p "${state}"
+	cp /etc/udm-iptv.conf "${state}/legacy.conf"
+	chmod 0600 "${state}/legacy.conf"
+fi

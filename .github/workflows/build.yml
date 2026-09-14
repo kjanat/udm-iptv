@@ -1,41 +1,65 @@
 name: Build
 on: pull_request
 concurrency:
-  group: unifi-os-${{ github.event.pull_request.number }}-${{ github.workflow }}
+  group: build-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 permissions: { contents: read }
 jobs:
   build:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, 'skip ci')"
     steps:
       - name: Checkout Sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { path: udm-iptv }
-      - name: Setup Dependencies
-        run: sudo apt-get install devscripts debhelper build-essential
-      - name: Test DHCP Route Hook
-        working-directory: udm-iptv
-        run: sudo ./tests/udhcpc-hook.sh
-      - name: Test UniFi OS image publishing
-        working-directory: udm-iptv
-        run: ./tests/unifi-os-publish.sh
-      - name: Test Bash Completion
-        working-directory: udm-iptv
-        run: ./tests/bash-completion.sh
-      - name: Test Diagnostics
-        working-directory: udm-iptv
-        run: ./tests/diagnostics.sh
-      - name: Build Package
-        working-directory: udm-iptv
-        run: debuild -uc -us --lintian-opts --profile debian
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache-dependency-path: go.sum }
+      - name: Test Go
+        run: go test -race ./...
+      - name: Vet Go
+        run: go vet ./...
+      - name: Lint Go
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with: { version: latest }
+      - name: Check Go vulnerabilities
+        run: go tool govulncheck ./...
+      - name: Build release snapshot
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --snapshot --clean --skip=publish
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+      - name: Validate Debian scripts
+        run: |
+          sh -n packaging/deb/config packaging/deb/preinstall packaging/deb/postinstall packaging/deb/preremove packaging/deb/postremove
+          shellcheck packaging/deb/config packaging/deb/preinstall packaging/deb/postinstall packaging/deb/preremove packaging/deb/postremove
+      - name: Validate Debian package
+        run: |
+          package=$(find dist -maxdepth 1 -type f -name '*.deb' -print -quit)
+          package_name=$(dpkg-deb --field "${package}" Package)
+          architecture=$(dpkg-deb --field "${package}" Architecture)
+          dependencies=$(dpkg-deb --field "${package}" Depends)
+          test "${package_name}" = udm-iptv
+          test "${architecture}" = arm64
+          grep -Eq '(^|, )improxy(, |$)' <<<"${dependencies}"
+          grep -Eq '(^|, )iptables(, |$)' <<<"${dependencies}"
+          control=$(mktemp -d)
+          dpkg-deb --control "${package}" "${control}"
+          test -x "${control}/config"
+          test -x "${control}/preinst"
+          test -x "${control}/postinst"
+          test -x "${control}/prerm"
+          test -x "${control}/postrm"
+          test -f "${control}/templates"
+          grep -Fq "configure --profile \"\${profile}\" --non-interactive" "${control}/postinst"
+          dpkg-deb --contents "${package}" | grep -E '/data/udm-iptv/bin/udm-iptv$'
+          dpkg-deb --contents "${package}" | grep -E '/usr/share/doc/udm-iptv/copyright$'
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-artifacts
           if-no-files-found: error
           path: |
-            *.deb
-            *.build*
-            *.changes
-            *.dsc
+            dist/**/udm-iptv
+            dist/*.deb
+            dist/SHA256SUMS
