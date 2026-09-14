@@ -4,3 +4,4 @@ packaging/deb/postinstall linguist-language=Shell
 packaging/deb/postremove linguist-language=Shell
 packaging/deb/preinstall linguist-language=Shell
 packaging/deb/preremove linguist-language=Shell
+docs/vendor/** linguist-vendored

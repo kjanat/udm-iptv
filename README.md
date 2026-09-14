@@ -57,6 +57,8 @@ NAT destinations and multicast proxy source ranges are separate settings. This a
 
 Provider profiles are starting points. The form always exposes the generated values for review before saving them.
 
+Provider-specific sources and implementation notes are documented under [`docs/providers`](docs/providers), including the [KPN fibre specification](docs/providers/kpn.md).
+
 ## Development
 
 ```console
