@@ -301,12 +301,13 @@ fi
 
 unsafe_json=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.jsonl")
 unsafe_text="${test_dir}/output/udm-iptv-diagnostics-unsafe.txt"
+unsafe_ready=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.ready")
 ln -s "${test_dir}/symlink-target" "${unsafe_text}"
-if ${diagnostics} --worker 1 normal both "${unsafe_json}" "${unsafe_text}" - >/dev/null 2>&1; then
+if ${diagnostics} --worker 1 normal both "${unsafe_json}" "${unsafe_text}" - "${unsafe_ready}" >/dev/null 2>&1; then
 	echo 'diagnostics worker unexpectedly accepted a symlink output file' >&2
 	exit 1
 fi
-rm -f "${unsafe_json}" "${unsafe_text}"
+rm -f "${unsafe_json}" "${unsafe_text}" "${unsafe_ready}"
 
 capture_output=$(${diagnostics} --capture 1s)
 json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${capture_output}")
@@ -392,6 +393,39 @@ if [[ ${render_failure_completed} == false ]]; then
 fi
 grep -Fq "Text rendering failed. Structured diagnostics remain at: ${render_failure_json}" \
 	"${render_failure_text}"
+
+short_capture_output=$(UDM_IPTV_TEST_STARTUP_DELAY=3 ${diagnostics} --capture 1s --format text)
+short_capture_text=$(sed -n 's/^Share-ready text: //p' <<<"${short_capture_output}")
+[[ -n ${short_capture_text} ]]
+short_capture_completed=false
+for _ in {1..100}; do
+	if [[ -s ${short_capture_text} ]] && grep -Fq 'Capture completed:' "${short_capture_text}"; then
+		short_capture_completed=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${short_capture_completed} == false ]]; then
+	echo 'short text-only diagnostics capture did not survive delayed acknowledgement' >&2
+	exit 1
+fi
+grep -Fq 'Capture completed:' "${short_capture_text}"
+if compgen -G "${test_dir}/output/*.ready" >/dev/null; then
+	echo 'diagnostics capture left a readiness signal behind' >&2
+	exit 1
+fi
+
+failed_capture_dir="${test_dir}/failed-output"
+mkdir "${failed_capture_dir}"
+if UDM_IPTV_DIAGNOSTICS_DIR="${failed_capture_dir}" \
+	UDM_IPTV_MONOTONIC_FILE=/dev/null ${diagnostics} --capture 1s >/dev/null 2>&1; then
+	echo 'diagnostics capture unexpectedly started without a monotonic clock' >&2
+	exit 1
+fi
+if compgen -G "${failed_capture_dir}/*" >/dev/null; then
+	echo 'failed diagnostics startup left output or readiness files behind' >&2
+	exit 1
+fi
 
 slow_capture_output=$(UDM_IPTV_TEST_CURSOR_DELAY=3 ${diagnostics} --capture 1s --format json)
 slow_json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${slow_capture_output}")

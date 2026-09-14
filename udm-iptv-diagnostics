@@ -527,6 +527,7 @@ diagnostics_worker() {
 	json_output=$4
 	text_output=$5
 	journal_cursor=$6
+	ready_output=$7
 	case "${seconds}" in
 		"" | *[!0-9]*)
 			diagnostics_error "Invalid worker duration ${seconds}."
@@ -560,6 +561,13 @@ diagnostics_worker() {
 			return 2
 			;;
 	esac
+	case "${ready_output}" in
+		"${DIAGNOSTICS_DIR}"/udm-iptv-diagnostics-*.ready) ;;
+		*)
+			diagnostics_error "Refusing unsafe diagnostics readiness path ${ready_output}."
+			return 2
+			;;
+	esac
 	current_uid=$(id -u)
 	json_owner=$(stat -c %u "${json_output}" 2>/dev/null) || json_owner=
 	if [ ! -f "${json_output}" ] || [ -L "${json_output}" ] \
@@ -574,6 +582,12 @@ diagnostics_worker() {
 			diagnostics_error "Refusing diagnostics text output that is not a regular, owned file."
 			return 2
 		fi
+	fi
+	ready_owner=$(stat -c %u "${ready_output}" 2>/dev/null) || ready_owner=
+	if [ ! -f "${ready_output}" ] || [ -L "${ready_output}" ] \
+		|| [ "${ready_owner}" != "${current_uid}" ]; then
+		diagnostics_error "Refusing diagnostics readiness signal that is not a regular, owned file."
+		return 2
 	fi
 
 	umask 077
@@ -622,6 +636,7 @@ diagnostics_worker() {
 		diagnostics_snapshot "${verbosity}" false
 		diagnostics_section "Timeline"
 	} >>"${json_output}"
+	printf 'ready\n' >"${ready_output}"
 
 	case "${verbosity}" in
 		summary) interval=60 ;;
@@ -685,6 +700,7 @@ diagnostics_start_capture() {
 	umask 077
 	started_at=$(date -u '+%Y%m%dT%H%M%SZ')
 	json_output=$(mktemp "${DIAGNOSTICS_DIR}/udm-iptv-diagnostics-${started_at}-XXXXXX.jsonl")
+	ready_output=$(mktemp "${DIAGNOSTICS_DIR}/udm-iptv-diagnostics-${started_at}-XXXXXX.ready")
 	if [ "${format}" = json ]; then
 		text_output=-
 	else
@@ -700,16 +716,19 @@ diagnostics_start_capture() {
 	fi
 
 	nohup "$0" --worker "${seconds}" "${verbosity}" "${format}" \
-		"${json_output}" "${text_output}" "${journal_cursor}" </dev/null >/dev/null 2>&1 &
+		"${json_output}" "${text_output}" "${journal_cursor}" "${ready_output}" </dev/null >/dev/null 2>&1 &
 	worker_pid=$!
+	if [ -n "${UDM_IPTV_TEST_STARTUP_DELAY:-}" ]; then
+		sleep "${UDM_IPTV_TEST_STARTUP_DELAY}"
+	fi
 	attempt=0
 	while [ "${attempt}" -lt 20 ]; do
-		if grep -Fq '"name":"started"' "${json_output}"; then
+		if [ -s "${ready_output}" ]; then
 			break
 		fi
 		if ! kill -0 "${worker_pid}" 2>/dev/null; then
 			wait "${worker_pid}" 2>/dev/null || true
-			rm -f "${json_output}"
+			rm -f "${json_output}" "${ready_output}"
 			[ "${text_output}" = - ] || rm -f "${text_output}"
 			diagnostics_error "Diagnostics capture failed to start."
 			return 1
@@ -717,14 +736,15 @@ diagnostics_start_capture() {
 		attempt=$((attempt + 1))
 		sleep 0.1
 	done
-	if ! grep -Fq '"name":"started"' "${json_output}"; then
+	if [ ! -s "${ready_output}" ]; then
 		kill "${worker_pid}" 2>/dev/null || true
 		wait "${worker_pid}" 2>/dev/null || true
-		rm -f "${json_output}"
+		rm -f "${json_output}" "${ready_output}"
 		[ "${text_output}" = - ] || rm -f "${text_output}"
 		diagnostics_error "Diagnostics capture did not initialize in time."
 		return 1
 	fi
+	rm -f "${ready_output}"
 
 	echo "Diagnostics capture started in the background (PID ${worker_pid})."
 	echo "It will stop automatically after ${seconds} seconds."
@@ -764,7 +784,7 @@ diagnostics_once() {
 }
 
 if [ "${1:-}" = --worker ]; then
-	[ "$#" -eq 7 ] || {
+	[ "$#" -eq 8 ] || {
 		diagnostics_error "Invalid internal diagnostics worker invocation."
 		exit 2
 	}
