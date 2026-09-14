@@ -76,6 +76,26 @@ keep_data=$(complete_udm_iptv udm-iptv uninstall --keep-data '')
 assert_excludes "${keep_data}" --purge
 assert_excludes "${keep_data}" --keep-data
 
+diagnose=$(complete_udm_iptv udm-iptv diagnose '')
+assert_contains "${diagnose}" --capture
+assert_contains "${diagnose}" --format
+assert_contains "${diagnose}" --verbosity
+
+capture=$(complete_udm_iptv udm-iptv diagnose --capture '')
+assert_contains "${capture}" 30s
+assert_contains "${capture}" 5m
+assert_contains "${capture}" 1h
+
+format=$(complete_udm_iptv udm-iptv diagnose --format '')
+assert_contains "${format}" text
+assert_contains "${format}" json
+assert_contains "${format}" both
+
+verbosity=$(complete_udm_iptv udm-iptv diagnose --verbosity '')
+assert_contains "${verbosity}" summary
+assert_contains "${verbosity}" normal
+assert_contains "${verbosity}" debug
+
 after_separator=$(complete_udm_iptv udm-iptv upgrade -- '')
 [[ -z ${after_separator} ]] || {
 	printf 'expected no completions after --, got:\n%s\n' "${after_separator}" >&2

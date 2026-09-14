@@ -23,6 +23,9 @@ jobs:
       - name: Test Bash Completion
         working-directory: udm-iptv
         run: ./tests/bash-completion.sh
+      - name: Test Diagnostics
+        working-directory: udm-iptv
+        run: ./tests/diagnostics.sh
       - name: Build Package
         working-directory: udm-iptv
         run: debuild -uc -us --lintian-opts --profile debian
