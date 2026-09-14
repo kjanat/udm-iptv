@@ -49,7 +49,7 @@ EOF
 
 cat >"${test_dir}/bin/hostname" <<'EOF'
 #!/bin/sh
-echo 'private-router-name'
+echo "${UDM_IPTV_TEST_HOSTNAME:-private-router-name}"
 EOF
 
 cat >"${test_dir}/bin/uname" <<'EOF'
@@ -86,7 +86,7 @@ case "$*" in
     echo '38: iptv inet 10.207.100.210/20 brd 10.207.111.255 scope global iptv'
     ;;
 '-4 route get 1.1.1.1')
-    echo '1.1.1.1 via 145.23.42.1 dev ppp0 src 145.23.42.7'
+    echo "1.1.1.1 via 145.23.42.1 dev ppp0 src ${UDM_IPTV_TEST_DEVICE_ADDRESS:-145.23.42.7}"
     ;;
 '-4 addr show dev iptv')
     printf '38: iptv: <UP> mtu 1500 link/ether aa:bb:cc:dd:ee:ff\n    inet 10.207.100.210/20\n'
@@ -112,8 +112,13 @@ EOF
 
 cat >"${test_dir}/bin/journalctl" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >>"${UDM_IPTV_JOURNAL_CALLS}"
 case " $* " in
-*' --since '*)
+*' --show-cursor '*)
+	echo '-- cursor: s=diagnostics-test-cursor'
+	exit
+	;;
+*' --after-cursor=s=diagnostics-test-cursor '*)
 	awk 'BEGIN {
 		for (i = 0; i < 2500; i++)
 			printf "provider event %d abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n", i
@@ -121,23 +126,20 @@ case " $* " in
 	exit
 	;;
 esac
-cat <<'LOGS'
-private-router-name udhcpc: lease of 10.207.100.210 obtained
+cat <<LOGS
+${UDM_IPTV_TEST_HOSTNAME:-private-router-name} udhcpc: lease of 10.207.100.210 obtained
 udhcpc: lease of 145.23.42.9 obtained; subscriber address 145.23.42.7 and static address 203.0.113.17
 interface aa:bb:cc:dd:ee:ff joined 224.0.250.64 from provider 195.121.94.212
+provider 11.2.3.45 observed assigned ${UDM_IPTV_TEST_DEVICE_ADDRESS:-145.23.42.7}
+udm-iptv.service remains active
 LOGS
 EOF
 
 cat >"${test_dir}/bin/date" <<'EOF'
 #!/bin/sh
 if [ "$#" -eq 1 ] && [ "$1" = +%s ]; then
-	if [ ! -e "${UDM_IPTV_DATE_STATE}" ]; then
-		: >"${UDM_IPTV_DATE_STATE}"
-		echo 2000000000
-	else
-		echo 1
-	fi
-	exit
+	echo 'diagnostics unexpectedly used the wall clock for a capture boundary' >&2
+	exit 1
 fi
 exec "${UDM_IPTV_REAL_DATE}" "$@"
 EOF
@@ -158,7 +160,7 @@ export UDM_IPTV_CONFIG_FILE="${test_dir}/config"
 export UDM_IPTV_DIAGNOSTICS_DIR="${test_dir}/output"
 export UDM_IPTV_PROC_DIR="${test_dir}/proc"
 export UDM_IPTV_PROXY_CONFIG_FILE="${test_dir}/proxy-config"
-export UDM_IPTV_DATE_STATE="${test_dir}/date-state"
+export UDM_IPTV_JOURNAL_CALLS="${test_dir}/journal-calls"
 export UDM_IPTV_REAL_DATE="${real_date}"
 export UDM_IPTV_REAL_JQ="${real_jq}"
 
@@ -210,6 +212,17 @@ fi
 debug=$(${diagnostics} --verbosity debug)
 grep -Fq '=== Generated Proxy Configuration ===' <<<"${debug}"
 grep -Fq 'upstream iptv' <<<"${debug}"
+
+collision_text=$(UDM_IPTV_TEST_HOSTNAME=iptv \
+	UDM_IPTV_TEST_DEVICE_ADDRESS=1.2.3.4 ${diagnostics})
+grep -Fq 'udm-iptv.service remains active' <<<"${collision_text}"
+grep -Fq '11.2.3.45' <<<"${collision_text}"
+grep -Fq '<router-hostname> udhcpc' <<<"${collision_text}"
+grep -Fq 'assigned <device-address>' <<<"${collision_text}"
+if grep -Fq 'assigned 1.2.3.4' <<<"${collision_text}"; then
+	echo 'diagnostics leaked an assigned address during boundary-aware redaction' >&2
+	exit 1
+fi
 
 json=$(${diagnostics} --format json)
 jq -e -s '
@@ -283,6 +296,11 @@ jq -e -s '
 	and (last | .kind == "capture" and .name == "completed")
 	and (last | .duration_seconds == 1 and .verbosity == "normal" and .format == "both")
 ' "${json_file}" >/dev/null
+grep -Fq -- '--after-cursor=s=diagnostics-test-cursor' "${UDM_IPTV_JOURNAL_CALLS}"
+if grep -Fq -- '--since' "${UDM_IPTV_JOURNAL_CALLS}"; then
+	echo 'diagnostics capture unexpectedly selected logs using wall-clock time' >&2
+	exit 1
+fi
 grep -Fq 'Capture completed:' "${text_file}"
 json_mode=$(stat -c %a "${json_file}")
 text_mode=$(stat -c %a "${text_file}")
