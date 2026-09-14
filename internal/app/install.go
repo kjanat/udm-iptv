@@ -139,7 +139,7 @@ func (application *Application) install(ctx context.Context, replace bool) error
 	if err := removeObsoleteLegacyFiles(application.StateDir); err != nil {
 		return err
 	}
-	return writef(application.Out, "Installed udm-iptv %s in %s.\n", application.Version, application.StateDir)
+	return writef(application.Out, "udm-iptv %s has started and is enabled to start after reboot. Installed in %s.\n", application.Version, application.StateDir)
 }
 
 func removeObsoleteLegacyFiles(stateDir string) error {
