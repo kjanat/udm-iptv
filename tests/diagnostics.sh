@@ -64,6 +64,9 @@ EOF
 
 cat >"${test_dir}/bin/hostname" <<'EOF'
 #!/bin/sh
+if [ -n "${UDM_IPTV_TEST_SLOW_HOSTNAME:-}" ]; then
+	sleep "${UDM_IPTV_TEST_SLOW_HOSTNAME}"
+fi
 echo "${UDM_IPTV_TEST_HOSTNAME:-private-router-name}"
 EOF
 
@@ -186,6 +189,9 @@ cat >"${test_dir}/bin/jq" <<'EOF'
 if [ "${UDM_IPTV_TEST_FAIL_RENDER:-false}" = true ] && [ "${1:-}" = -r ]; then
 	printf 'partial rendered diagnostics\n'
 	exit 1
+fi
+if [ "${UDM_IPTV_TEST_STALL_RENDER:-false}" = true ] && [ "${1:-}" = -r ]; then
+	exec sleep 30
 fi
 exec "${UDM_IPTV_REAL_JQ}" "$@"
 EOF
@@ -349,6 +355,7 @@ worker_pid=$(sed -n 's/^Diagnostics capture started in the background (PID \([0-
 [[ -n ${json_file} && -n ${text_file} && -n ${worker_pid} ]]
 [[ -f ${json_file} && ! -L ${json_file} ]]
 [[ -f ${text_file} && ! -L ${text_file} ]]
+grep -Fq "ends with 'Capture completed' or 'Capture timeout'" <<<"${capture_output}"
 kill -HUP "${worker_pid}"
 printf '198.51.100.77\n' >"${UDM_IPTV_ADDRESS_STATE}"
 
@@ -433,7 +440,7 @@ short_capture_text=$(sed -n 's/^Share-ready text: //p' <<<"${short_capture_outpu
 [[ -n ${short_capture_text} ]]
 short_capture_completed=false
 for _ in {1..100}; do
-	if [[ -s ${short_capture_text} ]] && grep -Fq 'Capture completed:' "${short_capture_text}"; then
+	if [[ -s ${short_capture_text} ]] && grep -Eq '^Capture (completed|timeout):' "${short_capture_text}"; then
 		short_capture_completed=true
 		break
 	fi
@@ -443,7 +450,7 @@ if [[ ${short_capture_completed} == false ]]; then
 	echo 'short text-only diagnostics capture did not survive delayed acknowledgement' >&2
 	exit 1
 fi
-grep -Fq 'Capture completed:' "${short_capture_text}"
+grep -Eq '^Capture (completed|timeout):' "${short_capture_text}"
 if compgen -G "${test_dir}/output/*.ready" >/dev/null; then
 	echo 'diagnostics capture left a readiness signal behind' >&2
 	exit 1
@@ -465,6 +472,78 @@ if compgen -G "${interrupted_dir}/*.ready" >/dev/null; then
 	echo 'interrupted diagnostics launcher left a readiness signal behind' >&2
 	exit 1
 fi
+
+early_interrupted_dir="${test_dir}/early-interrupted-output"
+mkdir "${early_interrupted_dir}"
+UDM_IPTV_DIAGNOSTICS_DIR="${early_interrupted_dir}" UDM_IPTV_TEST_CURSOR_DELAY=3 \
+	${diagnostics} --capture 2s --format both >/dev/null 2>&1 &
+launcher_pid=$!
+for _ in {1..40}; do
+	compgen -G "${early_interrupted_dir}/*.txt" >/dev/null && break
+	sleep 0.05
+done
+compgen -G "${early_interrupted_dir}/*.txt" >/dev/null
+kill -TERM "${launcher_pid}"
+wait "${launcher_pid}" 2>/dev/null || true
+if compgen -G "${early_interrupted_dir}/*" >/dev/null; then
+	echo 'diagnostics launcher interrupted before its worker started left files behind' >&2
+	ls "${early_interrupted_dir}" >&2
+	exit 1
+fi
+
+startup_interrupted_dir="${test_dir}/startup-interrupted-output"
+mkdir "${startup_interrupted_dir}"
+UDM_IPTV_DIAGNOSTICS_DIR="${startup_interrupted_dir}" UDM_IPTV_TEST_SLOW_HOSTNAME=2 \
+	UDM_IPTV_TEST_STARTUP_DELAY=0.5 ${diagnostics} --capture 2s --format json >/dev/null 2>&1 &
+launcher_pid=$!
+for _ in {1..100}; do
+	compgen -G "${startup_interrupted_dir}/*.ready" >/dev/null && break
+	sleep 0.05
+done
+compgen -G "${startup_interrupted_dir}/*.ready" >/dev/null
+sleep 0.2
+kill -TERM "${launcher_pid}"
+wait "${launcher_pid}" 2>/dev/null || true
+startup_interrupted_json=$(compgen -G "${startup_interrupted_dir}/*.jsonl")
+[[ -n ${startup_interrupted_json} ]]
+startup_interrupted_finished=false
+for _ in {1..100}; do
+	if jq -e -s 'last | .kind == "capture" and (.name == "completed" or .name == "timeout")' \
+		"${startup_interrupted_json}" >/dev/null 2>&1; then
+		startup_interrupted_finished=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${startup_interrupted_finished} == false ]]; then
+	echo 'diagnostics capture was lost when its launcher was interrupted during worker startup' >&2
+	exit 1
+fi
+if compgen -G "${startup_interrupted_dir}/*.ready" >/dev/null \
+	|| compgen -G "${startup_interrupted_dir}/*.collector-timeout" >/dev/null; then
+	echo 'diagnostics worker left startup artifacts behind after its launcher was interrupted' >&2
+	ls "${startup_interrupted_dir}" >&2
+	exit 1
+fi
+
+stalled_render_output=$(UDM_IPTV_TEST_STALL_RENDER=true ${diagnostics} --capture 60s --format text --verbosity debug)
+stalled_render_text=$(sed -n 's/^Share-ready text: //p' <<<"${stalled_render_output}")
+stalled_render_pid=$(sed -n 's/^Diagnostics capture started in the background (PID \([0-9][0-9]*\)).$/\1/p' <<<"${stalled_render_output}")
+[[ -n ${stalled_render_text} && -n ${stalled_render_pid} ]]
+kill -TERM "${stalled_render_pid}"
+for _ in {1..200}; do
+	kill -0 "${stalled_render_pid}" 2>/dev/null || break
+	sleep 0.1
+done
+if kill -0 "${stalled_render_pid}" 2>/dev/null; then
+	echo 'diagnostics worker interrupted early stayed blocked in a stalled renderer' >&2
+	kill -KILL "${stalled_render_pid}" 2>/dev/null || true
+	exit 1
+fi
+grep -Fq 'Text rendering failed.' "${stalled_render_text}"
+stalled_render_json=$(sed -n 's/^Text rendering failed. Structured diagnostics remain at: //p' "${stalled_render_text}")
+[[ -n ${stalled_render_json} && -f ${stalled_render_json} ]]
+jq -e -s 'last | .kind == "capture" and .name == "interrupted"' "${stalled_render_json}" >/dev/null
 
 failed_capture_dir="${test_dir}/failed-output"
 mkdir "${failed_capture_dir}"

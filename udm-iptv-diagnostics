@@ -714,11 +714,8 @@ diagnostics_worker() {
 			case "${now}" in
 				"" | *[!0-9]*) ;;
 				*)
-					render_deadline=$((now + 2000))
-					if [ "${DIAGNOSTICS_CAPTURE_DEADLINE}" -lt "${render_deadline}" ]; then
-						DIAGNOSTICS_CAPTURE_DEADLINE=${render_deadline}
-						export DIAGNOSTICS_CAPTURE_DEADLINE
-					fi
+					DIAGNOSTICS_CAPTURE_DEADLINE=$((now + 2000))
+					export DIAGNOSTICS_CAPTURE_DEADLINE
 					;;
 			esac
 			# Rendering failures are handled explicitly so the JSONL source is retained.
@@ -869,9 +866,24 @@ diagnostics_start_capture() {
 	ready_output=$(mktemp "${DIAGNOSTICS_DIR}/udm-iptv-diagnostics-${started_at}-XXXXXX.ready")
 	timeout_marker=$(mktemp "${DIAGNOSTICS_DIR}/udm-iptv-diagnostics-${started_at}-XXXXXX.collector-timeout")
 	worker_started=false
+	text_output=-
 	cleanup_capture_launcher() {
-		rm -f "${ready_output}"
-		[ "${worker_started}" = true ] || rm -f "${timeout_marker}"
+		if [ "${worker_started}" = true ]; then
+			attempt=0
+			while [ "${attempt}" -lt 20 ] && [ ! -s "${ready_output}" ] \
+				&& kill -0 "${worker_pid}" 2>/dev/null; do
+				attempt=$((attempt + 1))
+				sleep 0.1
+			done
+			if [ -s "${ready_output}" ]; then
+				rm -f "${ready_output}"
+				return 0
+			fi
+			kill "${worker_pid}" 2>/dev/null || true
+			wait "${worker_pid}" 2>/dev/null || true
+		fi
+		rm -f "${json_output}" "${ready_output}" "${timeout_marker}"
+		[ "${text_output}" = - ] || rm -f "${text_output}"
 	}
 	trap 'cleanup_capture_launcher' EXIT
 	trap 'exit 129' HUP
@@ -946,7 +958,7 @@ diagnostics_start_capture() {
 			return 2
 			;;
 	esac
-	echo "The final file ends with 'Capture completed'. Review it before posting it publicly."
+	echo "The final file ends with 'Capture completed' or 'Capture timeout'. Review it before posting it publicly."
 }
 
 diagnostics_once() {
