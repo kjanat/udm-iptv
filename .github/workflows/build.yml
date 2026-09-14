@@ -41,8 +41,8 @@ jobs:
           dependencies=$(dpkg-deb --field "${package}" Depends)
           test "${package_name}" = udm-iptv
           test "${architecture}" = arm64
-          rg -q '(^|, )improxy(, |$)' <<<"${dependencies}"
-          rg -q '(^|, )iptables(, |$)' <<<"${dependencies}"
+          grep -Eq '(^|, )improxy(, |$)' <<<"${dependencies}"
+          grep -Eq '(^|, )iptables(, |$)' <<<"${dependencies}"
           control=$(mktemp -d)
           dpkg-deb --control "${package}" "${control}"
           test -x "${control}/config"
@@ -51,9 +51,9 @@ jobs:
           test -x "${control}/prerm"
           test -x "${control}/postrm"
           test -f "${control}/templates"
-          rg -Fq 'configure --profile "${profile}" --non-interactive' "${control}/postinst"
-          dpkg-deb --contents "${package}" | rg '/data/udm-iptv/bin/udm-iptv$'
-          dpkg-deb --contents "${package}" | rg '/usr/share/doc/udm-iptv/copyright$'
+          grep -Fq "configure --profile \"\${profile}\" --non-interactive" "${control}/postinst"
+          dpkg-deb --contents "${package}" | grep -E '/data/udm-iptv/bin/udm-iptv$'
+          dpkg-deb --contents "${package}" | grep -E '/usr/share/doc/udm-iptv/copyright$'
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
