@@ -12,9 +12,6 @@ profile=${RET:-kpn}
 db_stop
 
 if [ ! -e "${config}" ] && [ ! -e "${legacy}" ] && [ ! -e /etc/udm-iptv.conf ]; then
-	if [ "${profile}" = custom ]; then
-		exec "${binary}" install --force
-	fi
 	"${binary}" configure --profile "${profile}" --non-interactive
 fi
 

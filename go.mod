@@ -9,6 +9,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/coreos/go-iptables v0.8.0
 	github.com/coreos/go-systemd/v22 v22.7.0
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/go-github/v80 v80.0.0
 	github.com/spf13/cobra v1.10.2
 	github.com/vishvananda/netlink v1.3.1
@@ -29,7 +30,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect

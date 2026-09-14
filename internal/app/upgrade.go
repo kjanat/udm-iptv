@@ -85,15 +85,7 @@ func (application *Application) upgrade(ctx context.Context, options upgradeOpti
 		return writef(application.Out, "udm-iptv %s is already installed. Use --force to reinstall.\n", version)
 	}
 	assetName := "udm-iptv-linux-" + runtime.GOARCH
-	assetURL, checksumURL := "", ""
-	for _, asset := range release.Assets {
-		switch asset.GetName() {
-		case assetName:
-			assetURL = asset.GetBrowserDownloadURL()
-		case "SHA256SUMS":
-			checksumURL = asset.GetBrowserDownloadURL()
-		}
-	}
+	assetURL, checksumURL := releaseAssetURLs(release, assetName)
 	if assetURL == "" || checksumURL == "" {
 		return fmt.Errorf("release %s does not contain %s and SHA256SUMS", release.GetTagName(), assetName)
 	}
@@ -137,6 +129,19 @@ func (application *Application) upgrade(ctx context.Context, options upgradeOpti
 	return writef(application.Out, "Upgraded udm-iptv to %s.\n", version)
 }
 
+func releaseAssetURLs(release *github.RepositoryRelease, binaryName string) (string, string) {
+	binaryURL, checksumURL := "", ""
+	for _, asset := range release.Assets {
+		switch asset.GetName() {
+		case binaryName:
+			binaryURL = asset.GetURL()
+		case "SHA256SUMS":
+			checksumURL = asset.GetURL()
+		}
+	}
+	return binaryURL, checksumURL
+}
+
 type bearerTransport struct {
 	token string
 	base  http.RoundTripper
@@ -155,6 +160,10 @@ func download(ctx context.Context, client *http.Client, url, target string, mode
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
+	}
+	if request.URL.Hostname() == "api.github.com" {
+		request.Header.Set("Accept", "application/octet-stream")
+		request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	}
 	response, err := client.Do(request)
 	if err != nil {

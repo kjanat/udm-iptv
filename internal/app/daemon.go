@@ -199,11 +199,21 @@ func (application *Application) startDHCP(ctx context.Context, value config.Conf
 				continue
 			}
 			addresses, err := link.Addrs()
-			if err == nil && len(addresses) > 0 {
+			if err == nil && hasIPv4Address(addresses) {
 				return clientDone, nil
 			}
 		}
 	}
+}
+
+func hasIPv4Address(addresses []net.Addr) bool {
+	for _, address := range addresses {
+		raw, _, found := strings.Cut(address.String(), "/")
+		if found && net.ParseIP(raw).To4() != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func configureGracefulStop(command *exec.Cmd) {
@@ -349,10 +359,25 @@ func parseUint(value any) uint64 {
 	switch typed := value.(type) {
 	case uint64:
 		return typed
+	case uint32:
+		return uint64(typed)
+	case uint:
+		return uint64(typed)
+	case int:
+		if typed >= 0 {
+			return uint64(typed)
+		}
+	case int32:
+		if typed >= 0 {
+			return uint64(typed)
+		}
+	case int64:
+		if typed >= 0 {
+			return uint64(typed)
+		}
 	case string:
 		parsed, _ := strconv.ParseUint(typed, 10, 64)
 		return parsed
-	default:
-		return 0
 	}
+	return 0
 }

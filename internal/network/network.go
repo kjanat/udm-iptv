@@ -36,15 +36,19 @@ func EnsureLink(value config.Config) (netlink.Link, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find WAN interface %s: %w", value.WAN.Interface, err)
 	}
-	if existing, lookupErr := netlink.LinkByName(value.WAN.VLANInterface); lookupErr == nil {
-		vlan, ok := existing.(*netlink.Vlan)
-		if !ok || vlan.VlanId != value.WAN.VLAN || vlan.ParentIndex != parent.Attrs().Index {
-			return nil, fmt.Errorf("interface %s already exists with a different configuration", value.WAN.VLANInterface)
+	existing, lookupErr := netlink.LinkByName(value.WAN.VLANInterface)
+	if lookupErr == nil {
+		if _, ok := existing.(*netlink.Vlan); !ok {
+			return nil, fmt.Errorf("interface %s already exists and is not a VLAN", value.WAN.VLANInterface)
 		}
-		if err := applyMAC(existing, value.WAN.VLANMAC); err != nil {
-			return nil, err
+		if err := netlink.LinkDel(existing); err != nil {
+			return nil, fmt.Errorf("replace managed VLAN interface %s: %w", value.WAN.VLANInterface, err)
 		}
-		return existing, netlink.LinkSetUp(existing)
+	} else {
+		var notFound netlink.LinkNotFoundError
+		if !errors.As(lookupErr, &notFound) {
+			return nil, fmt.Errorf("inspect VLAN interface %s: %w", value.WAN.VLANInterface, lookupErr)
+		}
 	}
 	attributes := netlink.NewLinkAttrs()
 	attributes.Name = value.WAN.VLANInterface
@@ -199,7 +203,7 @@ func ApplyLease(lease Lease, allowDefaultRoute bool) error {
 		}
 		matching := false
 		for _, current := range addresses {
-			if current.IPNet.String() == address.IPNet.String() {
+			if sameAddress(current, *address) {
 				matching = true
 				break
 			}
@@ -247,6 +251,15 @@ func ApplyLease(lease Lease, allowDefaultRoute bool) error {
 		}
 	}
 	return nil
+}
+
+func sameAddress(left, right netlink.Addr) bool {
+	if left.IP == nil || right.IP == nil || !left.IP.Equal(right.IP) {
+		return false
+	}
+	leftBits, leftSize := left.Mask.Size()
+	rightBits, rightSize := right.Mask.Size()
+	return leftBits == rightBits && leftSize == rightSize
 }
 
 func flushDHCPRoutes(linkIndex int) error {

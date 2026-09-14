@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -146,5 +147,66 @@ func TestNATAndProxyRangesAreIndependent(t *testing.T) {
 	value.Proxy.SourceRanges = []string{"198.51.100.0/24"}
 	if reflect.DeepEqual(value.WAN.NATDestinations, value.Proxy.SourceRanges) {
 		t.Fatal("NAT destinations and proxy sources must be independent")
+	}
+}
+
+func TestImportLegacyNormalizesHostDestinations(t *testing.T) {
+	t.Parallel()
+	legacy := filepath.Join(t.TempDir(), "udm-iptv.conf")
+	content := `IPTV_WAN_INTERFACE="eth8"
+IPTV_WAN_VLAN="0"
+IPTV_WAN_DHCP="false"
+IPTV_WAN_DHCP_OPTIONS=""
+IPTV_WAN_RANGES="224.0.0.0/4 93.91.111.0/24 148.122.7.125"
+IPTV_LAN_INTERFACES="br0"
+IPTV_IGMPPROXY_PROGRAM="improxy"
+IPTV_IGMPPROXY_IGMP_VERSION="3"
+`
+	if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := ImportLegacy(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value.WAN.NATDestinations[1]; got != "148.122.7.125/32" {
+		t.Fatalf("normalized destination = %q", got)
+	}
+	if value.Profile != "telenor" {
+		t.Fatalf("profile = %q, want telenor", value.Profile)
+	}
+	if reflect.DeepEqual(value.WAN.NATDestinations, value.Proxy.SourceRanges) {
+		t.Fatal("known legacy profile kept proxy sources in NAT destinations")
+	}
+	if !slices.Contains(value.Proxy.SourceRanges, "224.0.0.0/4") {
+		t.Fatalf("Telenor proxy sources = %q", value.Proxy.SourceRanges)
+	}
+}
+
+func TestImportLegacyPreservesDefaultRouteFallback(t *testing.T) {
+	t.Parallel()
+	for name, noGateway := range map[string]string{"default": "", "explicit opt-out": "eth8"} {
+		t.Run(name, func(t *testing.T) {
+			legacy := filepath.Join(t.TempDir(), "udm-iptv.conf")
+			content := `IPTV_WAN_INTERFACE="eth8"
+IPTV_WAN_VLAN="4"
+IPTV_WAN_DHCP="true"
+IPTV_WAN_RANGES="213.75.0.0/16"
+IPTV_LAN_INTERFACES="br0"
+IPTV_IGMPPROXY_PROGRAM="improxy"
+IPTV_IGMPPROXY_IGMP_VERSION="3"
+NO_GATEWAY="` + noGateway + `"
+`
+			if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			value, err := ImportLegacy(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.WAN.AllowDefaultRoute != (noGateway == "") {
+				t.Fatalf("allowDefaultRoute = %t for NO_GATEWAY=%q", value.WAN.AllowDefaultRoute, noGateway)
+			}
+		})
 	}
 }

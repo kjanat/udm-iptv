@@ -2,12 +2,20 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/godbus/dbus/v5"
+	"github.com/google/go-github/v80/github"
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
@@ -55,6 +63,53 @@ func TestVerifyChecksum(t *testing.T) {
 	}
 }
 
+func TestReleaseAssetsUseAuthenticatedAPIURLs(t *testing.T) {
+	t.Parallel()
+	release := &github.RepositoryRelease{Assets: []*github.ReleaseAsset{
+		{Name: github.Ptr("udm-iptv-linux-arm64"), URL: github.Ptr("https://api.github.com/repos/kjanat/udm-iptv/releases/assets/1"), BrowserDownloadURL: github.Ptr("https://github.com/kjanat/udm-iptv/releases/download/v1/udm-iptv-linux-arm64")},
+		{Name: github.Ptr("SHA256SUMS"), URL: github.Ptr("https://api.github.com/repos/kjanat/udm-iptv/releases/assets/2"), BrowserDownloadURL: github.Ptr("https://github.com/kjanat/udm-iptv/releases/download/v1/SHA256SUMS")},
+	}}
+	binary, checksums := releaseAssetURLs(release, "udm-iptv-linux-arm64")
+	if binary != release.Assets[0].GetURL() || checksums != release.Assets[1].GetURL() {
+		t.Fatalf("release asset URLs = %q, %q", binary, checksums)
+	}
+}
+
+func TestReleaseAssetDownloadScopesAuthentication(t *testing.T) {
+	t.Parallel()
+	var requests []*http.Request
+	client := &http.Client{Transport: &bearerTransport{
+		token: "test-token",
+		base: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests = append(requests, request)
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("asset")), Header: make(http.Header), Request: request}, nil
+		}),
+	}}
+	target := filepath.Join(t.TempDir(), "asset")
+	if err := download(context.Background(), client, "https://api.github.com/repos/kjanat/udm-iptv/releases/assets/1", target, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := requests[0].Header.Get("Authorization"); got != "Bearer test-token" {
+		t.Fatalf("API authorization header = %q", got)
+	}
+	if got := requests[0].Header.Get("Accept"); got != "application/octet-stream" {
+		t.Fatalf("API accept header = %q", got)
+	}
+	unrelated, _ := http.NewRequest(http.MethodGet, "https://example.com/asset", nil)
+	if _, err := client.Transport.RoundTrip(unrelated); err != nil {
+		t.Fatal(err)
+	}
+	if got := requests[1].Header.Get("Authorization"); got != "" {
+		t.Fatalf("token leaked to unrelated host: %q", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
 func TestRenderCompletedEvent(t *testing.T) {
 	t.Parallel()
 	output := renderEvent(diagnosticEvent{Type: "completed", Message: "Capture reached its deadline."})
@@ -90,14 +145,98 @@ func TestCaptureModelRecognizesFailure(t *testing.T) {
 	}
 }
 
+func TestCaptureModelRecognizesTimeout(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "capture.txt")
+	if err := os.WriteFile(path, []byte("Capture timed out: collector stalled\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	model := newCaptureModel(path, time.Time{}, 0)
+	updated, _ := model.Update(captureTick(time.Now()))
+	result := updated.(captureModel)
+	if !result.failed {
+		t.Fatal("timed-out capture was not recognized")
+	}
+}
+
+func TestCollectorsShareCaptureDeadline(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	release := make(chan struct{})
+	started := time.Now()
+	_, err := collectWithin(ctx, func() (string, error) {
+		<-release
+		return "late", nil
+	})
+	close(release)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("collector error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("collector exceeded shared deadline by %s", elapsed)
+	}
+}
+
+func TestJournalCollectionIsBoundedAtSource(t *testing.T) {
+	t.Parallel()
+	arguments := journalArguments("s=cursor", 10_000)
+	want := []string{"-n", "10000", "--after-cursor", "s=cursor"}
+	for _, value := range want {
+		if !slices.Contains(arguments, value) {
+			t.Fatalf("journal arguments %q do not contain %q", arguments, value)
+		}
+	}
+}
+
+func TestDHCPReadinessRequiresIPv4(t *testing.T) {
+	t.Parallel()
+	if hasIPv4Address([]net.Addr{&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)}}) {
+		t.Fatal("link-local IPv6 address satisfied DHCP readiness")
+	}
+	if !hasIPv4Address([]net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.2"), Mask: net.CIDRMask(24, 32)}}) {
+		t.Fatal("DHCP-assigned IPv4 address did not satisfy readiness")
+	}
+}
+
+func TestParseUintHandlesSystemdRestartCounter(t *testing.T) {
+	t.Parallel()
+	if got := parseUint(uint32(7)); got != 7 {
+		t.Fatalf("parseUint(uint32(7)) = %d", got)
+	}
+}
+
 func TestWANInterfaceForBoard(t *testing.T) {
 	t.Parallel()
-	for board, want := range map[string]string{
-		"UDM": "eth4", "udmpro": "eth8", "UDMPROSE": "eth8", "UDR7": "eth3", "UCGF": "eth6",
+	for board, want := range map[string][]string{
+		"UDM": {"eth4"}, "udmpro": {"eth8", "eth9"}, "UDMPROSE": {"eth8", "eth9"},
+		"UDR7": {"eth3", "eth4", "eth2"}, "UCGF": {"eth6", "eth4"},
 	} {
-		if got := wanInterfaceForBoard(board); got != want {
-			t.Errorf("wanInterfaceForBoard(%q) = %q, want %q", board, got, want)
+		if got := wanInterfacesForBoard(board); !slices.Equal(got, want) {
+			t.Errorf("wanInterfacesForBoard(%q) = %q, want %q", board, got, want)
 		}
+	}
+}
+
+func TestDefaultRouteInterfacePrefersLowestMetric(t *testing.T) {
+	t.Parallel()
+	routes := `Iface Destination Gateway Flags RefCnt Use Metric Mask
+eth8 00000000 0100000A 0003 0 0 200 00000000
+eth9 00000000 0100000A 0003 0 0 100 00000000
+`
+	if got := defaultRouteInterface(strings.NewReader(routes)); got != "eth9" {
+		t.Fatalf("default route interface = %q, want eth9", got)
+	}
+}
+
+func TestUXGDownstreamInterfacesIncludeSubinterfaces(t *testing.T) {
+	t.Parallel()
+	interfaces := []net.Interface{{Name: "eth0"}, {Name: "eth0.10"}, {Name: "br0"}, {Name: "eth8"}}
+	if got, want := selectDownstreamInterfaces("UXG", interfaces), []string{"br0", "eth0.10"}; !slices.Equal(got, want) {
+		t.Fatalf("UXG downstream interfaces = %q, want %q", got, want)
+	}
+	if got, want := selectDownstreamInterfaces("UDMPRO", interfaces), []string{"br0"}; !slices.Equal(got, want) {
+		t.Fatalf("UDM Pro downstream interfaces = %q, want %q", got, want)
 	}
 }
 
@@ -113,11 +252,26 @@ func TestBoardInterfacePreservesProfileSuffix(t *testing.T) {
 
 func TestSystemdUnitWaitsForNativeReadiness(t *testing.T) {
 	t.Parallel()
-	unit := systemdUnit("/data/udm-iptv/bin/udm-iptv", "/data/udm-iptv/config.json")
-	for _, expected := range []string{"Type=notify", "NotifyAccess=main", "TimeoutStartSec=45s", "ExecStart=/data/udm-iptv/bin/udm-iptv daemon --config /data/udm-iptv/config.json"} {
+	unit := systemdUnit("/custom state/bin/udm-iptv", "/custom state/config.json", "/custom state")
+	for _, expected := range []string{
+		"Type=notify", "NotifyAccess=main", "TimeoutStartSec=45s",
+		`Environment="UDM_IPTV_STATE_DIR=/custom state"`,
+		`ExecStart="/custom state/bin/udm-iptv" daemon --config "/custom state/config.json"`,
+	} {
 		if !strings.Contains(unit, expected) {
 			t.Errorf("unit does not contain %q:\n%s", expected, unit)
 		}
+	}
+}
+
+func TestNoSuchUnitRecognition(t *testing.T) {
+	t.Parallel()
+	err := dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []any{"missing"})
+	if !noSuchUnit(err) {
+		t.Fatal("systemd NoSuchUnit error was not recognized")
+	}
+	if noSuchUnit(errors.New("stop failed")) {
+		t.Fatal("ordinary stop failure was treated as a missing unit")
 	}
 }
 
@@ -154,5 +308,17 @@ func TestNonInteractiveConfigurationRejectsUnknownProfile(t *testing.T) {
 	command.SetArgs([]string{"configure", "--non-interactive", "--profile", "missing"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unknown provider profile") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExistingInvalidLegacyConfigurationIsNotIgnored(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	legacy := filepath.Join(directory, "legacy.conf")
+	if err := os.WriteFile(legacy, []byte(`IPTV_WAN_INTERFACE="not a valid interface name"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := importFirstLegacy([]string{filepath.Join(directory, "missing.conf"), legacy}); err == nil {
+		t.Fatal("invalid existing legacy configuration was silently ignored")
 	}
 }

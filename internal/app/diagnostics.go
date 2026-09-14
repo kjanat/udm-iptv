@@ -215,8 +215,12 @@ func (application *Application) diagnoseWorkerCommand() *cobra.Command {
 }
 
 func (application *Application) capture(ctx context.Context, options diagnosticOptions) (resultErr error) {
-	ctx, stop := signalContext(ctx)
+	signalContext, stop := signalContext(ctx)
 	defer stop()
+	startedAt := time.Now()
+	endsAt := startedAt.Add(options.Capture)
+	ctx, cancel := context.WithDeadline(signalContext, endsAt)
+	defer cancel()
 	var jsonFile *os.File
 	var err error
 	if options.JSONPath != "" {
@@ -253,14 +257,17 @@ func (application *Application) capture(ctx context.Context, options diagnosticO
 		}
 		return nil
 	}
-	started := time.Now().UTC()
-	ends := started.Add(options.Capture)
-	cursor := journalCursor(ctx)
+	started := startedAt.UTC()
+	ends := endsAt.UTC()
 	if err := write(diagnosticEvent{Time: started, Type: "started", Message: "Capture started; expected completion " + ends.Format(time.RFC3339)}); err != nil {
 		return err
 	}
-	initial, err := application.snapshot(ctx)
+	cursor := journalCursor(ctx)
+	initial, err := application.snapshotWithin(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return write(diagnosticEvent{Time: time.Now().UTC(), Type: "timeout", Message: "Capture deadline reached during the initial snapshot."})
+		}
 		return err
 	}
 	if err := write(diagnosticEvent{Time: initial.Timestamp, Type: "initial", Snapshot: &initial}); err != nil {
@@ -275,20 +282,23 @@ func (application *Application) capture(ctx context.Context, options diagnosticO
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	deadline := time.NewTimer(time.Until(ends))
-	defer deadline.Stop()
-	completedMessage := "Capture reached its deadline."
+	reserve := min(2*time.Second, options.Capture/2)
+	finalize := time.NewTimer(time.Until(endsAt.Add(-reserve)))
+	defer finalize.Stop()
 	loop := true
 	for loop {
 		select {
 		case <-ctx.Done():
-			completedMessage = "Capture stopped by signal."
 			loop = false
-		case <-deadline.C:
+		case <-finalize.C:
 			loop = false
 		case <-ticker.C:
-			current, snapshotErr := application.snapshot(ctx)
+			current, snapshotErr := application.snapshotWithin(ctx)
 			if snapshotErr != nil {
+				if ctx.Err() != nil {
+					loop = false
+					continue
+				}
 				_ = write(diagnosticEvent{Time: time.Now().UTC(), Type: "error", Message: sanitize(snapshotErr.Error())})
 				continue
 			}
@@ -297,15 +307,43 @@ func (application *Application) capture(ctx context.Context, options diagnosticO
 			}
 		}
 	}
-	finalContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if final, finalErr := application.snapshot(finalContext); finalErr == nil {
+	if signalContext.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return write(diagnosticEvent{Time: time.Now().UTC(), Type: "completed", Message: "Capture stopped by signal."})
+	}
+	if final, finalErr := application.snapshotWithin(ctx); finalErr == nil {
 		_ = write(diagnosticEvent{Time: final.Timestamp, Type: "final", Snapshot: &final})
 	}
-	for _, line := range journalLines(finalContext, cursor) {
+	for _, line := range journalLines(ctx, cursor, 10_000) {
 		_ = write(diagnosticEvent{Time: time.Now().UTC(), Type: "log", Log: sanitize(line)})
 	}
-	return write(diagnosticEvent{Time: time.Now().UTC(), Type: "completed", Message: completedMessage})
+	if ctx.Err() != nil {
+		return write(diagnosticEvent{Time: time.Now().UTC(), Type: "timeout", Message: "Capture deadline reached; a collector may have stalled."})
+	}
+	return write(diagnosticEvent{Time: time.Now().UTC(), Type: "completed", Message: "Capture finished within its deadline."})
+}
+
+type collectedValue[T any] struct {
+	value T
+	err   error
+}
+
+func collectWithin[T any](ctx context.Context, collect func() (T, error)) (T, error) {
+	result := make(chan collectedValue[T], 1)
+	go func() {
+		value, err := collect()
+		result <- collectedValue[T]{value: value, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	case value := <-result:
+		return value.value, value.err
+	}
+}
+
+func (application *Application) snapshotWithin(ctx context.Context) (snapshot, error) {
+	return collectWithin(ctx, func() (snapshot, error) { return application.snapshot(ctx) })
 }
 
 func renderEvent(event diagnosticEvent) string {
@@ -327,6 +365,8 @@ func renderEvent(event diagnosticEvent) string {
 		return "capture error: " + sanitize(event.Message) + "\n"
 	case "completed":
 		return "\nCapture completed: " + event.Message + "\n"
+	case "timeout":
+		return "\nCapture timed out: " + event.Message + "\n"
 	default:
 		return ""
 	}
@@ -346,12 +386,11 @@ func journalCursor(ctx context.Context) string {
 	return ""
 }
 
-func journalLines(ctx context.Context, cursor string) []string {
+func journalLines(ctx context.Context, cursor string, limit int) []string {
 	if cursor == "" {
 		return []string{"journal cursor unavailable; service logs were not collected"}
 	}
-	arguments := []string{"--no-pager", "-o", "cat", "-u", "udm-iptv.service"}
-	arguments = append(arguments, "--after-cursor", cursor)
+	arguments := journalArguments(cursor, limit)
 	command := exec.CommandContext(ctx, "journalctl", arguments...)
 	output, err := command.Output()
 	if err != nil {
@@ -361,10 +400,14 @@ func journalLines(ctx context.Context, cursor string) []string {
 	if len(lines) == 1 && lines[0] == "" {
 		return nil
 	}
-	if len(lines) > 10_000 {
-		lines = lines[len(lines)-10_000:]
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
 	}
 	return lines
+}
+
+func journalArguments(cursor string, limit int) []string {
+	return []string{"--no-pager", "-o", "cat", "-n", strconv.Itoa(limit), "-u", "udm-iptv.service", "--after-cursor", cursor}
 }
 
 type captureTick time.Time
@@ -418,7 +461,8 @@ func (model captureModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.viewport.GotoBottom()
 			}
 			model.done = strings.Contains(content, "Capture completed:") || strings.Contains(content, `"type":"completed"`)
-			model.failed = strings.Contains(content, "Capture failed:") || strings.Contains(content, `"type":"failed"`)
+			model.failed = strings.Contains(content, "Capture failed:") || strings.Contains(content, `"type":"failed"`) ||
+				strings.Contains(content, "Capture timed out:") || strings.Contains(content, `"type":"timeout"`)
 			if model.completion.IsZero() {
 				model.completion = captureCompletion(content)
 			}

@@ -2,9 +2,11 @@ package app
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/kjanat/udm-iptv/internal/config"
@@ -15,9 +17,10 @@ func detectedDefaults() config.Config {
 }
 
 func withDetectedInterfaces(value config.Config) config.Config {
-	value = withBoardInterface(value, detectBoard())
-	if bridges := bridgeInterfaces(); len(bridges) > 0 {
-		value.LAN.Interfaces = bridges
+	board := detectBoard()
+	value = withBoardInterface(value, board)
+	if downstream := downstreamInterfaces(board); len(downstream) > 0 {
+		value.LAN.Interfaces = downstream
 	}
 	return value
 }
@@ -35,24 +38,68 @@ func withBoardInterface(value config.Config, board string) config.Config {
 }
 
 func wanInterfaceForBoard(board string) string {
+	candidates := wanInterfacesForBoard(board)
+	if route := defaultRouteInterfaceFromSystem(); slicesContain(candidates, route) {
+		return route
+	}
+	for _, candidate := range candidates {
+		carrier, err := os.ReadFile("/sys/class/net/" + candidate + "/carrier")
+		if err == nil && strings.TrimSpace(string(carrier)) == "1" {
+			return candidate
+		}
+	}
+	return candidates[0]
+}
+
+func wanInterfacesForBoard(board string) []string {
 	switch strings.ToUpper(strings.TrimSpace(board)) {
 	case "UDM", "UDR":
-		return "eth4"
+		return []string{"eth4"}
 	case "UXGPRO":
-		return "eth0"
+		return []string{"eth0", "eth2"}
 	case "UDR7":
-		return "eth3"
+		return []string{"eth3", "eth4", "eth2"}
 	case "UDW":
-		return "eth18"
+		return []string{"eth18", "eth19"}
 	case "UXG":
-		return "eth1"
+		return []string{"eth1"}
 	case "UDRULT", "UXGB", "UCGMAX":
-		return "eth4"
+		return []string{"eth4", "eth3"}
 	case "UCGF":
-		return "eth6"
+		return []string{"eth6", "eth4"}
+	case "UDMPRO", "UDMPROSE", "UDMSE", "UDMPROMAX", "UDMEA4C":
+		return []string{"eth8", "eth9"}
 	default:
-		return "eth8"
+		return []string{"eth8"}
 	}
+}
+
+func defaultRouteInterfaceFromSystem() string {
+	file, err := os.Open("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	defer closeIgnoringError(file)
+	return defaultRouteInterface(file)
+}
+
+func defaultRouteInterface(reader io.Reader) string {
+	scanner := bufio.NewScanner(reader)
+	selected := ""
+	selectedMetric := int64(^uint64(0) >> 1)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 8 || fields[1] != "00000000" {
+			continue
+		}
+		flags, flagErr := strconv.ParseUint(fields[3], 16, 64)
+		metric, metricErr := strconv.ParseInt(fields[6], 10, 64)
+		if flagErr != nil || metricErr != nil || flags&1 == 0 || metric >= selectedMetric {
+			continue
+		}
+		selected, selectedMetric = fields[0], metric
+	}
+	return selected
 }
 
 func detectBoard() string {
@@ -85,17 +132,30 @@ func detectBoard() string {
 	return ""
 }
 
-func bridgeInterfaces() []string {
+func downstreamInterfaces(board string) []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
+	return selectDownstreamInterfaces(board, interfaces)
+}
+
+func selectDownstreamInterfaces(board string, interfaces []net.Interface) []string {
 	var result []string
 	for _, iface := range interfaces {
-		if strings.HasPrefix(iface.Name, "br") {
+		if strings.HasPrefix(iface.Name, "br") || (strings.EqualFold(strings.TrimSpace(board), "UXG") && strings.HasPrefix(iface.Name, "eth0.")) {
 			result = append(result, iface.Name)
 		}
 	}
 	sort.Strings(result)
 	return result
+}
+
+func slicesContain(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }

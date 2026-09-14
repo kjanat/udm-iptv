@@ -13,6 +13,7 @@ import (
 	"time"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/godbus/dbus/v5"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/spf13/cobra"
@@ -40,11 +41,12 @@ func (application *Application) installCommand() *cobra.Command {
 					return err
 				}
 				value := detectedDefaults()
-				for _, legacyPath := range []string{"/etc/udm-iptv.conf", filepath.Join(application.StateDir, "legacy.conf")} {
-					if legacy, legacyErr := config.ImportLegacy(legacyPath); legacyErr == nil {
-						value = legacy
-						break
-					}
+				legacy, found, legacyErr := importFirstLegacy([]string{"/etc/udm-iptv.conf", filepath.Join(application.StateDir, "legacy.conf")})
+				if legacyErr != nil {
+					return legacyErr
+				}
+				if found {
+					value = legacy
 				}
 				if !nonInteractive {
 					if err := application.configureForm(&value); err != nil {
@@ -63,6 +65,23 @@ func (application *Application) installCommand() *cobra.Command {
 	return command
 }
 
+func importFirstLegacy(paths []string) (config.Config, bool, error) {
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return config.Config{}, false, fmt.Errorf("inspect legacy configuration %s: %w", path, err)
+		}
+		value, err := config.ImportLegacy(path)
+		if err != nil {
+			return config.Config{}, false, fmt.Errorf("import legacy configuration %s: %w", path, err)
+		}
+		return value, true, nil
+	}
+	return config.Config{}, false, nil
+}
+
 func (application *Application) install(ctx context.Context, replace bool) error {
 	executable, err := os.Executable()
 	if err != nil {
@@ -78,7 +97,7 @@ func (application *Application) install(ctx context.Context, replace bool) error
 	if err := copyExecutable(executable, target); err != nil {
 		return fmt.Errorf("install executable: %w", err)
 	}
-	unit := systemdUnit(target, application.ConfigPath)
+	unit := systemdUnit(target, application.ConfigPath, application.StateDir)
 	if err := atomicWrite(unitPath, []byte(unit), 0o644); err != nil {
 		return err
 	}
@@ -153,7 +172,7 @@ func removeLegacyPackage(ctx context.Context, output, errorOutput io.Writer) err
 	return nil
 }
 
-func systemdUnit(target, configPath string) string {
+func systemdUnit(target, configPath, stateDir string) string {
 	return fmt.Sprintf(`[Unit]
 Description=Routed IPTV for UniFi OS
 After=network-online.target
@@ -163,6 +182,7 @@ Conflicts=igmpproxy.service
 [Service]
 Type=notify
 NotifyAccess=main
+Environment=%s
 ExecStart=%s daemon --config %s
 Restart=on-failure
 RestartSec=5s
@@ -171,7 +191,12 @@ TimeoutStopSec=30s
 
 [Install]
 WantedBy=multi-user.target
-`, target, configPath)
+`, systemdQuote("UDM_IPTV_STATE_DIR="+stateDir), systemdQuote(target), systemdQuote(configPath))
+}
+
+func systemdQuote(value string) string {
+	value = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`).Replace(value)
+	return `"` + value + `"`
 }
 
 func (application *Application) uninstallCommand() *cobra.Command {
@@ -185,10 +210,16 @@ func (application *Application) uninstallCommand() *cobra.Command {
 				return err
 			}
 			ctx := command.Context()
-			if connection, err := systemd.NewSystemConnectionContext(ctx); err == nil {
-				_ = stopAndWait(ctx, connection, "udm-iptv.service")
-				_, _ = connection.DisableUnitFilesContext(ctx, []string{"udm-iptv.service"}, false)
-				connection.Close()
+			connection, err := systemd.NewSystemConnectionContext(ctx)
+			if err != nil {
+				return fmt.Errorf("connect to systemd before uninstall: %w", err)
+			}
+			defer connection.Close()
+			if err := stopAndWait(ctx, connection, "udm-iptv.service"); err != nil && !noSuchUnit(err) {
+				return fmt.Errorf("stop service before uninstall: %w", err)
+			}
+			if _, err := connection.DisableUnitFilesContext(ctx, []string{"udm-iptv.service"}, false); err != nil {
+				return fmt.Errorf("disable service before uninstall: %w", err)
 			}
 			if value, err := config.Load(application.ConfigPath); err == nil {
 				_ = network.RemoveNAT(value)
@@ -207,15 +238,19 @@ func (application *Application) uninstallCommand() *cobra.Command {
 			} else if err := os.RemoveAll(application.StateDir); err != nil {
 				return err
 			}
-			if connection, err := systemd.NewSystemConnectionContext(ctx); err == nil {
-				_ = connection.ReloadContext(ctx)
-				connection.Close()
+			if err := connection.ReloadContext(ctx); err != nil {
+				return fmt.Errorf("reload systemd after uninstall: %w", err)
 			}
 			return writeString(application.Out, "udm-iptv removed.\n")
 		},
 	}
 	command.Flags().BoolVar(&keepConfig, "keep-config", false, "retain the configuration in /data")
 	return command
+}
+
+func noSuchUnit(err error) bool {
+	var dbusError *dbus.Error
+	return errors.As(err, &dbusError) && dbusError.Name == "org.freedesktop.systemd1.NoSuchUnit"
 }
 
 func stopAndWait(ctx context.Context, connection *systemd.Conn, unit string) error {

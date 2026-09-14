@@ -177,7 +177,7 @@ func ImportLegacy(path string) (Config, error) {
 			continue
 		}
 		key, raw, ok := strings.Cut(line, "=")
-		if !ok || !strings.HasPrefix(key, "IPTV_") {
+		if !ok || (!strings.HasPrefix(key, "IPTV_") && key != "NO_GATEWAY") {
 			continue
 		}
 		raw = strings.TrimSpace(raw)
@@ -199,9 +199,14 @@ func ImportLegacy(path string) (Config, error) {
 	value.WAN.VLANInterface = fallback(values["IPTV_WAN_VLAN_INTERFACE"], value.WAN.VLANInterface)
 	value.WAN.VLANMAC = values["IPTV_WAN_VLAN_MAC"]
 	value.WAN.DHCP = values["IPTV_WAN_DHCP"] != "false"
-	value.WAN.DHCPOptions = strings.Fields(fallback(values["IPTV_WAN_DHCP_OPTIONS"], strings.Join(value.WAN.DHCPOptions, " ")))
+	if options, found := values["IPTV_WAN_DHCP_OPTIONS"]; found {
+		value.WAN.DHCPOptions = strings.Fields(options)
+	}
+	value.WAN.AllowDefaultRoute = value.WAN.DHCP && !slicesContains(strings.Fields(values["NO_GATEWAY"]), value.WAN.Interface)
 	value.WAN.StaticAddress = values["IPTV_WAN_STATIC_IP"]
-	value.WAN.NATDestinations = strings.Fields(fallback(values["IPTV_WAN_RANGES"], strings.Join(value.WAN.NATDestinations, " ")))
+	if destinations, found := values["IPTV_WAN_RANGES"]; found {
+		value.WAN.NATDestinations = normalizeLegacyPrefixes(strings.Fields(destinations))
+	}
 	value.WAN.StaticRoutes = strings.Fields(values["IPTV_STATIC_ROUTES"])
 	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], "br0"))
 	value.Proxy.Program = fallback(values["IPTV_IGMPPROXY_PROGRAM"], "improxy")
@@ -217,6 +222,9 @@ func ImportLegacy(path string) (Config, error) {
 	}
 	if profile, found := InferLegacyProfile(value); found {
 		value.Profile = profile
+		known := profiles[profile].Config
+		value.WAN.NATDestinations = append([]string(nil), known.WAN.NATDestinations...)
+		value.Proxy.SourceRanges = append([]string(nil), known.Proxy.SourceRanges...)
 	}
 	return value, value.Validate()
 }
@@ -226,4 +234,24 @@ func fallback(value, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func normalizeLegacyPrefixes(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if address, err := netip.ParseAddr(value); err == nil && address.Is4() {
+			value = netip.PrefixFrom(address, 32).String()
+		}
+		result = append(result, value)
+	}
+	return result
+}
+
+func slicesContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
