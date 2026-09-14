@@ -6,6 +6,8 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 test_dir=$(mktemp -d)
 trap 'rm -rf "${test_dir}"' EXIT
 mkdir -p "${test_dir}/bin" "${test_dir}/proc/4242" "${test_dir}/output"
+real_date=$(command -v date)
+real_jq=$(command -v jq)
 
 cat >"${test_dir}/config" <<'EOF'
 IPTV_WAN_INTERFACE="eth8"
@@ -110,11 +112,43 @@ EOF
 
 cat >"${test_dir}/bin/journalctl" <<'EOF'
 #!/bin/sh
+case " $* " in
+*' --since '*)
+	awk 'BEGIN {
+		for (i = 0; i < 2500; i++)
+			printf "provider event %d abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n", i
+	}'
+	exit
+	;;
+esac
 cat <<'LOGS'
 private-router-name udhcpc: lease of 10.207.100.210 obtained
 udhcpc: lease of 145.23.42.9 obtained; subscriber address 145.23.42.7 and static address 203.0.113.17
 interface aa:bb:cc:dd:ee:ff joined 224.0.250.64 from provider 195.121.94.212
 LOGS
+EOF
+
+cat >"${test_dir}/bin/date" <<'EOF'
+#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = +%s ]; then
+	if [ ! -e "${UDM_IPTV_DATE_STATE}" ]; then
+		: >"${UDM_IPTV_DATE_STATE}"
+		echo 2000000000
+	else
+		echo 1
+	fi
+	exit
+fi
+exec "${UDM_IPTV_REAL_DATE}" "$@"
+EOF
+
+cat >"${test_dir}/bin/jq" <<'EOF'
+#!/bin/sh
+if [ "${UDM_IPTV_TEST_FAIL_RENDER:-false}" = true ] && [ "${1:-}" = -r ]; then
+	printf 'partial rendered diagnostics\n'
+	exit 1
+fi
+exec "${UDM_IPTV_REAL_JQ}" "$@"
 EOF
 
 chmod +x "${test_dir}/bin/"*
@@ -124,6 +158,9 @@ export UDM_IPTV_CONFIG_FILE="${test_dir}/config"
 export UDM_IPTV_DIAGNOSTICS_DIR="${test_dir}/output"
 export UDM_IPTV_PROC_DIR="${test_dir}/proc"
 export UDM_IPTV_PROXY_CONFIG_FILE="${test_dir}/proxy-config"
+export UDM_IPTV_DATE_STATE="${test_dir}/date-state"
+export UDM_IPTV_REAL_DATE="${real_date}"
+export UDM_IPTV_REAL_JQ="${real_jq}"
 
 diagnostics="${root}/udm-iptv-diagnostics"
 
@@ -202,10 +239,23 @@ if ${diagnostics} --unknown >/dev/null 2>&1; then
 	exit 1
 fi
 
+unsafe_json=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.jsonl")
+unsafe_text="${test_dir}/output/udm-iptv-diagnostics-unsafe.txt"
+ln -s "${test_dir}/symlink-target" "${unsafe_text}"
+if ${diagnostics} --worker 1 normal both "${unsafe_json}" "${unsafe_text}" >/dev/null 2>&1; then
+	echo 'diagnostics worker unexpectedly accepted a symlink output file' >&2
+	exit 1
+fi
+rm -f "${unsafe_json}" "${unsafe_text}"
+
 capture_output=$(${diagnostics} --capture 1s)
 json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${capture_output}")
 text_file=$(sed -n 's/^Share-ready text: //p' <<<"${capture_output}")
-[[ -n ${json_file} && -n ${text_file} ]]
+worker_pid=$(sed -n 's/^Diagnostics capture started in the background (PID \([0-9][0-9]*\)).$/\1/p' <<<"${capture_output}")
+[[ -n ${json_file} && -n ${text_file} && -n ${worker_pid} ]]
+[[ -f ${json_file} && ! -L ${json_file} ]]
+[[ -f ${text_file} && ! -L ${text_file} ]]
+kill -HUP "${worker_pid}"
 
 capture_completed=false
 for _ in {1..100}; do
@@ -224,6 +274,8 @@ fi
 
 jq -e -s '
 	any(.[]; .kind == "sample")
+	and any(.[]; .kind == "block" and .section == "Captured Service Logs"
+	    and (.value | contains("provider event 2499")))
 	and all(.[] | select(.kind == "sample");
 	    (.network.routes | type) == "number"
 	    and (.network.nat_packets | type) == "number"
@@ -242,6 +294,33 @@ if grep -Eq '10\.207\.100\.210|192\.168\.10\.51|145\.23\.42\.(7|9)|203\.0\.113\.
 	echo 'capture files contain unredacted diagnostic data' >&2
 	exit 1
 fi
+
+render_failure_output=$(UDM_IPTV_TEST_FAIL_RENDER=true ${diagnostics} --capture 1s --format text)
+render_failure_text=$(sed -n 's/^Share-ready text: //p' <<<"${render_failure_output}")
+[[ -n ${render_failure_text} ]]
+
+render_failure_json=
+render_failure_completed=false
+for _ in {1..100}; do
+	for candidate in "${test_dir}/output/"*.jsonl; do
+		[[ -e ${candidate} && ${candidate} != "${json_file}" ]] || continue
+		render_failure_json=${candidate}
+		break
+	done
+	if [[ -n ${render_failure_json} && -s ${render_failure_text} ]] \
+		&& jq -e -s 'last | .kind == "capture" and .name == "completed"' \
+			"${render_failure_json}" >/dev/null 2>&1; then
+		render_failure_completed=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${render_failure_completed} == false ]]; then
+	echo 'diagnostics did not retain structured output after text rendering failed' >&2
+	exit 1
+fi
+grep -Fq "Text rendering failed. Structured diagnostics remain at: ${render_failure_json}" \
+	"${render_failure_text}"
 
 UDM_IPTV_DIAGNOSTICS_HELPER="${diagnostics}" "${root}/udm-iptv" diagnose --help \
 	| grep -Fq -- '--capture DURATION'

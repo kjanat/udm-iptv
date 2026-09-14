@@ -8,6 +8,7 @@ DIAGNOSTICS_DIR="${UDM_IPTV_DIAGNOSTICS_DIR:-/tmp}"
 CONFIG_FILE="${UDM_IPTV_CONFIG_FILE:-/etc/udm-iptv.conf}"
 PROC_DIR="${UDM_IPTV_PROC_DIR:-/proc}"
 PROXY_CONFIG_FILE="${UDM_IPTV_PROXY_CONFIG_FILE:-/var/run/igmpproxy.iptv.conf}"
+MONOTONIC_FILE="${UDM_IPTV_MONOTONIC_FILE:-/proc/uptime}"
 
 diagnostics_usage() {
 	cat <<'EOF'
@@ -89,20 +90,18 @@ diagnostics_emit() {
 	kind=$1
 	section=$2
 	name=$3
-	value=$4
 	timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-	jq -cn \
+	jq -Rsc \
 		--arg schema "${DIAGNOSTICS_SCHEMA}" \
 		--arg timestamp "${timestamp}" \
 		--arg kind "${kind}" \
 		--arg section "${section}" \
 		--arg name "${name}" \
-		--arg value "${value}" \
-		'{schema: $schema, timestamp: $timestamp, kind: $kind, section: $section, name: $name, value: $value}'
+		'{schema: $schema, timestamp: $timestamp, kind: $kind, section: $section, name: $name, value: rtrimstr("\n")}'
 }
 
 diagnostics_notice() {
-	diagnostics_emit notice "" "" "$1"
+	printf '%s\n' "$1" | diagnostics_emit notice "" ""
 }
 
 diagnostics_capture_event() {
@@ -121,17 +120,15 @@ diagnostics_capture_event() {
 }
 
 diagnostics_section() {
-	diagnostics_emit section "$1" "" ""
+	diagnostics_emit section "$1" "" </dev/null
 }
 
 diagnostics_value() {
-	value=$(printf '%s\n' "$3" | diagnostics_sanitize)
-	diagnostics_emit value "$1" "$2" "${value}"
+	printf '%s\n' "$3" | diagnostics_sanitize | diagnostics_emit value "$1" "$2"
 }
 
 diagnostics_block() {
-	value=$(printf '%s\n' "$3" | diagnostics_sanitize)
-	diagnostics_emit block "$1" "$2" "${value}"
+	printf '%s\n' "$3" | diagnostics_sanitize | diagnostics_emit block "$1" "$2"
 }
 
 diagnostics_render() {
@@ -446,6 +443,17 @@ diagnostics_parse_duration() {
 	printf '%s\n' "${seconds}"
 }
 
+diagnostics_monotonic_seconds() {
+	awk '
+		NR == 1 {
+			split($1, uptime, ".")
+			if (uptime[1] !~ /^[0-9]+$/) exit 1
+			print uptime[1]
+			exit
+		}
+	' "${MONOTONIC_FILE}" 2>/dev/null || true
+}
+
 diagnostics_worker() {
 	seconds=$1
 	verbosity=$2
@@ -485,10 +493,33 @@ diagnostics_worker() {
 			return 2
 			;;
 	esac
+	current_uid=$(id -u)
+	json_owner=$(stat -c %u "${json_output}" 2>/dev/null) || json_owner=
+	if [ ! -f "${json_output}" ] || [ -L "${json_output}" ] \
+		|| [ "${json_owner}" != "${current_uid}" ]; then
+		diagnostics_error "Refusing diagnostics JSON output that is not a regular, owned file."
+		return 2
+	fi
+	if [ "${text_output}" != - ]; then
+		text_owner=$(stat -c %u "${text_output}" 2>/dev/null) || text_owner=
+		if [ ! -f "${text_output}" ] || [ -L "${text_output}" ] \
+			|| [ "${text_owner}" != "${current_uid}" ]; then
+			diagnostics_error "Refusing diagnostics text output that is not a regular, owned file."
+			return 2
+		fi
+	fi
 
 	umask 077
 	start_epoch=$(date +%s)
-	end_epoch=$((start_epoch + seconds))
+	start_monotonic=$(diagnostics_monotonic_seconds)
+	case "${start_monotonic}" in
+		"" | *[!0-9]*)
+			diagnostics_error "A monotonic clock is required for bounded captures."
+			return 1
+			;;
+		*) ;;
+	esac
+	end_monotonic=$((start_monotonic + seconds))
 	completed=false
 
 	finalize_capture() {
@@ -497,17 +528,24 @@ diagnostics_worker() {
 			# shellcheck disable=SC2310
 			diagnostics_capture_event interrupted "Capture ended before its requested deadline." >>"${json_output}" || true
 		fi
+		rendered=false
 		if [ "${format}" != json ] && [ "${text_output}" != - ]; then
-			# Retain JSONL if rendering fails during finalization.
+			# Rendering failures are handled explicitly so the JSONL source is retained.
 			# shellcheck disable=SC2310
-			diagnostics_render "${json_output}" >"${text_output}" || true
+			if diagnostics_render "${json_output}" >"${text_output}"; then
+				rendered=true
+			else
+				printf 'Text rendering failed. Structured diagnostics remain at: %s\n' \
+					"${json_output}" >"${text_output}"
+			fi
 		fi
-		if [ "${format}" = text ] && [ -s "${text_output}" ]; then
+		if [ "${format}" = text ] && [ "${rendered}" = true ]; then
 			rm -f "${json_output}"
 		fi
 	}
 	trap 'finalize_capture' EXIT
-	trap 'exit 143' HUP INT TERM
+	trap '' HUP
+	trap 'exit 143' INT TERM
 
 	: >"${json_output}"
 	{
@@ -530,9 +568,9 @@ diagnostics_worker() {
 
 	while :; do
 		diagnostics_emit_sample >>"${json_output}"
-		now=$(date +%s)
-		[ "${now}" -lt "${end_epoch}" ] || break
-		remaining=$((end_epoch - now))
+		now_monotonic=$(diagnostics_monotonic_seconds)
+		[ "${now_monotonic}" -lt "${end_monotonic}" ] || break
+		remaining=$((end_monotonic - now_monotonic))
 		wait_seconds=${interval}
 		[ "${remaining}" -ge "${wait_seconds}" ] || wait_seconds=${remaining}
 		sleep "${wait_seconds}"
@@ -557,7 +595,7 @@ diagnostics_worker() {
 	fi
 	diagnostics_capture_event completed "Capture reached its ${seconds}s deadline." >>"${json_output}"
 	completed=true
-	trap - EXIT HUP INT TERM
+	trap - EXIT INT TERM
 	finalize_capture
 }
 
@@ -574,10 +612,10 @@ diagnostics_start_capture() {
 	umask 077
 	started_at=$(date -u '+%Y%m%dT%H%M%SZ')
 	json_output=$(mktemp "${DIAGNOSTICS_DIR}/udm-iptv-diagnostics-${started_at}-XXXXXX.jsonl")
-	base=${json_output%.jsonl}
-	text_output="${base}.txt"
 	if [ "${format}" = json ]; then
 		text_output=-
+	else
+		text_output=$(mktemp "${DIAGNOSTICS_DIR}/udm-iptv-diagnostics-${started_at}-XXXXXX.txt")
 	fi
 
 	nohup "$0" --worker "${seconds}" "${verbosity}" "${format}" \
@@ -590,7 +628,8 @@ diagnostics_start_capture() {
 		fi
 		if ! kill -0 "${worker_pid}" 2>/dev/null; then
 			wait "${worker_pid}" 2>/dev/null || true
-			rm -f "${json_output}" "${text_output}"
+			rm -f "${json_output}"
+			[ "${text_output}" = - ] || rm -f "${text_output}"
 			diagnostics_error "Diagnostics capture failed to start."
 			return 1
 		fi
@@ -600,7 +639,8 @@ diagnostics_start_capture() {
 	if ! grep -Fq '"name":"started"' "${json_output}"; then
 		kill "${worker_pid}" 2>/dev/null || true
 		wait "${worker_pid}" 2>/dev/null || true
-		rm -f "${json_output}" "${text_output}"
+		rm -f "${json_output}"
+		[ "${text_output}" = - ] || rm -f "${text_output}"
 		diagnostics_error "Diagnostics capture did not initialize in time."
 		return 1
 	fi
