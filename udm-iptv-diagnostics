@@ -345,7 +345,7 @@ diagnostics_snapshot() {
 	diagnostics_refresh_device_addresses
 
 	diagnostics_section "Package and System"
-	package=$(dpkg-query -W -f='${binary:Package} ${Version} (${db:Status-Status})' udm-iptv 2>/dev/null) \
+	package=$(diagnostics_bounded_external dpkg-query -W -f='${binary:Package} ${Version} (${db:Status-Status})' udm-iptv 2>/dev/null) \
 		|| package=unavailable
 	diagnostics_value "Package and System" Package "${package}"
 	model=$(diagnostics_model)
@@ -520,6 +520,53 @@ diagnostics_monotonic_seconds() {
 	' "${MONOTONIC_FILE}" 2>/dev/null || true
 }
 
+diagnostics_monotonic_milliseconds() {
+	awk '
+		NR == 1 && $1 ~ /^[0-9]+([.][0-9]+)?$/ {
+			printf "%.0f\n", $1 * 1000
+			exit
+		}
+	' "${MONOTONIC_FILE}" 2>/dev/null || true
+}
+
+diagnostics_remaining_seconds() {
+	now=$(diagnostics_monotonic_milliseconds)
+	case "${now}" in
+		"" | *[!0-9]*) return 1 ;;
+		*) ;;
+	esac
+	remaining_ms=$((DIAGNOSTICS_CAPTURE_DEADLINE - now))
+	[ "${remaining_ms}" -gt 0 ] || return 1
+	# Round up only for scheduling sleeps; collectors use the precise value.
+	printf '%s\n' "$(((remaining_ms + 999) / 1000))"
+}
+
+# Captures set an absolute monotonic deadline.  Keep every potentially blocking
+# collector inside that same budget rather than giving each command a fresh
+# timeout.  `command` prevents these wrappers from recursively calling
+# themselves when timeout resolves the real executable through PATH.
+diagnostics_bounded_external() {
+	if [ -z "${DIAGNOSTICS_CAPTURE_DEADLINE:-}" ]; then
+		command "$@"
+		return
+	fi
+	remaining=$(diagnostics_remaining_seconds) || {
+		printf 'collector skipped: capture deadline reached\n' >&2
+		return 124
+	}
+	now=$(diagnostics_monotonic_milliseconds) || return 124
+	remaining_ms=$((DIAGNOSTICS_CAPTURE_DEADLINE - now))
+	[ "${remaining_ms}" -gt 0 ] || return 124
+	command timeout -s KILL "$(awk -v ms="${remaining_ms}" 'BEGIN { printf "%.3fs", ms / 1000 }')" "$@"
+}
+
+systemctl() { diagnostics_bounded_external systemctl "$@"; }
+ip() { diagnostics_bounded_external ip "$@"; }
+iptables() { diagnostics_bounded_external iptables "$@"; }
+journalctl() { diagnostics_bounded_external journalctl "$@"; }
+uname() { diagnostics_bounded_external uname "$@"; }
+hostname() { diagnostics_bounded_external hostname "$@"; }
+
 diagnostics_worker() {
 	seconds=$1
 	verbosity=$2
@@ -527,10 +574,19 @@ diagnostics_worker() {
 	json_output=$4
 	text_output=$5
 	journal_cursor=$6
-	ready_output=$7
+	DIAGNOSTICS_CAPTURE_DEADLINE=$7
+	ready_output=$8
+	export DIAGNOSTICS_CAPTURE_DEADLINE
 	case "${seconds}" in
 		"" | *[!0-9]*)
 			diagnostics_error "Invalid worker duration ${seconds}."
+			return 2
+			;;
+		*) ;;
+	esac
+	case "${DIAGNOSTICS_CAPTURE_DEADLINE}" in
+		"" | *[!0-9]*)
+			diagnostics_error "Invalid worker deadline ${DIAGNOSTICS_CAPTURE_DEADLINE}."
 			return 2
 			;;
 		*) ;;
@@ -591,7 +647,7 @@ diagnostics_worker() {
 	fi
 
 	umask 077
-	start_monotonic=$(diagnostics_monotonic_seconds)
+	start_monotonic=$(diagnostics_monotonic_milliseconds)
 	case "${start_monotonic}" in
 		"" | *[!0-9]*)
 			diagnostics_error "A monotonic clock is required for bounded captures."
@@ -599,7 +655,7 @@ diagnostics_worker() {
 			;;
 		*) ;;
 	esac
-	end_monotonic=$((start_monotonic + seconds))
+	end_monotonic=${DIAGNOSTICS_CAPTURE_DEADLINE}
 	[ "${journal_cursor}" != - ] || journal_cursor=
 	completed=false
 
@@ -613,7 +669,8 @@ diagnostics_worker() {
 		if [ "${format}" != json ] && [ "${text_output}" != - ]; then
 			# Rendering failures are handled explicitly so the JSONL source is retained.
 			# shellcheck disable=SC2310
-			if diagnostics_render <"${json_output}" >"${text_output}"; then
+			if diagnostics_bounded_external "$0" --render-worker \
+				<"${json_output}" >"${text_output}"; then
 				rendered=true
 			else
 				printf 'Text rendering failed. Structured diagnostics remain at: %s\n' \
@@ -629,6 +686,8 @@ diagnostics_worker() {
 	trap 'exit 143' INT TERM
 
 	: >"${json_output}"
+	UDM_IPTV_CAPTURE_PHASE=initial
+	export UDM_IPTV_CAPTURE_PHASE
 	{
 		diagnostics_privacy_header
 		diagnostics_capture_event started "Capture started."
@@ -649,20 +708,29 @@ diagnostics_worker() {
 	esac
 
 	while :; do
+		diagnostics_remaining_seconds >/dev/null || break
+		UDM_IPTV_CAPTURE_PHASE=sample
+		export UDM_IPTV_CAPTURE_PHASE
 		diagnostics_emit_sample >>"${json_output}"
-		now_monotonic=$(diagnostics_monotonic_seconds)
-		[ "${now_monotonic}" -lt "${end_monotonic}" ] || break
-		remaining=$((end_monotonic - now_monotonic))
+		remaining=$(diagnostics_remaining_seconds) || break
 		wait_seconds=${interval}
-		[ "${remaining}" -ge "${wait_seconds}" ] || wait_seconds=${remaining}
+		# Leave two seconds of the shared budget for the final snapshot, logs,
+		# event, and rendering. Short captures collect once and finalize at once.
+		[ "${remaining}" -gt $((interval + 2)) ] || break
 		sleep "${wait_seconds}"
 	done
 
-	{
-		diagnostics_section "Final Snapshot"
-		diagnostics_snapshot "${verbosity}" false
-	} >>"${json_output}"
-	if [ "${verbosity}" != summary ]; then
+	if diagnostics_remaining_seconds >/dev/null; then
+		UDM_IPTV_CAPTURE_PHASE=final
+		export UDM_IPTV_CAPTURE_PHASE
+		{
+			diagnostics_section "Final Snapshot"
+			diagnostics_snapshot "${verbosity}" false
+		} >>"${json_output}"
+	fi
+	if [ "${verbosity}" != summary ] && diagnostics_remaining_seconds >/dev/null; then
+		UDM_IPTV_CAPTURE_PHASE=journal
+		export UDM_IPTV_CAPTURE_PHASE
 		if [ "${verbosity}" = debug ]; then
 			log_lines=10000
 		else
@@ -681,8 +749,15 @@ diagnostics_worker() {
 			diagnostics_block "Captured Service Logs" "at most ${log_lines} unit messages" "${captured_logs}"
 		} >>"${json_output}"
 	fi
-	diagnostics_capture_event completed "Capture reached its ${seconds}s deadline." >>"${json_output}"
-	completed=true
+	if diagnostics_remaining_seconds >/dev/null; then
+		diagnostics_capture_event completed "Capture finished within its ${seconds}s deadline." >>"${json_output}"
+		completed=true
+	else
+		diagnostics_capture_event timeout "Capture deadline reached; a collector may have stalled." >>"${json_output}"
+		# This is a bounded, expected termination and must not add a second
+		# generic interrupted event during finalization.
+		completed=true
+	fi
 	trap - EXIT INT TERM
 	finalize_capture
 }
@@ -691,9 +766,23 @@ diagnostics_start_capture() {
 	seconds=$1
 	verbosity=$2
 	format=$3
+	start_monotonic=$(diagnostics_monotonic_milliseconds)
+	case "${start_monotonic}" in
+		"" | *[!0-9]*)
+			diagnostics_error "A monotonic clock is required for bounded captures."
+			return 1
+			;;
+		*) ;;
+	esac
+	DIAGNOSTICS_CAPTURE_DEADLINE=$((start_monotonic + seconds * 1000))
+	export DIAGNOSTICS_CAPTURE_DEADLINE
 
 	if ! command -v nohup >/dev/null 2>&1; then
 		diagnostics_error "nohup is required to run a capture after the SSH session closes."
+		return 1
+	fi
+	if ! command -v timeout >/dev/null 2>&1; then
+		diagnostics_error "timeout is required to keep diagnostic captures bounded."
 		return 1
 	fi
 	mkdir -p "${DIAGNOSTICS_DIR}"
@@ -716,7 +805,8 @@ diagnostics_start_capture() {
 	fi
 
 	nohup "$0" --worker "${seconds}" "${verbosity}" "${format}" \
-		"${json_output}" "${text_output}" "${journal_cursor}" "${ready_output}" </dev/null >/dev/null 2>&1 &
+		"${json_output}" "${text_output}" "${journal_cursor}" \
+		"${DIAGNOSTICS_CAPTURE_DEADLINE}" "${ready_output}" </dev/null >/dev/null 2>&1 &
 	worker_pid=$!
 	if [ -n "${UDM_IPTV_TEST_STARTUP_DELAY:-}" ]; then
 		sleep "${UDM_IPTV_TEST_STARTUP_DELAY}"
@@ -783,8 +873,14 @@ diagnostics_once() {
 	diagnostics_snapshot "${verbosity}" true
 }
 
+if [ "${1:-}" = --render-worker ]; then
+	[ "$#" -eq 1 ] || exit 2
+	diagnostics_render
+	exit
+fi
+
 if [ "${1:-}" = --worker ]; then
-	[ "$#" -eq 8 ] || {
+	[ "$#" -eq 9 ] || {
 		diagnostics_error "Invalid internal diagnostics worker invocation."
 		exit 2
 	}

@@ -68,6 +68,10 @@ EOF
 
 cat >"${test_dir}/bin/systemctl" <<'EOF'
 #!/bin/sh
+if [ -n "${UDM_IPTV_TEST_STALL_PHASE:-}" ] \
+	&& [ "${UDM_IPTV_TEST_STALL_PHASE}" = "${UDM_IPTV_CAPTURE_PHASE:-}" ]; then
+	exec sleep 30
+fi
 case "$*" in
 is-system-running*) echo running ;;
 is-enabled*) echo enabled ;;
@@ -123,6 +127,10 @@ EOF
 cat >"${test_dir}/bin/journalctl" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"${UDM_IPTV_JOURNAL_CALLS}"
+if [ -n "${UDM_IPTV_TEST_STALL_PHASE:-}" ] \
+	&& [ "${UDM_IPTV_TEST_STALL_PHASE}" = "${UDM_IPTV_CAPTURE_PHASE:-}" ]; then
+	exec sleep 30
+fi
 case " $* " in
 *' --show-cursor '*)
 	if [ -n "${UDM_IPTV_TEST_CURSOR_DELAY:-}" ]; then
@@ -303,13 +311,15 @@ unsafe_json=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.json
 unsafe_text="${test_dir}/output/udm-iptv-diagnostics-unsafe.txt"
 unsafe_ready=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.ready")
 ln -s "${test_dir}/symlink-target" "${unsafe_text}"
-if ${diagnostics} --worker 1 normal both "${unsafe_json}" "${unsafe_text}" - "${unsafe_ready}" >/dev/null 2>&1; then
+worker_deadline=$(awk '{ printf "%.0f\n", ($1 + 1) * 1000 }' /proc/uptime)
+if ${diagnostics} --worker 1 normal both "${unsafe_json}" "${unsafe_text}" - \
+	"${worker_deadline}" "${unsafe_ready}" >/dev/null 2>&1; then
 	echo 'diagnostics worker unexpectedly accepted a symlink output file' >&2
 	exit 1
 fi
 rm -f "${unsafe_json}" "${unsafe_text}" "${unsafe_ready}"
 
-capture_output=$(${diagnostics} --capture 1s)
+capture_output=$(${diagnostics} --capture 8s)
 json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${capture_output}")
 text_file=$(sed -n 's/^Share-ready text: //p' <<<"${capture_output}")
 worker_pid=$(sed -n 's/^Diagnostics capture started in the background (PID \([0-9][0-9]*\)).$/\1/p' <<<"${capture_output}")
@@ -343,7 +353,7 @@ jq -e -s '
 	    and (.network.nat_packets | type) == "number"
 	    and (.network.multicast_packets | type) == "number")
 	and (last | .kind == "capture" and .name == "completed")
-	and (last | .duration_seconds == 1 and .verbosity == "normal" and .format == "both")
+	and (last | .duration_seconds == 8 and .verbosity == "normal" and .format == "both")
 ' "${json_file}" >/dev/null
 grep -Fq -- '--after-cursor=s=diagnostics-test-cursor' "${UDM_IPTV_JOURNAL_CALLS}"
 if grep -Fq -- '--since' "${UDM_IPTV_JOURNAL_CALLS}"; then
@@ -367,7 +377,7 @@ if grep -Fq '198.51.100.77' "${json_file}" "${text_file}"; then
 fi
 grep -Fq 'current assigned address <device-address>' "${json_file}" "${text_file}"
 
-render_failure_output=$(UDM_IPTV_TEST_FAIL_RENDER=true ${diagnostics} --capture 1s --format text)
+render_failure_output=$(UDM_IPTV_TEST_FAIL_RENDER=true ${diagnostics} --capture 8s --format text)
 render_failure_text=$(sed -n 's/^Share-ready text: //p' <<<"${render_failure_output}")
 [[ -n ${render_failure_text} ]]
 
@@ -394,7 +404,8 @@ fi
 grep -Fq "Text rendering failed. Structured diagnostics remain at: ${render_failure_json}" \
 	"${render_failure_text}"
 
-short_capture_output=$(UDM_IPTV_TEST_STARTUP_DELAY=3 ${diagnostics} --capture 1s --format text)
+short_capture_output=$(UDM_IPTV_TEST_STARTUP_DELAY=3 \
+	${diagnostics} --capture 1s --format text --verbosity summary)
 short_capture_text=$(sed -n 's/^Share-ready text: //p' <<<"${short_capture_output}")
 [[ -n ${short_capture_text} ]]
 short_capture_completed=false
@@ -427,7 +438,7 @@ if compgen -G "${failed_capture_dir}/*" >/dev/null; then
 	exit 1
 fi
 
-slow_capture_output=$(UDM_IPTV_TEST_CURSOR_DELAY=3 ${diagnostics} --capture 1s --format json)
+slow_capture_output=$(UDM_IPTV_TEST_CURSOR_DELAY=1 ${diagnostics} --capture 8s --format json)
 slow_json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${slow_capture_output}")
 [[ -n ${slow_json_file} && -f ${slow_json_file} ]]
 slow_capture_completed=false
@@ -443,6 +454,31 @@ if [[ ${slow_capture_completed} == false ]]; then
 	echo 'diagnostics capture failed after slow journal cursor acquisition' >&2
 	exit 1
 fi
+
+for stalled_phase in initial sample final journal; do
+	stall_started=${SECONDS}
+	stalled_output=$(UDM_IPTV_TEST_STALL_PHASE=${stalled_phase} \
+		${diagnostics} --capture 1s --format json)
+	stalled_json=$(sed -n 's/^Structured JSON Lines: //p' <<<"${stalled_output}")
+	[[ -n ${stalled_json} && -f ${stalled_json} ]]
+	stalled_timed_out=false
+	for _ in {1..40}; do
+		if jq -e -s 'last | .kind == "capture" and .name == "timeout"' \
+			"${stalled_json}" >/dev/null 2>&1; then
+			stalled_timed_out=true
+			break
+		fi
+		sleep 0.1
+	done
+	if [[ ${stalled_timed_out} == false ]]; then
+		echo "${stalled_phase} collector was not bounded by the capture deadline" >&2
+		exit 1
+	fi
+	if (( SECONDS - stall_started > 4 )); then
+		echo "${stalled_phase} collector extended a one-second capture too far" >&2
+		exit 1
+	fi
+done
 
 UDM_IPTV_DIAGNOSTICS_HELPER="${diagnostics}" "${root}/udm-iptv" diagnose --help \
 	| grep -Fq -- '--capture DURATION'
