@@ -210,3 +210,34 @@ NO_GATEWAY="` + noGateway + `"
 		})
 	}
 }
+
+func TestImportLegacyPreservesLANSourceRanges(t *testing.T) {
+	t.Parallel()
+	legacy := filepath.Join(t.TempDir(), "udm-iptv.conf")
+	content := `IPTV_WAN_INTERFACE="eth8"
+IPTV_WAN_VLAN="4"
+IPTV_WAN_RANGES="213.75.0.0/16 217.166.0.0/16 195.121.0.0/16"
+IPTV_LAN_RANGES="192.0.2.10 198.51.100.0/24 192.0.2.10/32"
+IPTV_LAN_INTERFACES="br0"
+IPTV_IGMPPROXY_PROGRAM="igmpproxy"
+IPTV_IGMPPROXY_IGMP_VERSION="3"
+`
+	if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := ImportLegacy(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Profile != "kpn" {
+		t.Fatalf("profile = %q, want kpn", value.Profile)
+	}
+	for _, source := range []string{"213.75.0.0/16", "192.0.2.10/32", "198.51.100.0/24"} {
+		if !slices.Contains(value.Proxy.SourceRanges, source) {
+			t.Errorf("proxy sources %q do not contain %q", value.Proxy.SourceRanges, source)
+		}
+	}
+	if count := len(value.Proxy.SourceRanges); count != 5 {
+		t.Fatalf("proxy sources contain duplicates: %q", value.Proxy.SourceRanges)
+	}
+}

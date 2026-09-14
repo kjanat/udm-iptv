@@ -17,6 +17,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/google/go-github/v80/github"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/vishvananda/netlink"
 )
 
 func TestProxyConfigurationKeepsNATOutOfImproxy(t *testing.T) {
@@ -44,6 +45,29 @@ func TestSanitizeCommonIdentifiers(t *testing.T) {
 	}
 	if !strings.Contains(output, "195.121.94.212") {
 		t.Fatalf("public provider address was removed: %s", output)
+	}
+}
+
+func TestDiagnosticSanitizerRetainsObservedAndConfiguredAddresses(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.json")
+	value := config.Default()
+	value.WAN.StaticAddress = "198.51.100.10/24"
+	if err := config.Save(path, value); err != nil {
+		t.Fatal(err)
+	}
+	sanitizer := newDiagnosticSanitizer(path)
+	sanitizer.observe([]string{"203.0.113.20"})
+	sanitizer.observe([]string{"203.0.113.21"})
+	output := sanitizer.sanitize("configured 198.51.100.10 old 203.0.113.20 current 203.0.113.21 provider 195.121.94.212")
+	for _, secret := range []string{"198.51.100.10", "203.0.113.20", "203.0.113.21"} {
+		if strings.Contains(output, secret) {
+			t.Errorf("%q was not redacted: %s", secret, output)
+		}
+	}
+	if !strings.Contains(output, "195.121.94.212") {
+		t.Fatalf("unobserved provider address was removed: %s", output)
 	}
 }
 
@@ -196,6 +220,27 @@ func TestDHCPReadinessRequiresIPv4(t *testing.T) {
 	}
 	if !hasIPv4Address([]net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.2"), Mask: net.CIDRMask(24, 32)}}) {
 		t.Fatal("DHCP-assigned IPv4 address did not satisfy readiness")
+	}
+}
+
+func TestStaticAddressDeletionRecognition(t *testing.T) {
+	t.Parallel()
+	deleted := netlink.AddrUpdate{
+		LinkAddress: net.IPNet{IP: net.ParseIP("10.20.30.1"), Mask: net.CIDRMask(24, 32)},
+		LinkIndex:   8,
+	}
+	if !staticAddressDeleted("10.20.30.1/24", 8, deleted) {
+		t.Fatal("configured static address deletion was not recognized")
+	}
+	for name, update := range map[string]netlink.AddrUpdate{
+		"addition":      {LinkAddress: deleted.LinkAddress, LinkIndex: 8, NewAddr: true},
+		"other link":    {LinkAddress: deleted.LinkAddress, LinkIndex: 9},
+		"other address": {LinkAddress: net.IPNet{IP: net.ParseIP("10.20.30.2"), Mask: net.CIDRMask(24, 32)}, LinkIndex: 8},
+		"other prefix":  {LinkAddress: net.IPNet{IP: net.ParseIP("10.20.30.1"), Mask: net.CIDRMask(32, 32)}, LinkIndex: 8},
+	} {
+		if staticAddressDeleted("10.20.30.1/24", 8, update) {
+			t.Errorf("%s was treated as the configured address deletion", name)
+		}
 	}
 }
 

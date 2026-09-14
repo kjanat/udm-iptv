@@ -6,10 +6,10 @@ on:
       - v*
 
 jobs:
-  release:
-    name: Release
+  build:
+    name: Build and attest
     runs-on: ubuntu-latest
-    permissions: { contents: write, id-token: write, attestations: write, artifact-metadata: write }
+    permissions: { contents: read, id-token: write, attestations: write, artifact-metadata: write }
     steps:
       - name: Checkout Sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -21,18 +21,20 @@ jobs:
         run: go test ./...
       - name: Check Go vulnerabilities
         run: go tool govulncheck ./...
-      - name: Create Draft Release and Upload Assets
-        uses: goreleaser/goreleaser-action@v7
+      - name: Build Release Assets
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
-          version: latest
-          args: release --clean
+          version: v2.18.1
+          args: release --clean --skip=publish
         env: { GITHUB_TOKEN: "${{ github.token }}" }
+      - name: Materialize Binary Release Asset
+        run: install -m 0755 dist/udm-iptv_linux_arm64_v8.0/udm-iptv dist/udm-iptv-linux-arm64
       - name: Attest Packages
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
-            dist/**/udm-iptv
+            dist/udm-iptv-linux-arm64
             dist/*.deb
             dist/SHA256SUMS
       - name: Upload Artifacts
@@ -41,9 +43,42 @@ jobs:
           name: build-artifacts
           if-no-files-found: error
           path: |
-            dist/**/udm-iptv
+            dist/udm-iptv-linux-arm64
             dist/*.deb
             dist/SHA256SUMS
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - name: Download Attested Artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: build-artifacts
+          path: dist
       - name: Publish Release
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh release edit "${GITHUB_REF#"refs/tags/"}" --draft=false
+        run: |
+          tag="${GITHUB_REF#"refs/tags/"}"
+          assets=(dist/udm-iptv-linux-arm64 dist/*.deb dist/SHA256SUMS)
+          for asset in "${assets[@]}"; do
+            test -f "${asset}"
+          done
+
+          state=$(gh release view "${tag}" --json isDraft --jq .isDraft 2>/dev/null || true)
+          case "${state}" in
+            "") gh release create "${tag}" --draft --generate-notes --title "udm-iptv ${tag}" --verify-tag ;;
+            true) ;;
+            false)
+              echo "Release ${tag} is already published."
+              exit 0
+              ;;
+            *)
+              echo "Unexpected release state: ${state}" >&2
+              exit 1
+              ;;
+          esac
+          gh release upload "${tag}" "${assets[@]}" --clobber
+          gh release edit "${tag}" --draft=false

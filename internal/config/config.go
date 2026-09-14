@@ -215,16 +215,17 @@ func ImportLegacy(path string) (Config, error) {
 	}
 	value.Proxy.QuickLeave = values["IPTV_IGMPPROXY_DISABLE_QUICKLEAVE"] == "false"
 	value.Proxy.Debug = values["IPTV_IGMPPROXY_DEBUG"] == "true"
+	legacyLANSources := normalizeLegacyPrefixes(strings.Fields(values["IPTV_LAN_RANGES"]))
 	// Preserve old igmpproxy semantics during migration; new configurations keep
 	// source allowlists separate from NAT destinations.
 	if value.Proxy.Program == "igmpproxy" {
-		value.Proxy.SourceRanges = append([]string(nil), value.WAN.NATDestinations...)
+		value.Proxy.SourceRanges = mergePrefixes(value.WAN.NATDestinations, legacyLANSources)
 	}
 	if profile, found := InferLegacyProfile(value); found {
 		value.Profile = profile
 		known := profiles[profile].Config
 		value.WAN.NATDestinations = append([]string(nil), known.WAN.NATDestinations...)
-		value.Proxy.SourceRanges = append([]string(nil), known.Proxy.SourceRanges...)
+		value.Proxy.SourceRanges = mergePrefixes(known.Proxy.SourceRanges, legacyLANSources)
 	}
 	return value, value.Validate()
 }
@@ -243,6 +244,20 @@ func normalizeLegacyPrefixes(values []string) []string {
 			value = netip.PrefixFrom(address, 32).String()
 		}
 		result = append(result, value)
+	}
+	return result
+}
+
+func mergePrefixes(groups ...[]string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, values := range groups {
+		for _, value := range values {
+			if !seen[value] {
+				seen[value] = true
+				result = append(result, value)
+			}
+		}
 	}
 	return result
 }

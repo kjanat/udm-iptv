@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/spf13/cobra"
+	"github.com/vishvananda/netlink"
 )
 
 const runtimeStatePath = "/run/udm-iptv/state.json"
@@ -57,7 +59,7 @@ func (application *Application) runDaemon(parent context.Context) error {
 		return err
 	}
 	defer func() { _ = network.RemoveNAT(value) }()
-	var dhcpDone <-chan error
+	var dhcpDone, staticFailure <-chan error
 	if value.WAN.DHCP {
 		_, _ = sdnotify.SdNotify(false, "STATUS=Waiting for the IPTV DHCP lease")
 		if err := network.ResetLease(link); err != nil {
@@ -67,8 +69,14 @@ func (application *Application) runDaemon(parent context.Context) error {
 		if err != nil {
 			return err
 		}
-	} else if err := network.ApplyStatic(value, link); err != nil {
-		return err
+	} else {
+		staticFailure, err = startStaticReconciler(ctx, value, link)
+		if err != nil {
+			return err
+		}
+		if err := network.ApplyStatic(value, link); err != nil {
+			return err
+		}
 	}
 	if err := network.EnsureNAT(value); err != nil {
 		return err
@@ -128,6 +136,11 @@ func (application *Application) runDaemon(parent context.Context) error {
 			return nil
 		}
 		return unexpectedProcessExit("DHCP client", dhcpErr)
+	case staticErr := <-staticFailure:
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("reconcile static IPTV network: %w", staticErr)
 	case <-time.After(250 * time.Millisecond):
 	}
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
@@ -149,7 +162,69 @@ func (application *Application) runDaemon(parent context.Context) error {
 			return nil
 		}
 		return unexpectedProcessExit("DHCP client", dhcpErr)
+	case staticErr := <-staticFailure:
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("reconcile static IPTV network: %w", staticErr)
 	}
+}
+
+func startStaticReconciler(ctx context.Context, value config.Config, link netlink.Link) (<-chan error, error) {
+	failures := make(chan error, 1)
+	if value.WAN.StaticAddress == "" {
+		return nil, nil
+	}
+	updates := make(chan netlink.AddrUpdate, 4)
+	options := netlink.AddrSubscribeOptions{ErrorCallback: func(err error) {
+		select {
+		case failures <- err:
+		default:
+		}
+	}}
+	if err := netlink.AddrSubscribeWithOptions(updates, ctx.Done(), options); err != nil {
+		return nil, fmt.Errorf("subscribe to address changes: %w", err)
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case update, ok := <-updates:
+				if !ok {
+					if ctx.Err() == nil {
+						select {
+						case failures <- errors.New("address change subscription closed"):
+						default:
+						}
+					}
+					return
+				}
+				if staticAddressDeleted(value.WAN.StaticAddress, link.Attrs().Index, update) {
+					if err := network.ApplyStatic(value, link); err != nil {
+						select {
+						case failures <- err:
+						default:
+						}
+						return
+					}
+				}
+			}
+		}
+	}()
+	return failures, nil
+}
+
+func staticAddressDeleted(configured string, linkIndex int, update netlink.AddrUpdate) bool {
+	if update.NewAddr || update.LinkIndex != linkIndex {
+		return false
+	}
+	prefix, err := netip.ParsePrefix(configured)
+	if err != nil || !update.LinkAddress.IP.Equal(prefix.Addr().AsSlice()) {
+		return false
+	}
+	bits, size := update.LinkAddress.Mask.Size()
+	return size == 32 && bits == prefix.Bits()
 }
 
 func unexpectedProcessExit(name string, err error) error {

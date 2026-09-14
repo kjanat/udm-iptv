@@ -221,8 +221,12 @@ func (application *Application) capture(ctx context.Context, options diagnosticO
 	endsAt := startedAt.Add(options.Capture)
 	ctx, cancel := context.WithDeadline(signalContext, endsAt)
 	defer cancel()
+	sanitizer := newDiagnosticSanitizer(application.ConfigPath)
+	addressFailures, err := sanitizer.watch(ctx)
+	if err != nil {
+		return fmt.Errorf("observe device addresses: %w", err)
+	}
 	var jsonFile *os.File
-	var err error
 	if options.JSONPath != "" {
 		jsonFile, err = os.OpenFile(options.JSONPath, os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
@@ -290,16 +294,19 @@ func (application *Application) capture(ctx context.Context, options diagnosticO
 		select {
 		case <-ctx.Done():
 			loop = false
+		case addressErr := <-addressFailures:
+			return fmt.Errorf("observe device addresses: %w", addressErr)
 		case <-finalize.C:
 			loop = false
 		case <-ticker.C:
+			sanitizer.refresh()
 			current, snapshotErr := application.snapshotWithin(ctx)
 			if snapshotErr != nil {
 				if ctx.Err() != nil {
 					loop = false
 					continue
 				}
-				_ = write(diagnosticEvent{Time: time.Now().UTC(), Type: "error", Message: sanitize(snapshotErr.Error())})
+				_ = write(diagnosticEvent{Time: time.Now().UTC(), Type: "error", Message: sanitizer.sanitize(snapshotErr.Error())})
 				continue
 			}
 			if err := write(diagnosticEvent{Time: current.Timestamp, Type: "sample", Snapshot: &current}); err != nil {
@@ -313,8 +320,14 @@ func (application *Application) capture(ctx context.Context, options diagnosticO
 	if final, finalErr := application.snapshotWithin(ctx); finalErr == nil {
 		_ = write(diagnosticEvent{Time: final.Timestamp, Type: "final", Snapshot: &final})
 	}
+	select {
+	case addressErr := <-addressFailures:
+		return fmt.Errorf("observe device addresses: %w", addressErr)
+	default:
+	}
+	sanitizer.refresh()
 	for _, line := range journalLines(ctx, cursor, 10_000) {
-		_ = write(diagnosticEvent{Time: time.Now().UTC(), Type: "log", Log: sanitize(line)})
+		_ = write(diagnosticEvent{Time: time.Now().UTC(), Type: "log", Log: sanitizer.sanitize(line)})
 	}
 	if ctx.Err() != nil {
 		return write(diagnosticEvent{Time: time.Now().UTC(), Type: "timeout", Message: "Capture deadline reached; a collector may have stalled."})

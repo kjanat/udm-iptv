@@ -118,19 +118,6 @@ func (application *Application) install(ctx context.Context, replace bool) error
 	if err := atomicWrite(completionPath, completion.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("install Bash completion: %w", err)
 	}
-	for _, obsolete := range []string{
-		"/etc/systemd/system/udm-iptv-restore.service",
-		"/etc/systemd/system/multi-user.target.wants/udm-iptv-restore.service",
-		filepath.Join(application.StateDir, "udm-iptv-restore"),
-		filepath.Join(application.StateDir, "udm-iptv.deb"),
-		filepath.Join(application.StateDir, "debconf.preseed"),
-		filepath.Join(application.StateDir, "udm-iptv.conf"),
-		filepath.Join(application.StateDir, "legacy.conf"),
-	} {
-		if err := os.Remove(obsolete); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove obsolete installation file %s: %w", obsolete, err)
-		}
-	}
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
 		return fmt.Errorf("connect to systemd: %w", err)
@@ -149,7 +136,27 @@ func (application *Application) install(ctx context.Context, replace bool) error
 		application.reportHealthFailure(ctx)
 		return fmt.Errorf("installation completed but the service is unhealthy: %w", err)
 	}
+	if err := removeObsoleteLegacyFiles(application.StateDir); err != nil {
+		return err
+	}
 	return writef(application.Out, "Installed udm-iptv %s in %s.\n", application.Version, application.StateDir)
+}
+
+func removeObsoleteLegacyFiles(stateDir string) error {
+	for _, obsolete := range []string{
+		"/etc/systemd/system/udm-iptv-restore.service",
+		"/etc/systemd/system/multi-user.target.wants/udm-iptv-restore.service",
+		filepath.Join(stateDir, "udm-iptv-restore"),
+		filepath.Join(stateDir, "udm-iptv.deb"),
+		filepath.Join(stateDir, "debconf.preseed"),
+		filepath.Join(stateDir, "udm-iptv.conf"),
+		filepath.Join(stateDir, "legacy.conf"),
+	} {
+		if err := os.Remove(obsolete); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove obsolete installation file %s: %w", obsolete, err)
+		}
+	}
+	return nil
 }
 
 func removeLegacyPackage(ctx context.Context, output, errorOutput io.Writer) error {
