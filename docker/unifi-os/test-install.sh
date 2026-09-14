@@ -140,19 +140,85 @@ log_config() {
 
 assert_diagnostics() {
 	local name=$1
+	local json
 	local output
 	output=$(docker exec "${name}" udm-iptv diagnose 2>&1)
 	echo "${output}"
-	if ! grep -Fq '=== Package and System ===' <<<"${output}" \
+	if ! grep -Fq 'Share-ready udm-iptv diagnostics.' <<<"${output}" \
+		|| ! grep -Fq '=== Package and System ===' <<<"${output}" \
 		|| ! grep -Fq "Package: udm-iptv ${current_version} (installed)" <<<"${output}" \
+		|| grep -Fq 'Firmware: unknown' <<<"${output}" \
+		|| ! grep -Fq 'Proxy configured: improxy' <<<"${output}" \
 		|| ! grep -Fq '=== Service State ===' <<<"${output}" \
+		|| ! grep -Fq 'Unit enabled: enabled' <<<"${output}" \
+		|| ! grep -Fq 'Unit active: active' <<<"${output}" \
+		|| ! grep -Fq 'Proxy process: improxy' <<<"${output}" \
+		|| ! grep -Fq '=== NAT Rules ===' <<<"${output}" \
+		|| ! grep -Fq '=== Multicast Routes ===' <<<"${output}" \
+		|| ! grep -Fq '=== Service Details ===' <<<"${output}" \
 		|| ! grep -Fq 'Id=udm-iptv.service' <<<"${output}" \
 		|| ! grep -Fq 'UnitFileState=enabled' <<<"${output}" \
 		|| ! grep -Fq 'ActiveState=active' <<<"${output}" \
 		|| ! grep -Fq 'NRestarts=' <<<"${output}" \
-		|| ! grep -Fq '=== Pending Service Jobs ===' <<<"${output}" \
 		|| ! grep -Fq '=== Service Logs (current boot) ===' <<<"${output}"; then
 		report_error "production diagnostics are incomplete in ${name}"
+		return 1
+	fi
+
+	json=$(docker exec "${name}" udm-iptv diagnose --format json)
+	if ! jq -es '
+        length > 10
+        and all(.[]; .schema == "io.github.udm-iptv.diagnostics.v1")
+        and any(.[]; .kind == "section" and .section == "Multicast Routes")
+    ' <<<"${json}" >/dev/null; then
+		report_error "production diagnostics JSON is invalid in ${name}"
+		return 1
+	fi
+}
+
+assert_diagnostic_capture() {
+	local capture_output
+	local json_mode
+	local json_file
+	local name=$1
+	local text_mode
+	local text_file
+
+	capture_output=$(docker exec "${name}" \
+		udm-iptv diagnose --capture 1s --verbosity summary)
+	echo "${capture_output}"
+	json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${capture_output}")
+	text_file=$(sed -n 's/^Share-ready text: //p' <<<"${capture_output}")
+	if [[ -z ${json_file} || -z ${text_file} ]]; then
+		report_error "production diagnostics capture did not report its files in ${name}"
+		return 1
+	fi
+
+	for _ in {1..120}; do
+		if docker exec "${name}" test -s "${text_file}" \
+			&& docker exec "${name}" jq -es \
+				'last | .kind == "capture" and .name == "completed"' \
+				"${json_file}" >/dev/null 2>&1; then
+			break
+		fi
+		sleep 0.25
+	done
+
+	json_mode=$(docker exec "${name}" stat -c %a "${json_file}")
+	text_mode=$(docker exec "${name}" stat -c %a "${text_file}")
+	if ! docker exec "${name}" jq -es '
+        any(.[]; .kind == "sample")
+        and all(.[] | select(.kind == "sample");
+            (.network.routes | type) == "number"
+            and (.network.nat_packets | type) == "number"
+            and (.network.multicast_packets | type) == "number")
+        and (last | .kind == "capture" and .name == "completed")
+        and (last | .duration_seconds == 1 and .verbosity == "summary" and .format == "both")
+    ' "${json_file}" >/dev/null \
+		|| ! docker exec "${name}" grep -Fq 'Capture completed:' "${text_file}" \
+		|| [[ ${json_mode} != 600 ]] \
+		|| [[ ${text_mode} != 600 ]]; then
+		report_error "production diagnostics capture is incomplete in ${name}"
 		return 1
 	fi
 }
@@ -500,6 +566,7 @@ docker exec "${from_name}" udm-iptv upgrade --package /tmp/udm-iptv.deb
 log_config "${from_name}" "after package upgrade"
 assert_version "${from_name}" "${current_version}"
 assert_diagnostics "${from_name}"
+assert_diagnostic_capture "${from_name}"
 
 docker exec "${from_name}" mkdir -p /etc/systemd/system/udm-iptv.service.d
 docker exec "${from_name}" sh -c \

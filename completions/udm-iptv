@@ -39,52 +39,76 @@ _udm_iptv() {
 	_udm_iptv_seen -- && return
 
 	case ${command} in
-	upgrade)
-		case ${previous} in
-		--package | --token-file)
-			_udm_iptv_complete_files "${current}"
-			return
-			;;
-		--run)
-			mapfile -t COMPREPLY < <(compgen -W 'latest' -- "${current}" || true)
-			return
-			;;
-		--version | --repository | --branch | --pr | --timeout)
-			return
-			;;
-		*) ;;
-		esac
+		diag | diagnose)
+			case ${previous} in
+				--capture)
+					mapfile -t COMPREPLY < <(compgen -W '30s 5m 1h 6h' -- "${current}" || true)
+					return
+					;;
+				--format)
+					mapfile -t COMPREPLY < <(compgen -W 'text json both' -- "${current}" || true)
+					return
+					;;
+				--verbosity)
+					mapfile -t COMPREPLY < <(compgen -W 'summary normal debug' -- "${current}" || true)
+					return
+					;;
+				*) ;;
+			esac
 
-		if ! _udm_iptv_seen -h && ! _udm_iptv_seen --help; then
-			options+=(-h --help)
-		fi
-		_udm_iptv_seen --force || options+=(--force)
-		_udm_iptv_seen --repository || options+=(--repository)
-		_udm_iptv_seen --branch || options+=(--branch)
-		_udm_iptv_seen --token-file || options+=(--token-file)
-		_udm_iptv_seen --timeout || options+=(--timeout)
-
-		for option in --latest --version --package --pr --run; do
-			if _udm_iptv_seen "${option}"; then
-				source_selected=true
-				break
+			if ! _udm_iptv_seen -h && ! _udm_iptv_seen --help; then
+				options+=(-h --help)
 			fi
-		done
-		if [[ ${source_selected} == false ]]; then
-			options+=(--latest --version --package --pr --run)
-		fi
-		;;
-	uninstall)
-		if ! _udm_iptv_seen -h && ! _udm_iptv_seen --help; then
-			options+=(-h --help)
-		fi
-		if ! _udm_iptv_seen --purge && ! _udm_iptv_seen --keep-data; then
-			options+=(--purge --keep-data)
-		fi
-		;;
-	*)
-		return
-		;;
+			_udm_iptv_seen --capture || options+=(--capture)
+			_udm_iptv_seen --format || options+=(--format)
+			_udm_iptv_seen --verbosity || options+=(--verbosity)
+			;;
+		upgrade)
+			case ${previous} in
+				--package | --token-file)
+					_udm_iptv_complete_files "${current}"
+					return
+					;;
+				--run)
+					mapfile -t COMPREPLY < <(compgen -W 'latest' -- "${current}" || true)
+					return
+					;;
+				--version | --repository | --branch | --pr | --timeout)
+					return
+					;;
+				*) ;;
+			esac
+
+			if ! _udm_iptv_seen -h && ! _udm_iptv_seen --help; then
+				options+=(-h --help)
+			fi
+			_udm_iptv_seen --force || options+=(--force)
+			_udm_iptv_seen --repository || options+=(--repository)
+			_udm_iptv_seen --branch || options+=(--branch)
+			_udm_iptv_seen --token-file || options+=(--token-file)
+			_udm_iptv_seen --timeout || options+=(--timeout)
+
+			for option in --latest --version --package --pr --run; do
+				if _udm_iptv_seen "${option}"; then
+					source_selected=true
+					break
+				fi
+			done
+			if [[ ${source_selected} == false ]]; then
+				options+=(--latest --version --package --pr --run)
+			fi
+			;;
+		uninstall)
+			if ! _udm_iptv_seen -h && ! _udm_iptv_seen --help; then
+				options+=(-h --help)
+			fi
+			if ! _udm_iptv_seen --purge && ! _udm_iptv_seen --keep-data; then
+				options+=(--purge --keep-data)
+			fi
+			;;
+		*)
+			return
+			;;
 	esac
 
 	mapfile -t COMPREPLY < <(compgen -W "${options[*]}" -- "${current}" || true)

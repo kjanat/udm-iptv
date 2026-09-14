@@ -354,15 +354,51 @@ Please keep [GitHub Issues](https://github.com/kjanat/udm-iptv/issues)
 only for bugs or feature requests related to the project (no configuration-related issues).
 
 When opening a discussion or reporting an issue, **please share the name of your
-ISP as well as the diagnostics reported by our diagnostic tool**:
+ISP as well as the diagnostics reported by the diagnostic tool**:
 
 ```sh
 udm-iptv diagnose
 ```
 
 The report includes the installed package and firmware versions, network state,
-pending systemd jobs, service state and restart counters, and logs from the
-current boot. A failed installation prints the same report automatically.
+NAT counters, multicast routes, relevant systemd unit state and restart
+counters, and logs from the current boot. A failed installation prints the same
+report automatically.
+
+The report is designed for public sharing. Addresses assigned to the device,
+private and link-local addresses, IPv6 addresses, multicast group addresses,
+MAC addresses and the router hostname are redacted. Packet payloads, serial
+numbers, credentials and exact DHCP option values are not collected. Public
+provider source addresses and route prefixes remain visible because those are
+needed to diagnose IPTV routing. Always review a report before posting it.
+
+For intermittent freezes or channel-switching failures, start a bounded capture
+before watching television:
+
+```sh
+udm-iptv diagnose --capture 2h
+```
+
+The command returns immediately. The capture continues after the SSH session is
+closed and stops automatically after the requested duration, with a maximum of
+24 hours. By default it writes two mode-`0600` files under `/tmp`: readable plain
+text for people and JSON Lines for structured analysis. JSON Lines is the
+canonical event stream and remains parseable when a capture is interrupted.
+Neither file contains an unsanitized copy of the collected data.
+
+Select an output format or amount of detail when needed:
+
+```sh
+udm-iptv diagnose --format json
+udm-iptv diagnose --capture 30m --format text
+udm-iptv diagnose --capture 15m --verbosity debug
+```
+
+`summary` records package, configuration and service health once per minute;
+`normal` adds routes, NAT, multicast state and bounded service logs with samples
+every 15 seconds; `debug` adds the generated proxy configuration, retains more
+sanitized log messages and samples every five seconds. Run
+`udm-iptv diagnose --help` for the complete option list.
 
 ## Contributing
 
