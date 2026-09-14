@@ -6,6 +6,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 test_dir=$(mktemp -d)
 trap 'rm -rf "${test_dir}"' EXIT
 mkdir -p "${test_dir}/bin" "${test_dir}/proc/4242" "${test_dir}/output"
+printf '10.207.100.210\n' >"${test_dir}/address-state"
 real_date=$(command -v date)
 real_jq=$(command -v jq)
 
@@ -83,7 +84,8 @@ case "$*" in
     echo '38: iptv@eth8: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT link/ether aa:bb:cc:dd:ee:ff'
     ;;
 '-o -4 addr show dev iptv')
-    echo '38: iptv inet 10.207.100.210/20 brd 10.207.111.255 scope global iptv'
+    address=$(cat "${UDM_IPTV_ADDRESS_STATE}")
+    echo "38: iptv inet ${address}/20 brd 10.207.111.255 scope global iptv"
     ;;
 '-4 route get 1.1.1.1')
     echo "1.1.1.1 via 145.23.42.1 dev ppp0 src ${UDM_IPTV_TEST_DEVICE_ADDRESS:-145.23.42.7}"
@@ -115,6 +117,9 @@ cat >"${test_dir}/bin/journalctl" <<'EOF'
 printf '%s\n' "$*" >>"${UDM_IPTV_JOURNAL_CALLS}"
 case " $* " in
 *' --show-cursor '*)
+	if [ -n "${UDM_IPTV_TEST_CURSOR_DELAY:-}" ]; then
+		sleep "${UDM_IPTV_TEST_CURSOR_DELAY}"
+	fi
 	echo '-- cursor: s=diagnostics-test-cursor'
 	exit
 	;;
@@ -123,14 +128,18 @@ case " $* " in
 		for (i = 0; i < 2500; i++)
 			printf "provider event %d abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n", i
 	}'
+	printf 'current assigned address %s\n' "$(cat "${UDM_IPTV_ADDRESS_STATE}")"
 	exit
 	;;
 esac
 cat <<LOGS
 ${UDM_IPTV_TEST_HOSTNAME:-private-router-name} udhcpc: lease of 10.207.100.210 obtained
+${UDM_IPTV_TEST_HOSTNAME:-private-router-name}.local qualified hostname
 udhcpc: lease of 145.23.42.9 obtained; subscriber address 145.23.42.7 and static address 203.0.113.17
 interface aa:bb:cc:dd:ee:ff joined 224.0.250.64 from provider 195.121.94.212
 provider 11.2.3.45 observed assigned ${UDM_IPTV_TEST_DEVICE_ADDRESS:-145.23.42.7}
+event at 12:34:56 has identifier abc:def:
+IPv6 endpoints 2001:db8::1, ::1, and ::ffff:192.0.2.128
 udm-iptv.service remains active
 LOGS
 EOF
@@ -161,6 +170,7 @@ export UDM_IPTV_DIAGNOSTICS_DIR="${test_dir}/output"
 export UDM_IPTV_PROC_DIR="${test_dir}/proc"
 export UDM_IPTV_PROXY_CONFIG_FILE="${test_dir}/proxy-config"
 export UDM_IPTV_JOURNAL_CALLS="${test_dir}/journal-calls"
+export UDM_IPTV_ADDRESS_STATE="${test_dir}/address-state"
 export UDM_IPTV_REAL_DATE="${real_date}"
 export UDM_IPTV_REAL_JQ="${real_jq}"
 
@@ -179,6 +189,8 @@ grep -Fq '<device-address>' <<<"${text}"
 grep -Fq '<multicast-group>' <<<"${text}"
 grep -Fq '<mac>' <<<"${text}"
 grep -Fq '<router-hostname>' <<<"${text}"
+grep -Fq '<ipv6-address>' <<<"${text}"
+grep -Fq 'event at 12:34:56 has identifier abc:def:' <<<"${text}"
 if grep -Fq '\1<' <<<"${text}"; then
 	echo 'diagnostics contain a literal regex replacement marker' >&2
 	exit 1
@@ -231,6 +243,17 @@ jq -e -s '
     and any(.[]; .kind == "section" and .section == "Multicast Routes")
 ' <<<"${json}" >/dev/null
 
+missing_output_dir="${test_dir}/missing/output"
+streamed_text=$(UDM_IPTV_DIAGNOSTICS_DIR="${missing_output_dir}" ${diagnostics})
+grep -Fq 'Share-ready udm-iptv diagnostics.' <<<"${streamed_text}"
+streamed_json=$(UDM_IPTV_DIAGNOSTICS_DIR="${missing_output_dir}" ${diagnostics} --format json)
+jq -e -s 'length > 10 and all(.[]; .schema == "io.github.udm-iptv.diagnostics.v1")' \
+	<<<"${streamed_json}" >/dev/null
+if [[ -e ${missing_output_dir} ]]; then
+	echo 'one-time diagnostics unexpectedly required an output directory' >&2
+	exit 1
+fi
+
 if ${diagnostics} --format both >/dev/null 2>&1; then
 	echo 'one-time diagnostics unexpectedly accepted --format both' >&2
 	exit 1
@@ -255,7 +278,7 @@ fi
 unsafe_json=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.jsonl")
 unsafe_text="${test_dir}/output/udm-iptv-diagnostics-unsafe.txt"
 ln -s "${test_dir}/symlink-target" "${unsafe_text}"
-if ${diagnostics} --worker 1 normal both "${unsafe_json}" "${unsafe_text}" >/dev/null 2>&1; then
+if ${diagnostics} --worker 1 normal both "${unsafe_json}" "${unsafe_text}" - >/dev/null 2>&1; then
 	echo 'diagnostics worker unexpectedly accepted a symlink output file' >&2
 	exit 1
 fi
@@ -269,6 +292,7 @@ worker_pid=$(sed -n 's/^Diagnostics capture started in the background (PID \([0-
 [[ -f ${json_file} && ! -L ${json_file} ]]
 [[ -f ${text_file} && ! -L ${text_file} ]]
 kill -HUP "${worker_pid}"
+printf '198.51.100.77\n' >"${UDM_IPTV_ADDRESS_STATE}"
 
 capture_completed=false
 for _ in {1..100}; do
@@ -310,6 +334,28 @@ text_mode=$(stat -c %a "${text_file}")
 if grep -Eq '10\.207\.100\.210|192\.168\.10\.51|145\.23\.42\.(7|9)|203\.0\.113\.17|224\.0\.250\.64|aa:bb:cc:dd:ee:ff|private-router-name|0xdeadbeef' \
 	"${json_file}" "${text_file}"; then
 	echo 'capture files contain unredacted diagnostic data' >&2
+	exit 1
+fi
+if grep -Fq '198.51.100.77' "${json_file}" "${text_file}"; then
+	echo 'capture files leaked an address assigned after capture startup' >&2
+	exit 1
+fi
+grep -Fq 'current assigned address <device-address>' "${json_file}" "${text_file}"
+
+slow_capture_output=$(UDM_IPTV_TEST_CURSOR_DELAY=3 ${diagnostics} --capture 1s --format json)
+slow_json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${slow_capture_output}")
+[[ -n ${slow_json_file} && -f ${slow_json_file} ]]
+slow_capture_completed=false
+for _ in {1..100}; do
+	if jq -e -s 'last | .kind == "capture" and .name == "completed"' \
+		"${slow_json_file}" >/dev/null 2>&1; then
+		slow_capture_completed=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${slow_capture_completed} == false ]]; then
+	echo 'diagnostics capture failed after slow journal cursor acquisition' >&2
 	exit 1
 fi
 
