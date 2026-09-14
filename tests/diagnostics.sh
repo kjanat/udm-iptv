@@ -320,14 +320,27 @@ fi
 unsafe_json=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.jsonl")
 unsafe_text="${test_dir}/output/udm-iptv-diagnostics-unsafe.txt"
 unsafe_ready=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.ready")
+unsafe_marker=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-unsafe-XXXXXX.collector-timeout")
 ln -s "${test_dir}/symlink-target" "${unsafe_text}"
 worker_deadline=$(awk '{ printf "%.0f\n", ($1 + 1) * 1000 }' /proc/uptime)
 if ${diagnostics} --worker 1 normal both "${unsafe_json}" "${unsafe_text}" - \
-	"${worker_deadline}" "${unsafe_ready}" >/dev/null 2>&1; then
+	"${worker_deadline}" "${unsafe_ready}" "${unsafe_marker}" >/dev/null 2>&1; then
 	echo 'diagnostics worker unexpectedly accepted a symlink output file' >&2
 	exit 1
 fi
-rm -f "${unsafe_json}" "${unsafe_text}" "${unsafe_ready}"
+rm -f "${unsafe_json}" "${unsafe_text}" "${unsafe_ready}" "${unsafe_marker}"
+
+marker_json=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-marker-XXXXXX.jsonl")
+marker_ready=$(mktemp "${test_dir}/output/udm-iptv-diagnostics-marker-XXXXXX.ready")
+marker_path="${test_dir}/output/udm-iptv-diagnostics-marker.collector-timeout"
+ln -s "${test_dir}/marker-target" "${marker_path}"
+if ${diagnostics} --worker 1 summary json "${marker_json}" - - \
+	"${worker_deadline}" "${marker_ready}" "${marker_path}" >/dev/null 2>&1; then
+	echo 'diagnostics worker unexpectedly accepted a symlink timeout marker' >&2
+	exit 1
+fi
+[[ ! -e ${test_dir}/marker-target ]]
+rm -f "${marker_json}" "${marker_ready}" "${marker_path}"
 
 capture_output=$(${diagnostics} --capture 8s)
 json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${capture_output}")
@@ -433,6 +446,23 @@ fi
 grep -Fq 'Capture completed:' "${short_capture_text}"
 if compgen -G "${test_dir}/output/*.ready" >/dev/null; then
 	echo 'diagnostics capture left a readiness signal behind' >&2
+	exit 1
+fi
+
+interrupted_dir="${test_dir}/interrupted-output"
+mkdir "${interrupted_dir}"
+UDM_IPTV_DIAGNOSTICS_DIR="${interrupted_dir}" UDM_IPTV_TEST_STARTUP_DELAY=10 \
+	${diagnostics} --capture 2s --format json >/dev/null 2>&1 &
+launcher_pid=$!
+for _ in {1..40}; do
+	compgen -G "${interrupted_dir}/*.ready" >/dev/null && break
+	sleep 0.05
+done
+compgen -G "${interrupted_dir}/*.ready" >/dev/null
+kill -TERM "${launcher_pid}"
+wait "${launcher_pid}" 2>/dev/null || true
+if compgen -G "${interrupted_dir}/*.ready" >/dev/null; then
+	echo 'interrupted diagnostics launcher left a readiness signal behind' >&2
 	exit 1
 fi
 
