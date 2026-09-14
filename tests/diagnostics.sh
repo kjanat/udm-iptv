@@ -342,23 +342,6 @@ if grep -Fq '198.51.100.77' "${json_file}" "${text_file}"; then
 fi
 grep -Fq 'current assigned address <device-address>' "${json_file}" "${text_file}"
 
-slow_capture_output=$(UDM_IPTV_TEST_CURSOR_DELAY=3 ${diagnostics} --capture 1s --format json)
-slow_json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${slow_capture_output}")
-[[ -n ${slow_json_file} && -f ${slow_json_file} ]]
-slow_capture_completed=false
-for _ in {1..100}; do
-	if jq -e -s 'last | .kind == "capture" and .name == "completed"' \
-		"${slow_json_file}" >/dev/null 2>&1; then
-		slow_capture_completed=true
-		break
-	fi
-	sleep 0.1
-done
-if [[ ${slow_capture_completed} == false ]]; then
-	echo 'diagnostics capture failed after slow journal cursor acquisition' >&2
-	exit 1
-fi
-
 render_failure_output=$(UDM_IPTV_TEST_FAIL_RENDER=true ${diagnostics} --capture 1s --format text)
 render_failure_text=$(sed -n 's/^Share-ready text: //p' <<<"${render_failure_output}")
 [[ -n ${render_failure_text} ]]
@@ -385,6 +368,23 @@ if [[ ${render_failure_completed} == false ]]; then
 fi
 grep -Fq "Text rendering failed. Structured diagnostics remain at: ${render_failure_json}" \
 	"${render_failure_text}"
+
+slow_capture_output=$(UDM_IPTV_TEST_CURSOR_DELAY=3 ${diagnostics} --capture 1s --format json)
+slow_json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${slow_capture_output}")
+[[ -n ${slow_json_file} && -f ${slow_json_file} ]]
+slow_capture_completed=false
+for _ in {1..100}; do
+	if jq -e -s 'last | .kind == "capture" and .name == "completed"' \
+		"${slow_json_file}" >/dev/null 2>&1; then
+		slow_capture_completed=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${slow_capture_completed} == false ]]; then
+	echo 'diagnostics capture failed after slow journal cursor acquisition' >&2
+	exit 1
+fi
 
 UDM_IPTV_DIAGNOSTICS_HELPER="${diagnostics}" "${root}/udm-iptv" diagnose --help \
 	| grep -Fq -- '--capture DURATION'
