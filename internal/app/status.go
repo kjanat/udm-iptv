@@ -135,7 +135,7 @@ func (application *Application) snapshot(ctx context.Context) (snapshot, error) 
 	}
 	if connection, connectionErr := systemd.NewSystemConnectionContext(ctx); connectionErr == nil {
 		defer connection.Close()
-		if properties, propertyErr := connection.GetUnitPropertiesContext(ctx, "udm-iptv.service"); propertyErr == nil {
+		if properties, propertyErr := connection.GetAllPropertiesContext(ctx, "udm-iptv.service"); propertyErr == nil {
 			result.Service.LoadState, _ = properties["LoadState"].(string)
 			result.Service.ActiveState, _ = properties["ActiveState"].(string)
 			result.Service.SubState, _ = properties["SubState"].(string)
@@ -179,6 +179,7 @@ Proxy sources: %s
 LAN interfaces: %s
 Service: %s/%s (%s, restarts: %d)
 Proxy: %s (PID %d)
+IGMP version: %d, quickleave enabled: %t, proxy debug logging: %t
 IPTV interface: %s (%s, %d IPv4 addresses)
 Routes: %s
 IPTV default route: %t
@@ -187,7 +188,8 @@ Multicast routes: %d (%d packets)
 		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, strings.Join(value.Config.NATDestinations, ", "),
 		len(value.NAT), strings.Join(value.Config.ProxySourceRanges, ", "), strings.Join(value.Config.LANInterfaces, ", "),
 		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts,
-		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount,
+		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, value.Config.QuickLeave, value.Config.Debug,
+		value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount,
 		strings.Join(value.Network.Routes, ", "), value.Network.DefaultRoute, value.Multicast.Routes, value.Multicast.Packets)
 }
 

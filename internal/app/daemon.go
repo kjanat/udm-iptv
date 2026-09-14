@@ -373,41 +373,24 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 }
 
 func (application *Application) waitHealthy(ctx context.Context, startup, stable time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, startup+stable)
+	defer cancel()
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
 		return err
 	}
 	defer connection.Close()
-	deadline := time.Now().Add(startup)
-	var initial runtimeState
-	for time.Now().Before(deadline) {
-		properties, propertyErr := connection.GetUnitPropertiesContext(ctx, "udm-iptv.service")
-		state, stateErr := readRuntimeState()
-		if propertyErr == nil && stateErr == nil && properties["ActiveState"] == "active" && processExists(state.ProxyPID) {
-			initial = state
-			break
+	return observeServiceHealth(ctx, startup, stable, 250*time.Millisecond, func(ctx context.Context) (healthSample, error) {
+		properties, err := connection.GetAllPropertiesContext(ctx, "udm-iptv.service")
+		if err != nil {
+			return healthSample{}, fmt.Errorf("read service state: %w", err)
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(250 * time.Millisecond):
+		state, err := readRuntimeState()
+		if err != nil {
+			return healthSample{}, fmt.Errorf("read proxy state: %w", err)
 		}
-	}
-	if initial.ProxyPID == 0 {
-		return fmt.Errorf("service did not become ready within %s", startup)
-	}
-	timer := time.NewTimer(stable)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-	}
-	current, err := readRuntimeState()
-	if err != nil || current.ProxyPID != initial.ProxyPID || !processExists(current.ProxyPID) {
-		return errors.New("proxy did not remain stable")
-	}
-	return nil
+		return checkedHealthSample(properties, state, processExists(state.ProxyPID))
+	})
 }
 
 func readRuntimeState() (runtimeState, error) {

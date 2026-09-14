@@ -15,6 +15,10 @@ jobs:
         with: { go-version-file: go.mod, cache-dependency-path: go.sum }
       - name: Test Go
         run: go test -race ./...
+      - name: Test DHCP renewal in an isolated network namespace
+        run: |
+          go test -c -tags integration -o "${RUNNER_TEMP}/network.test" ./internal/network
+          sudo "${RUNNER_TEMP}/network.test" -test.run '^TestKernelLeaseRenewal$' -test.v
       - name: Vet Go
         run: go vet ./...
       - name: Lint Go

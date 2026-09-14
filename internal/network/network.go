@@ -172,18 +172,39 @@ func LeaseFromEnvironment(action string) (Lease, error) {
 }
 
 func ApplyLease(lease Lease, allowDefaultRoute bool) error {
-	link, err := netlink.LinkByName(lease.Interface)
+	return applyLease(lease, allowDefaultRoute, leaseOperations{
+		link: netlink.LinkByName, addresses: netlink.AddrList,
+		replaceAddress: netlink.AddrReplace, deleteAddress: netlink.AddrDel,
+		up: netlink.LinkSetUp, routes: netlink.RouteListFiltered,
+		replaceRoute: netlink.RouteReplace, deleteRoute: netlink.RouteDel,
+	})
+}
+
+type leaseOperations struct {
+	link           func(string) (netlink.Link, error)
+	addresses      func(netlink.Link, int) ([]netlink.Addr, error)
+	replaceAddress func(netlink.Link, *netlink.Addr) error
+	deleteAddress  func(netlink.Link, *netlink.Addr) error
+	up             func(netlink.Link) error
+	routes         func(int, *netlink.Route, uint64) ([]netlink.Route, error)
+	replaceRoute   func(*netlink.Route) error
+	deleteRoute    func(*netlink.Route) error
+}
+
+func applyLease(lease Lease, allowDefaultRoute bool, ops leaseOperations) error {
+	if lease.Action != "deconfig" && lease.Action != "bound" && lease.Action != "renew" {
+		return nil
+	}
+	link, err := ops.link(lease.Interface)
 	if err != nil {
 		return err
 	}
 	if lease.Action == "deconfig" {
-		if err := flushDHCPRoutes(link.Attrs().Index); err != nil {
+		if err := reconcileLeaseRoutes(link.Attrs().Index, nil, ops); err != nil {
 			return err
 		}
-		return flushAddresses(link)
-	}
-	if lease.Action != "bound" && lease.Action != "renew" {
-		return nil
+		_, err := removeOldLeaseAddresses(link, nil, ops)
+		return err
 	}
 	prefixLength, err := maskBits(lease.Mask)
 	if err != nil {
@@ -193,64 +214,89 @@ func ApplyLease(lease Lease, allowDefaultRoute bool) error {
 	if err != nil {
 		return err
 	}
+	if address.IP.To4() == nil {
+		return errors.New("DHCP lease address must be IPv4")
+	}
 	if lease.Broadcast != "" {
-		address.Broadcast = net.ParseIP(lease.Broadcast)
-	}
-	if lease.Action == "renew" {
-		addresses, listErr := netlink.AddrList(link, netlink.FAMILY_V4)
-		if listErr != nil {
-			return listErr
-		}
-		matching := false
-		for _, current := range addresses {
-			if sameAddress(current, *address) {
-				matching = true
-				break
-			}
-		}
-		if !matching {
-			if err := flushAddresses(link); err != nil {
-				return err
-			}
+		address.Broadcast = net.ParseIP(lease.Broadcast).To4()
+		if address.Broadcast == nil {
+			return errors.New("DHCP broadcast address must be IPv4")
 		}
 	}
-	if err := netlink.AddrReplace(link, address); err != nil {
+	// Validate the entire route option before changing any working state.
+	routes, err := leaseRoutes(lease, link.Attrs().Index, prefixLength, allowDefaultRoute)
+	if err != nil {
 		return err
 	}
-	if err := netlink.LinkSetUp(link); err != nil {
+	if err := ops.replaceAddress(link, address); err != nil {
 		return err
 	}
-	if err := flushDHCPRoutes(link.Attrs().Index); err != nil {
+	if err := ops.up(link); err != nil {
 		return err
 	}
+	if err := reconcileLeaseRoutes(link.Attrs().Index, routes, ops); err != nil {
+		return err
+	}
+	removed, err := removeOldLeaseAddresses(link, address, ops)
+	if err != nil {
+		return err
+	}
+	if removed {
+		// Linux can remove secondary addresses and connected routes when their
+		// primary address is deleted. Reassert the new lease after that cleanup.
+		if err := ops.replaceAddress(link, address); err != nil {
+			return err
+		}
+		return reconcileLeaseRoutes(link.Attrs().Index, routes, ops)
+	}
+	return nil
+}
+
+func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute bool) ([]netlink.Route, error) {
 	metric := lease.Metric
+	if metric < 0 {
+		return nil, errors.New("DHCP route metric must not be negative")
+	}
 	if metric == 0 {
-		metric = 200 + link.Attrs().Index
+		metric = 200 + linkIndex
+	}
+	var routes []netlink.Route
+	add := func(destination, gateway string, priority int) error {
+		route, err := dhcpRoute(linkIndex, destination, gateway, priority)
+		if err == nil {
+			routes = append(routes, route)
+		}
+		return err
 	}
 	if len(lease.StaticRoutes) > 0 {
 		if len(lease.StaticRoutes)%2 != 0 {
-			return errors.New("invalid RFC3442 classless route option")
+			return nil, errors.New("invalid RFC3442 classless route option")
 		}
 		for index := 0; index < len(lease.StaticRoutes); index += 2 {
 			if prefixLength == 32 && lease.StaticRoutes[index+1] != "0.0.0.0" {
-				if err := replaceDHCPRoute(link.Attrs().Index, lease.StaticRoutes[index+1]+"/32", "0.0.0.0", metric); err != nil {
-					return err
+				if err := add(lease.StaticRoutes[index+1]+"/32", "0.0.0.0", metric); err != nil {
+					return nil, err
 				}
 			}
-			if err := replaceDHCPRoute(link.Attrs().Index, lease.StaticRoutes[index], lease.StaticRoutes[index+1], metric+index/2); err != nil {
-				return err
+			if err := add(lease.StaticRoutes[index], lease.StaticRoutes[index+1], metric+index/2); err != nil {
+				return nil, err
 			}
 		}
-		return nil
+		return routes, nil
 	}
 	if allowDefaultRoute {
 		for index, gateway := range lease.Routers {
-			if err := replaceDHCPRoute(link.Attrs().Index, "0.0.0.0/0", gateway, metric+index); err != nil {
-				return err
+			if prefixLength == 32 {
+				if err := add(gateway+"/32", "0.0.0.0", metric); err != nil {
+					return nil, err
+				}
+			}
+			if err := add("0.0.0.0/0", gateway, metric+index); err != nil {
+				return nil, err
 			}
 		}
 	}
-	return nil
+	return routes, nil
 }
 
 func sameAddress(left, right netlink.Addr) bool {
@@ -290,25 +336,31 @@ func flushAddresses(link netlink.Link) error {
 	return nil
 }
 
-func replaceDHCPRoute(linkIndex int, destination, gateway string, metric int) error {
+func dhcpRoute(linkIndex int, destination, gateway string, metric int) (netlink.Route, error) {
 	prefix, err := netip.ParsePrefix(destination)
 	if err != nil {
-		return fmt.Errorf("invalid route destination %q: %w", destination, err)
+		return netlink.Route{}, fmt.Errorf("invalid route destination %q: %w", destination, err)
+	}
+	if !prefix.Addr().Is4() {
+		return netlink.Route{}, errors.New("DHCP route destination must be IPv4")
 	}
 	prefix = prefix.Masked()
-	route := &netlink.Route{
+	route := netlink.Route{
 		LinkIndex: linkIndex,
 		Dst:       &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), 32)},
 		Protocol:  routeProtocolDHCP,
 		Priority:  metric,
+		Table:     unix.RT_TABLE_MAIN,
+		Scope:     netlink.SCOPE_LINK,
 	}
 	if gateway != "" && gateway != "0.0.0.0" {
-		route.Gw = net.ParseIP(gateway)
+		route.Gw = net.ParseIP(gateway).To4()
 		if route.Gw == nil {
-			return fmt.Errorf("invalid route gateway %q", gateway)
+			return netlink.Route{}, fmt.Errorf("invalid IPv4 route gateway %q", gateway)
 		}
+		route.Scope = netlink.SCOPE_UNIVERSE
 	}
-	return netlink.RouteReplace(route)
+	return route, nil
 }
 
 func maskBits(mask string) (int, error) {
