@@ -45,6 +45,10 @@ udm-iptv uninstall
 
 ## Diagnostics
 
+[Optional Sentry telemetry](docs/telemetry.md) provides opt-in error reporting,
+structured lifecycle logs, operational metrics and sampled tracing. It is disabled
+by default and does not upload diagnostic captures.
+
 A one-time `diagnose` shows the service, proxy, IPTV link, routes, and multicast state. A bounded capture records an initial snapshot, periodic samples, service logs, a final snapshot, and an explicit completion marker.
 
 `--follow` opens a live Bubble Tea view. `q` or Ctrl-C closes only the viewer; the detached capture continues until its displayed completion time. Captures are written with mode `0600` under `/data/udm-iptv/diagnostics`.

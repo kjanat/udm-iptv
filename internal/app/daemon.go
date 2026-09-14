@@ -145,6 +145,8 @@ func (application *Application) runDaemon(parent context.Context) error {
 	}
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
 	_, _ = sdnotify.SdNotify(false, "STATUS=IPTV proxy is running")
+	stopMetrics := application.startTelemetryMetrics(ctx)
+	defer stopMetrics()
 	select {
 	case <-ctx.Done():
 		_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
@@ -235,6 +237,16 @@ func unexpectedProcessExit(name string, err error) error {
 }
 
 func (application *Application) startDHCP(ctx context.Context, value config.Config) (<-chan error, error) {
+	var done <-chan error
+	err := application.monitor.Run(ctx, "dhcp.acquire", func(ctx context.Context) error {
+		var err error
+		done, err = application.startDHCPClient(ctx, value)
+		return err
+	})
+	return done, err
+}
+
+func (application *Application) startDHCPClient(ctx context.Context, value config.Config) (<-chan error, error) {
 	hook := filepath.Join(application.StateDir, "bin", "udhcpc-hook")
 	arguments := []string{"-f", "-R", "-p", "/run/udm-iptv/udhcpc.pid", "-s", hook, "-i", network.Target(value)}
 	arguments = append(arguments, value.WAN.DHCPOptions...)
@@ -373,6 +385,12 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 }
 
 func (application *Application) waitHealthy(ctx context.Context, startup, stable time.Duration) error {
+	return application.monitor.Run(ctx, "service.health", func(ctx context.Context) error {
+		return application.checkHealthy(ctx, startup, stable)
+	})
+}
+
+func (application *Application) checkHealthy(ctx context.Context, startup, stable time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, startup+stable)
 	defer cancel()
 	connection, err := systemd.NewSystemConnectionContext(ctx)

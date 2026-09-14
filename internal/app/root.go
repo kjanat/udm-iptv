@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +22,7 @@ type Application struct {
 	StateDir   string
 	Out        io.Writer
 	Err        io.Writer
+	monitor    *telemetry.Reporter
 }
 
 func Execute(version string) error {
@@ -30,7 +33,53 @@ func Execute(version string) error {
 		Out:        os.Stdout,
 		Err:        os.Stderr,
 	}
-	return application.root().Execute()
+	root := application.root()
+	application.instrumentCommands(root)
+	return root.Execute()
+}
+
+func (application *Application) instrumentCommands(root *cobra.Command) {
+	for _, command := range root.Commands() {
+		application.instrumentCommands(command)
+		switch command.Name() {
+		case "install", "upgrade", "restart", "uninstall", "daemon", "dhcp-hook":
+		default:
+			continue
+		}
+		run := command.RunE
+		if run == nil {
+			continue
+		}
+		command.RunE = func(command *cobra.Command, args []string) error {
+			value, err := config.Load(application.ConfigPath)
+			if err != nil || !value.Telemetry.Enabled {
+				return run(command, args)
+			}
+			reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
+			if err != nil {
+				_ = writeString(application.Err, "Optional telemetry is unavailable; continuing without it.\n")
+				return run(command, args)
+			}
+			defer reporter.Close()
+			firmware := ""
+			if file, err := os.Open("/usr/lib/version"); err == nil {
+				data, _ := io.ReadAll(io.LimitReader(file, 64))
+				_ = file.Close()
+				firmware = strings.TrimSpace(string(data))
+			}
+			reporter.SetMetadata(detectBoard(), firmware, value.Proxy.Program, value.Profile)
+			application.monitor = reporter
+			defer func() { application.monitor = nil }()
+			operation := command.Name()
+			if operation == "dhcp-hook" && len(args) == 1 {
+				operation = "dhcp." + args[0]
+			}
+			return reporter.Run(command.Context(), operation, func(ctx context.Context) error {
+				command.SetContext(ctx)
+				return run(command, args)
+			})
+		}
+	}
 }
 
 func (application *Application) root() *cobra.Command {
@@ -77,6 +126,7 @@ func (application *Application) configureCommand() *cobra.Command {
 	var vlan, igmpVersion int
 	var dhcpOptions, natDestinations, proxySources, lanInterfaces []string
 	var dhcp, allowDefaultRoute, quickLeave, debug bool
+	telemetryOptions := config.Default().Telemetry
 	command := &cobra.Command{
 		Use:     "configure",
 		Aliases: []string{"reconfigure"},
@@ -142,6 +192,29 @@ func (application *Application) configureCommand() *cobra.Command {
 			if flags.Changed("debug") {
 				value.Proxy.Debug = debug
 			}
+			if flags.Changed("telemetry") {
+				if telemetryOptions.Enabled && !value.Telemetry.Enabled && !value.Telemetry.Errors && !value.Telemetry.Logs && !value.Telemetry.Metrics && !value.Telemetry.Tracing {
+					value.Telemetry = config.Default().Telemetry
+				}
+				value.Telemetry.Enabled = telemetryOptions.Enabled
+			}
+			for _, option := range []struct {
+				name string
+				dst  *bool
+				src  bool
+			}{
+				{"telemetry-errors", &value.Telemetry.Errors, telemetryOptions.Errors},
+				{"telemetry-logs", &value.Telemetry.Logs, telemetryOptions.Logs},
+				{"telemetry-metrics", &value.Telemetry.Metrics, telemetryOptions.Metrics},
+				{"telemetry-tracing", &value.Telemetry.Tracing, telemetryOptions.Tracing},
+			} {
+				if flags.Changed(option.name) {
+					*option.dst = option.src
+				}
+			}
+			if flags.Changed("telemetry-trace-rate") {
+				value.Telemetry.TraceRate = telemetryOptions.TraceRate
+			}
 			if !nonInteractive {
 				if err := application.configureForm(&value); err != nil {
 					return err
@@ -177,6 +250,12 @@ func (application *Application) configureCommand() *cobra.Command {
 	flags.IntVar(&igmpVersion, "igmp-version", 0, "IGMP version: 2 or 3")
 	flags.BoolVar(&quickLeave, "quickleave", false, "enable quickleave")
 	flags.BoolVar(&debug, "debug", false, "enable verbose proxy logging")
+	flags.BoolVar(&telemetryOptions.Enabled, "telemetry", false, "opt in to operational telemetry sent to the maintainer through Sentry")
+	flags.BoolVar(&telemetryOptions.Errors, "telemetry-errors", true, "report software failures when telemetry is enabled")
+	flags.BoolVar(&telemetryOptions.Logs, "telemetry-logs", true, "send structured lifecycle logs; never raw proxy logs")
+	flags.BoolVar(&telemetryOptions.Metrics, "telemetry-metrics", true, "send bounded operational counters")
+	flags.BoolVar(&telemetryOptions.Tracing, "telemetry-tracing", true, "send sampled operation timings")
+	flags.Float64Var(&telemetryOptions.TraceRate, "telemetry-trace-rate", 0.1, "fraction of operations traced, from 0 to 1")
 	_ = command.RegisterFlagCompletionFunc("profile", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		profiles := config.Profiles()
 		values := make([]string, 0, len(profiles))
@@ -260,6 +339,13 @@ func (application *Application) configureForm(value *config.Config) error {
 			).Value(&value.Proxy.IGMPVersion),
 			huh.NewConfirm().Title("Enable quickleave?").Description("Disable this when multiple receivers may watch through the same downstream interface.").Value(&value.Proxy.QuickLeave),
 			huh.NewConfirm().Title("Enable proxy debugging?").Description("Usually No. Enable temporarily only when collecting detailed troubleshooting logs.").Value(&value.Proxy.Debug),
+		),
+		huh.NewGroup(
+			huh.NewConfirm().Title("Send operational telemetry to the maintainer?").Description("Optional Sentry reporting. No configuration, credentials or diagnostic captures are uploaded. The receiving service sees your public IP. Choose No to disable all reporting.").Value(&value.Telemetry.Enabled),
+			huh.NewConfirm().Title("Report software errors?").Value(&value.Telemetry.Errors),
+			huh.NewConfirm().Title("Send structured lifecycle logs?").Value(&value.Telemetry.Logs),
+			huh.NewConfirm().Title("Send operational metrics?").Value(&value.Telemetry.Metrics),
+			huh.NewConfirm().Title("Send sampled operation timings?").Value(&value.Telemetry.Tracing),
 		),
 	)
 	if err := form.Run(); err != nil {

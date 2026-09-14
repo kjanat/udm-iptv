@@ -96,6 +96,7 @@ func FromProfile(id string, current Config) (Config, error) {
 		return current, nil
 	}
 	if value, found := profiles[id]; found {
+		value.Config.Telemetry = current.Telemetry
 		return value.Config, nil
 	}
 	return Config{}, fmt.Errorf("unknown provider profile %q", id)

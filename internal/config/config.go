@@ -16,10 +16,20 @@ import (
 const DefaultPath = "/data/udm-iptv/config.json"
 
 type Config struct {
-	Profile string `json:"profile"`
-	WAN     WAN    `json:"wan"`
-	LAN     LAN    `json:"lan"`
-	Proxy   Proxy  `json:"proxy"`
+	Profile   string    `json:"profile"`
+	WAN       WAN       `json:"wan"`
+	LAN       LAN       `json:"lan"`
+	Proxy     Proxy     `json:"proxy"`
+	Telemetry Telemetry `json:"telemetry"`
+}
+
+type Telemetry struct {
+	Enabled   bool    `json:"enabled"`
+	Errors    bool    `json:"errors"`
+	Logs      bool    `json:"logs"`
+	Metrics   bool    `json:"metrics"`
+	Tracing   bool    `json:"tracing"`
+	TraceRate float64 `json:"traceRate"`
 }
 
 type WAN struct {
@@ -55,8 +65,9 @@ func Default() Config {
 			DHCPOptions:     []string{"-O", "staticroutes", "-V", "IPTV_RG"},
 			NATDestinations: []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"},
 		},
-		LAN:   LAN{Interfaces: []string{"br0"}},
-		Proxy: Proxy{Program: "improxy", IGMPVersion: 3},
+		LAN:       LAN{Interfaces: []string{"br0"}},
+		Proxy:     Proxy{Program: "improxy", IGMPVersion: 3},
+		Telemetry: Telemetry{Errors: true, Logs: true, Metrics: true, Tracing: true, TraceRate: 0.1},
 	}
 }
 
@@ -112,6 +123,9 @@ func Save(path string, value Config) error {
 }
 
 func (value Config) Validate() error {
+	if !(value.Telemetry.TraceRate >= 0 && value.Telemetry.TraceRate <= 1) {
+		return errors.New("telemetry trace rate must be between 0 and 1")
+	}
 	if !validInterface(value.WAN.Interface) {
 		return errors.New("WAN interface must be a valid Linux interface name")
 	}
