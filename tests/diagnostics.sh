@@ -69,6 +69,9 @@ EOF
 
 cat >"${test_dir}/bin/uname" <<'EOF'
 #!/bin/sh
+if [ "${UDM_IPTV_TEST_STALL_UNAME:-false}" = true ]; then
+	exec sleep 30
+fi
 [ "${UDM_IPTV_TEST_FAIL_UNAME:-false}" != true ] || exit 1
 echo 'Linux 4.19.152-ui-alpine SMP aarch64'
 EOF
@@ -511,6 +514,54 @@ if [[ ${stalled_text_ready} == false ]]; then
 fi
 if grep -Fq 'Text rendering failed' "${stalled_text}"; then
 	echo 'timed-out text capture replaced the report with a render failure' >&2
+	exit 1
+fi
+
+uname_stall_started=${SECONDS}
+uname_stall_output=$(UDM_IPTV_TEST_STALL_UNAME=true \
+	${diagnostics} --capture 1s --format json --verbosity summary)
+uname_stall_json=$(sed -n 's/^Structured JSON Lines: //p' <<<"${uname_stall_output}")
+[[ -n ${uname_stall_json} && -f ${uname_stall_json} ]]
+uname_stalled_timed_out=false
+for _ in {1..40}; do
+	if jq -e -s 'last | .kind == "capture" and .name == "timeout"' \
+		"${uname_stall_json}" >/dev/null 2>&1; then
+		uname_stalled_timed_out=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${uname_stalled_timed_out} == false ]]; then
+	echo 'stalled uname was not treated as a capture timeout' >&2
+	jq -s 'last' "${uname_stall_json}" >&2
+	exit 1
+fi
+if ((SECONDS - uname_stall_started > 4)); then
+	echo 'stalled uname extended a one-second capture too far' >&2
+	exit 1
+fi
+
+summary_final_started=${SECONDS}
+summary_final_output=$(UDM_IPTV_TEST_STALL_PHASE=final \
+	${diagnostics} --capture 1s --format json --verbosity summary)
+summary_final_json=$(sed -n 's/^Structured JSON Lines: //p' <<<"${summary_final_output}")
+[[ -n ${summary_final_json} && -f ${summary_final_json} ]]
+summary_final_timed_out=false
+for _ in {1..40}; do
+	if jq -e -s 'last | .kind == "capture" and .name == "timeout"' \
+		"${summary_final_json}" >/dev/null 2>&1; then
+		summary_final_timed_out=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${summary_final_timed_out} == false ]]; then
+	echo 'summary final collector stall was recorded as completed' >&2
+	jq -s 'last' "${summary_final_json}" >&2
+	exit 1
+fi
+if ((SECONDS - summary_final_started > 4)); then
+	echo 'summary final collector stall extended a one-second capture too far' >&2
 	exit 1
 fi
 

@@ -550,6 +550,11 @@ diagnostics_remaining_seconds() {
 # collector inside that same budget rather than giving each command a fresh
 # timeout.  `command` prevents these wrappers from recursively calling
 # themselves when timeout resolves the real executable through PATH.
+diagnostics_mark_collector_timeout() {
+	DIAGNOSTICS_COLLECTOR_TIMED_OUT=true
+	[ -z "${DIAGNOSTICS_TIMEOUT_MARKER:-}" ] || : >"${DIAGNOSTICS_TIMEOUT_MARKER}"
+}
+
 diagnostics_bounded_external() {
 	if [ -z "${DIAGNOSTICS_CAPTURE_DEADLINE:-}" ]; then
 		command "$@"
@@ -561,8 +566,17 @@ diagnostics_bounded_external() {
 	}
 	now=$(diagnostics_monotonic_milliseconds) || return 124
 	remaining_ms=$((DIAGNOSTICS_CAPTURE_DEADLINE - now))
-	[ "${remaining_ms}" -gt 0 ] || return 124
-	command timeout -s KILL "$(awk -v ms="${remaining_ms}" 'BEGIN { printf "%.3fs", ms / 1000 }')" "$@"
+	if [ "${remaining_ms}" -le 0 ]; then
+		return 124
+	fi
+	status=0
+	command timeout -s KILL "$(awk -v ms="${remaining_ms}" 'BEGIN { printf "%.3fs", ms / 1000 }')" "$@" \
+		|| status=$?
+	if [ "${status}" -eq 137 ] || [ "${status}" -eq 124 ]; then
+		diagnostics_mark_collector_timeout
+		return 124
+	fi
+	return "${status}"
 }
 
 systemctl() { diagnostics_bounded_external systemctl "$@"; }
@@ -663,6 +677,9 @@ diagnostics_worker() {
 	end_monotonic=${DIAGNOSTICS_CAPTURE_DEADLINE}
 	[ "${journal_cursor}" != - ] || journal_cursor=
 	completed=false
+	DIAGNOSTICS_COLLECTOR_TIMED_OUT=false
+	DIAGNOSTICS_TIMEOUT_MARKER="${json_output}.collector-timeout"
+	export DIAGNOSTICS_TIMEOUT_MARKER
 
 	finalize_capture() {
 		if [ "${completed}" != true ]; then
@@ -696,6 +713,7 @@ diagnostics_worker() {
 		if [ "${format}" = text ] && [ "${rendered}" = true ]; then
 			rm -f "${json_output}"
 		fi
+		rm -f "${DIAGNOSTICS_TIMEOUT_MARKER}"
 	}
 	trap 'finalize_capture' EXIT
 	trap '' HUP
@@ -752,6 +770,10 @@ diagnostics_worker() {
 			diagnostics_section "Final Snapshot"
 			diagnostics_snapshot "${verbosity}" false
 		} >>"${json_output}"
+		if [ -n "${DIAGNOSTICS_TIMEOUT_MARKER:-}" ] \
+			&& [ -f "${DIAGNOSTICS_TIMEOUT_MARKER}" ]; then
+			collector_timeout=true
+		fi
 	else
 		collector_timeout=true
 	fi
