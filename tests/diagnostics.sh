@@ -2,6 +2,13 @@
 
 set -euo pipefail
 
+diagnostics_test_failure() {
+	status=$?
+	printf 'diagnostics test failed at line %s: %s\n' "${BASH_LINENO[0]}" "${BASH_COMMAND}" >&2
+	exit "${status}"
+}
+trap diagnostics_test_failure ERR
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 test_dir=$(mktemp -d)
 trap 'rm -rf "${test_dir}"' EXIT

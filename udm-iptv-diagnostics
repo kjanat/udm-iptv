@@ -9,6 +9,15 @@ CONFIG_FILE="${UDM_IPTV_CONFIG_FILE:-/etc/udm-iptv.conf}"
 PROC_DIR="${UDM_IPTV_PROC_DIR:-/proc}"
 PROXY_CONFIG_FILE="${UDM_IPTV_PROXY_CONFIG_FILE:-/var/run/igmpproxy.iptv.conf}"
 MONOTONIC_FILE="${UDM_IPTV_MONOTONIC_FILE:-/proc/uptime}"
+DIAGNOSTICS_ERROR_REPORTED=false
+
+diagnostics_exit() {
+	status=$?
+	if [ "${status}" -ne 0 ] && [ "${DIAGNOSTICS_ERROR_REPORTED}" != true ]; then
+		echo "error: Diagnostics failed unexpectedly (exit status ${status})." >&2
+	fi
+}
+trap 'diagnostics_exit' EXIT
 
 diagnostics_usage() {
 	cat <<'EOF'
@@ -26,6 +35,7 @@ EOF
 }
 
 diagnostics_error() {
+	DIAGNOSTICS_ERROR_REPORTED=true
 	echo "error: $*" >&2
 }
 
