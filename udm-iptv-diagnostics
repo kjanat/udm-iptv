@@ -217,7 +217,7 @@ diagnostics_command() {
 
 diagnostics_firmware() {
 	if command -v ubnt-device-info >/dev/null 2>&1; then
-		firmware=$(ubnt-device-info firmware 2>/dev/null) || firmware=
+		firmware=$(diagnostics_bounded_external ubnt-device-info firmware 2>/dev/null) || firmware=
 		if [ -n "${firmware}" ]; then
 			printf '%s\n' "${firmware}"
 			return
@@ -234,7 +234,7 @@ diagnostics_firmware() {
 
 diagnostics_model() {
 	if command -v ubnt-device-info >/dev/null 2>&1; then
-		model=$(ubnt-device-info model 2>/dev/null) || model=
+		model=$(diagnostics_bounded_external ubnt-device-info model 2>/dev/null) || model=
 		if [ -n "${model}" ]; then
 			printf '%s\n' "${model}"
 			return
@@ -350,7 +350,12 @@ diagnostics_snapshot() {
 	diagnostics_value "Package and System" Package "${package}"
 	model=$(diagnostics_model)
 	firmware=$(diagnostics_firmware)
-	kernel=$(uname -srvm)
+	uname_status=0
+	kernel=$(uname -srvm 2>/dev/null) || uname_status=$?
+	if [ "${uname_status}" -ne 0 ]; then
+		[ "${uname_status}" -eq 124 ] && [ -n "${DIAGNOSTICS_CAPTURE_DEADLINE:-}" ] || return 1
+		kernel=unavailable
+	fi
 	system_state=$(systemctl is-system-running 2>&1) || true
 	diagnostics_value "Package and System" Model "${model}"
 	diagnostics_value "Package and System" Firmware "${firmware}"
@@ -667,6 +672,17 @@ diagnostics_worker() {
 		fi
 		rendered=false
 		if [ "${format}" != json ] && [ "${text_output}" != - ]; then
+			now=$(diagnostics_monotonic_milliseconds) || now=
+			case "${now}" in
+				"" | *[!0-9]*) ;;
+				*)
+					render_deadline=$((now + 2000))
+					if [ "${DIAGNOSTICS_CAPTURE_DEADLINE}" -lt "${render_deadline}" ]; then
+						DIAGNOSTICS_CAPTURE_DEADLINE=${render_deadline}
+						export DIAGNOSTICS_CAPTURE_DEADLINE
+					fi
+					;;
+			esac
 			# Rendering failures are handled explicitly so the JSONL source is retained.
 			# shellcheck disable=SC2310
 			if diagnostics_bounded_external "$0" --render-worker \
@@ -691,11 +707,13 @@ diagnostics_worker() {
 	{
 		diagnostics_privacy_header
 		diagnostics_capture_event started "Capture started."
+	} >>"${json_output}"
+	printf 'ready\n' >"${ready_output}"
+	{
 		diagnostics_section "Initial Snapshot"
 		diagnostics_snapshot "${verbosity}" false
 		diagnostics_section "Timeline"
 	} >>"${json_output}"
-	printf 'ready\n' >"${ready_output}"
 
 	case "${verbosity}" in
 		summary) interval=60 ;;
@@ -712,14 +730,21 @@ diagnostics_worker() {
 		UDM_IPTV_CAPTURE_PHASE=sample
 		export UDM_IPTV_CAPTURE_PHASE
 		diagnostics_emit_sample >>"${json_output}"
-		remaining=$(diagnostics_remaining_seconds) || break
-		wait_seconds=${interval}
-		# Leave two seconds of the shared budget for the final snapshot, logs,
-		# event, and rendering. Short captures collect once and finalize at once.
-		[ "${remaining}" -gt $((interval + 2)) ] || break
-		sleep "${wait_seconds}"
+		now=$(diagnostics_monotonic_milliseconds) || break
+		remaining_ms=$((DIAGNOSTICS_CAPTURE_DEADLINE - now))
+		finalize_allowance_ms=2000
+		[ "${remaining_ms}" -gt "${finalize_allowance_ms}" ] || break
+		collection_ms=$((remaining_ms - finalize_allowance_ms))
+		interval_ms=$((interval * 1000))
+		wait_ms=${interval_ms}
+		if [ "${wait_ms}" -gt "${collection_ms}" ]; then
+			wait_ms=${collection_ms}
+		fi
+		sleep "$(awk -v ms="${wait_ms}" 'BEGIN { printf "%.3f", ms / 1000 }')"
+		[ "${wait_ms}" -lt "${collection_ms}" ] || break
 	done
 
+	collector_timeout=false
 	if diagnostics_remaining_seconds >/dev/null; then
 		UDM_IPTV_CAPTURE_PHASE=final
 		export UDM_IPTV_CAPTURE_PHASE
@@ -727,29 +752,39 @@ diagnostics_worker() {
 			diagnostics_section "Final Snapshot"
 			diagnostics_snapshot "${verbosity}" false
 		} >>"${json_output}"
+	else
+		collector_timeout=true
 	fi
-	if [ "${verbosity}" != summary ] && diagnostics_remaining_seconds >/dev/null; then
-		UDM_IPTV_CAPTURE_PHASE=journal
-		export UDM_IPTV_CAPTURE_PHASE
-		if [ "${verbosity}" = debug ]; then
-			log_lines=10000
+	if [ "${verbosity}" != summary ] && [ "${collector_timeout}" != true ]; then
+		if diagnostics_remaining_seconds >/dev/null; then
+			UDM_IPTV_CAPTURE_PHASE=journal
+			export UDM_IPTV_CAPTURE_PHASE
+			if [ "${verbosity}" = debug ]; then
+				log_lines=10000
+			else
+				log_lines=1000
+			fi
+			if [ -n "${journal_cursor}" ]; then
+				captured_logs=$(diagnostics_command journalctl --after-cursor="${journal_cursor}" \
+					-n "${log_lines}" -o cat -u udm-iptv-restore.service \
+					-u udm-iptv.service --no-pager)
+			else
+				captured_logs="A journal cursor was unavailable when the capture started."
+			fi
+			if diagnostics_remaining_seconds >/dev/null; then
+				diagnostics_refresh_device_addresses
+				{
+					diagnostics_section "Captured Service Logs"
+					diagnostics_block "Captured Service Logs" "at most ${log_lines} unit messages" "${captured_logs}"
+				} >>"${json_output}"
+			else
+				collector_timeout=true
+			fi
 		else
-			log_lines=1000
+			collector_timeout=true
 		fi
-		if [ -n "${journal_cursor}" ]; then
-			captured_logs=$(diagnostics_command journalctl --after-cursor="${journal_cursor}" \
-				-n "${log_lines}" -o cat -u udm-iptv-restore.service \
-				-u udm-iptv.service --no-pager)
-		else
-			captured_logs="A journal cursor was unavailable when the capture started."
-		fi
-		diagnostics_refresh_device_addresses
-		{
-			diagnostics_section "Captured Service Logs"
-			diagnostics_block "Captured Service Logs" "at most ${log_lines} unit messages" "${captured_logs}"
-		} >>"${json_output}"
 	fi
-	if diagnostics_remaining_seconds >/dev/null; then
+	if [ "${collector_timeout}" != true ]; then
 		diagnostics_capture_event completed "Capture finished within its ${seconds}s deadline." >>"${json_output}"
 		completed=true
 	else

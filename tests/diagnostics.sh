@@ -48,6 +48,13 @@ EOF
 
 cat >"${test_dir}/bin/ubnt-device-info" <<'EOF'
 #!/bin/sh
+if [ -n "${UDM_IPTV_TEST_STALL_PHASE:-}" ] \
+	&& [ "${UDM_IPTV_TEST_STALL_PHASE}" = "${UDM_IPTV_CAPTURE_PHASE:-}" ]; then
+	exec sleep 30
+fi
+if [ -n "${UDM_IPTV_TEST_SLOW_INFO:-}" ] && [ "${1:-}" = model ]; then
+	sleep "${UDM_IPTV_TEST_SLOW_INFO}"
+fi
 case "$1" in
 firmware) echo '5.1.31' ;;
 model) echo 'UniFi Dream Machine Pro' ;;
@@ -330,7 +337,7 @@ kill -HUP "${worker_pid}"
 printf '198.51.100.77\n' >"${UDM_IPTV_ADDRESS_STATE}"
 
 capture_completed=false
-for _ in {1..100}; do
+for _ in {1..200}; do
 	if [[ -s ${text_file} ]] && jq -e -s 'last | .kind == "capture" and .name == "completed"' \
 		"${json_file}" >/dev/null 2>&1; then
 		capture_completed=true
@@ -339,7 +346,7 @@ for _ in {1..100}; do
 	sleep 0.1
 done
 if [[ ${capture_completed} == false ]]; then
-	echo 'diagnostics capture did not complete within 10 seconds; final event:' >&2
+	echo 'diagnostics capture did not complete within 20 seconds; final event:' >&2
 	jq -s 'last' "${json_file}" >&2
 	exit 1
 fi
@@ -383,7 +390,7 @@ render_failure_text=$(sed -n 's/^Share-ready text: //p' <<<"${render_failure_out
 
 render_failure_json=
 render_failure_completed=false
-for _ in {1..100}; do
+for _ in {1..200}; do
 	for candidate in "${test_dir}/output/"*.jsonl; do
 		[[ -e ${candidate} && ${candidate} != "${json_file}" ]] || continue
 		render_failure_json=${candidate}
@@ -442,7 +449,7 @@ slow_capture_output=$(UDM_IPTV_TEST_CURSOR_DELAY=1 ${diagnostics} --capture 8s -
 slow_json_file=$(sed -n 's/^Structured JSON Lines: //p' <<<"${slow_capture_output}")
 [[ -n ${slow_json_file} && -f ${slow_json_file} ]]
 slow_capture_completed=false
-for _ in {1..100}; do
+for _ in {1..200}; do
 	if jq -e -s 'last | .kind == "capture" and .name == "completed"' \
 		"${slow_json_file}" >/dev/null 2>&1; then
 		slow_capture_completed=true
@@ -452,6 +459,58 @@ for _ in {1..100}; do
 done
 if [[ ${slow_capture_completed} == false ]]; then
 	echo 'diagnostics capture failed after slow journal cursor acquisition' >&2
+	exit 1
+fi
+
+duration_started=${SECONDS}
+duration_output=$(${diagnostics} --capture 5s --format json --verbosity debug)
+duration_json=$(sed -n 's/^Structured JSON Lines: //p' <<<"${duration_output}")
+[[ -n ${duration_json} && -f ${duration_json} ]]
+duration_completed=false
+for _ in {1..150}; do
+	if jq -e -s 'last | .kind == "capture" and .name == "completed"' \
+		"${duration_json}" >/dev/null 2>&1; then
+		duration_completed=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${duration_completed} == false ]]; then
+	echo 'duration-honoring diagnostics capture did not complete' >&2
+	exit 1
+fi
+if ((SECONDS - duration_started < 3)); then
+	echo 'diagnostics capture finished before the requested duration' >&2
+	exit 1
+fi
+jq -e -s 'any(.[]; .kind == "sample")' "${duration_json}" >/dev/null
+
+slow_info_output=$(UDM_IPTV_TEST_SLOW_INFO=3 ${diagnostics} --capture 8s --format json)
+slow_info_json=$(sed -n 's/^Structured JSON Lines: //p' <<<"${slow_info_output}")
+if [[ -z ${slow_info_json} || ! -f ${slow_info_json} ]]; then
+	echo 'diagnostics capture failed when the initial snapshot was slower than startup polling' >&2
+	printf '%s\n' "${slow_info_output}" >&2
+	exit 1
+fi
+
+stalled_text_output=$(UDM_IPTV_TEST_STALL_PHASE=journal \
+	${diagnostics} --capture 1s --format text)
+stalled_text=$(sed -n 's/^Share-ready text: //p' <<<"${stalled_text_output}")
+[[ -n ${stalled_text} ]]
+stalled_text_ready=false
+for _ in {1..80}; do
+	if [[ -s ${stalled_text} ]] && grep -Fq 'Share-ready udm-iptv diagnostics.' "${stalled_text}"; then
+		stalled_text_ready=true
+		break
+	fi
+	sleep 0.1
+done
+if [[ ${stalled_text_ready} == false ]]; then
+	echo 'timed-out text capture did not render a partial report' >&2
+	exit 1
+fi
+if grep -Fq 'Text rendering failed' "${stalled_text}"; then
+	echo 'timed-out text capture replaced the report with a render failure' >&2
 	exit 1
 fi
 
@@ -474,7 +533,7 @@ for stalled_phase in initial sample final journal; do
 		echo "${stalled_phase} collector was not bounded by the capture deadline" >&2
 		exit 1
 	fi
-	if (( SECONDS - stall_started > 4 )); then
+	if ((SECONDS - stall_started > 4)); then
 		echo "${stalled_phase} collector extended a one-second capture too far" >&2
 		exit 1
 	fi
