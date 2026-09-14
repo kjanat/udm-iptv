@@ -62,6 +62,7 @@ EOF
 
 cat >"${test_dir}/bin/uname" <<'EOF'
 #!/bin/sh
+[ "${UDM_IPTV_TEST_FAIL_UNAME:-false}" != true ] || exit 1
 echo 'Linux 4.19.152-ui-alpine SMP aarch64'
 EOF
 
@@ -139,11 +140,13 @@ case " $* " in
 	exit
 	;;
 esac
+lowercase_hostname=$(printf '%s\n' "${UDM_IPTV_TEST_HOSTNAME:-private-router-name}" | tr '[:upper:]' '[:lower:]')
 cat <<LOGS
 ${UDM_IPTV_TEST_HOSTNAME:-private-router-name} udhcpc: lease of 10.207.100.210 obtained
-${UDM_IPTV_TEST_HOSTNAME:-private-router-name}.local qualified hostname
+${lowercase_hostname}.local qualified hostname
 udhcpc: lease of 145.23.42.9 obtained; subscriber address 145.23.42.7 and static address 203.0.113.17
 interface aa:bb:cc:dd:ee:ff joined 224.0.250.64 from provider 195.121.94.212
+alternate MAC formats AA-BB-CC-DD-EE-FF and aabb.ccdd.eeff
 provider 11.2.3.45 observed assigned ${UDM_IPTV_TEST_DEVICE_ADDRESS:-145.23.42.7}
 event at 12:34:56 has identifier abc:def:
 IPv6 endpoints 2001:db8::1, ::1, and ::ffff:192.0.2.128
@@ -212,6 +215,8 @@ for private_value in \
 	224.0.250.64 \
 	239.255.255.250 \
 	aa:bb:cc:dd:ee:ff \
+	AA-BB-CC-DD-EE-FF \
+	aabb.ccdd.eeff \
 	private-router-name \
 	0xdeadbeef; do
 	if grep -Fq "${private_value}" <<<"${text}"; then
@@ -242,6 +247,18 @@ if grep -Fq 'assigned 1.2.3.4' <<<"${collision_text}"; then
 	echo 'diagnostics leaked an assigned address during boundary-aware redaction' >&2
 	exit 1
 fi
+
+hostname_case_text=$(UDM_IPTV_TEST_HOSTNAME=Private-Router ${diagnostics})
+if grep -Fqi 'private-router' <<<"${hostname_case_text}"; then
+	echo 'diagnostics leaked a case-variant router hostname' >&2
+	exit 1
+fi
+
+if failure_output=$(UDM_IPTV_TEST_FAIL_UNAME=true ${diagnostics} 2>&1); then
+	echo 'one-time diagnostics hid a snapshot producer failure' >&2
+	exit 1
+fi
+grep -Fq 'error: Diagnostics failed unexpectedly' <<<"${failure_output}"
 
 json=$(${diagnostics} --format json)
 jq -e -s '
