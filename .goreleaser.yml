@@ -1,0 +1,63 @@
+version: 2
+
+project_name: udm-iptv
+
+builds:
+  - id: udm-iptv
+    main: ./cmd/udm-iptv
+    binary: udm-iptv
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+
+archives:
+  - id: binary
+    ids: [udm-iptv]
+    formats: [binary]
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+
+nfpms:
+  - id: debian
+    ids: [udm-iptv]
+    package_name: udm-iptv
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: kjanat
+    homepage: https://github.com/kjanat/udm-iptv
+    maintainer: Kaj Kowalski <info@kajkowalski.nl>
+    description: Routed IPTV for UniFi OS.
+    license: GPL-2.0-or-later
+    formats: [deb]
+    bindir: /data/udm-iptv/bin
+    section: net
+    priority: optional
+    suggests: [igmpproxy]
+    contents:
+      - src: ./packaging/deb/copyright
+        dst: /usr/share/doc/udm-iptv/copyright
+      - src: ./packaging/deb/go-package
+        dst: /usr/share/udm-iptv/go-package
+    scripts:
+      preinstall: ./packaging/deb/preinstall
+      postinstall: ./packaging/deb/postinstall
+      preremove: ./packaging/deb/preremove
+      postremove: ./packaging/deb/postremove
+    deb:
+      compression: xz
+      predepends: [debconf]
+      scripts:
+        config: ./packaging/deb/config
+        templates: ./packaging/deb/templates
+      fields:
+        Bugs: https://github.com/kjanat/udm-iptv/issues
+
+checksum:
+  name_template: SHA256SUMS
+
+changelog:
+  use: github-native
+
+release:
+  draft: true
+  name_template: "udm-iptv {{ .Tag }}"

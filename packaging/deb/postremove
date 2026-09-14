@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = purge ]; then
+	rm -rf -- /data/udm-iptv
+fi

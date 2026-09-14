@@ -1,6 +1,7 @@
 {
 	"$schema": "https://dprint.dev/schemas/v0.json",
 	"useTabs": true,
+	"excludes": ["dist/**"],
 	"json": {},
 	"markdown": { "emphasisKind": "asterisks", "lineWidth": 100, "textWrap": "maintain" },
 	"shfmt": {
@@ -8,24 +9,19 @@
 		"binaryNextLine": true,
 		"switchCaseIndent": true,
 		"associations": [
-			"completions/udm-iptv",
-			"debian/config",
-			"debian/postinst",
-			"debian/postrm",
-			"udm-iptv",
-			"udm-iptv-diag",
-			"udm-iptv-diagnostics",
-			"udm-iptv-restore",
-			"udm-iptvd"
+			"packaging/deb/config",
+			"packaging/deb/postinstall",
+			"packaging/deb/postremove",
+			"packaging/deb/preinstall",
+			"packaging/deb/preremove"
 		]
 	},
-	"ruff": {},
 	"yaml": { "printWidth": 160 },
 	"plugins": [
 		"https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
 		"npm:@dprint/json@0.23.0",
 		"npm:@dprint/markdown@0.24.0",
-		"npm:@dprint/ruff@0.8.7",
 		"npm:dprint-plugin-yaml@0.6.0",
+		"npm:@jakebailey/dprint-plugin-gofumpt@0.0.18",
 	],
 }
