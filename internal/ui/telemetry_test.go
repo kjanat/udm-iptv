@@ -1,0 +1,42 @@
+package ui
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/kjanat/udm-iptv/internal/config"
+)
+
+func TestImprovementPromptCopy(t *testing.T) {
+	settings := config.Default().Telemetry
+	original := settings
+	form := wizardForm(huh.NewGroup(telemetryConsent(&settings)))
+	form.Init()
+	form.Update(tea.WindowSizeMsg{Width: 180, Height: 45})
+	view := form.View()
+	if lipgloss.Width(view) > 88 {
+		t.Fatalf("form stretched to %d columns", lipgloss.Width(view))
+	}
+	if !strings.Contains(view, "Help improve udm-iptv?") {
+		t.Fatal("missing improvement prompt")
+	}
+	for _, text := range []string{"Sentry", "IP/PTR", "installation ID", "Optional reporting", "What may be sent?", "Errors", "Network identity"} {
+		if strings.Contains(view, text) {
+			t.Fatalf("unexpected prompt text %q", text)
+		}
+	}
+	if form.GetFocusedField().GetKey() != "telemetry" {
+		t.Fatal("prompt is not the telemetry confirm")
+	}
+	form.NextGroup()
+	if form.State != huh.StateCompleted {
+		t.Fatal("prompt opened a follow-up page")
+	}
+	if !reflect.DeepEqual(settings, original) {
+		t.Fatal("prompt changed product selection")
+	}
+}

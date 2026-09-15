@@ -99,6 +99,11 @@ func defaultRouteInterface(reader io.Reader) string {
 		}
 		selected, selectedMetric = fields[0], metric
 	}
+	if scanner.Err() != nil {
+		// An incomplete table may omit a preferred route. Let WAN discovery
+		// fall back to carrier detection instead of trusting a partial result.
+		return ""
+	}
 	return selected
 }
 

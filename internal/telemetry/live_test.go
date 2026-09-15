@@ -18,6 +18,7 @@ import (
 
 // Explicitly opt in: UDM_IPTV_SENTRY_VERIFY=1 go test -tags sentrylive
 // ./internal/telemetry -run '^TestLiveSentryDelivery$' -count=1 -v
+// Supply the intended DSN using -ldflags '-X github.com/kjanat/udm-iptv/internal/telemetry.DSN=<dsn>'.
 // This sends synthetic telemetry to the configured maintainer project.
 func TestLiveSentryDelivery(t *testing.T) {
 	if os.Getenv("UDM_IPTV_SENTRY_VERIFY") != "1" {
@@ -26,7 +27,7 @@ func TestLiveSentryDelivery(t *testing.T) {
 	transport := &verificationTransport{HTTPTransport: sentry.NewHTTPTransport()}
 	transport.BufferSize = 32
 	version := "verify-" + time.Now().UTC().Format("20060102T150405Z")
-	reporter, err := newReporter(testSettings(), version, transport)
+	reporter, err := newReporter(testSettings(), version, transport, DSN)
 	if err != nil {
 		t.Fatal(err)
 	}

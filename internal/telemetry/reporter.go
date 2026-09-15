@@ -1,14 +1,12 @@
 // Package telemetry sends explicitly selected, bounded operational data.
-// Never pass command arguments, configuration values or raw logs to this package.
+// Configuration research uses an explicit allowlist; raw logs and credentials
+// are never attached to events.
 package telemetry
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sync"
@@ -19,7 +17,9 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
-const DSN = "https://531ba2e8eed91c8edac2e0737f87a4e6@o4511328451756032.ingest.de.sentry.io/4512086558179408"
+// DSN is injected into official releases using -ldflags -X. Unstamped builds
+// have no telemetry destination, even when SENTRY_DSN is set at runtime.
+var DSN string
 
 type Reporter struct {
 	client     *sentry.Client
@@ -38,22 +38,34 @@ func New(settings config.Telemetry, version, configPath, stateDir string) (*Repo
 	transport := sentry.NewHTTPTransport()
 	transport.BufferSize = 32
 	transport.Timeout = 2 * time.Second
-	r, err := newReporter(settings, version, transport)
+	r, err := newReporter(settings, version, transport, DSN)
 	if err == nil {
 		r.configPath, r.stateDir = configPath, stateDir
 	}
 	return r, err
 }
 
-func newReporter(settings config.Telemetry, version string, transport sentry.Transport) (*Reporter, error) {
+func newReporter(settings config.Telemetry, version string, transport sentry.Transport, dsn string) (*Reporter, error) {
 	r := &Reporter{settings: settings, release: "udm-iptv@" + version, counts: make(map[string]int)}
-	if !settings.Enabled || (!settings.Errors && !settings.Logs && !settings.Metrics && !settings.Tracing) {
+	if !settings.Enabled || (!settings.Errors && !settings.Logs && !settings.Metrics && !settings.Tracing && !settings.Presets && !settings.NetworkIdentity) {
 		return r, nil
 	}
+	if dsn == "" {
+		return nil, errors.New("this build has no telemetry endpoint")
+	}
 	client, err := sentry.NewClient(sentry.ClientOptions{
-		Dsn: DSN, Release: r.release, Environment: "production", ServerName: "udm-iptv",
+		Dsn: dsn, Release: r.release, Environment: "production", ServerName: "udm-iptv",
 		Transport: transport, HTTPClient: &http.Client{Timeout: 2 * time.Second},
 		EnableTracing: settings.Tracing, TracesSampleRate: settings.TraceRate,
+		DataCollection: &sentry.DataCollection{
+			UserInfo: sentry.Set(false), HTTPBodies: []sentry.BodyType{},
+			Cookies:     &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+			QueryParams: &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+			HTTPHeaders: &sentry.HeaderCollectionConfig{
+				Request:  &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+				Response: &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+			},
+		},
 		MaxBreadcrumbs: -1, MaxSpans: 32, DisableClientReports: true,
 		Integrations: func([]sentry.Integration) []sentry.Integration { return nil },
 		BeforeSend:   r.filterEvent, BeforeSendTransaction: r.filterEvent,
@@ -75,7 +87,7 @@ func (r *Reporter) allow(kind string, maximum int) bool {
 		if err != nil || !value.Telemetry.Enabled {
 			return false
 		}
-		permitted := map[string]bool{"errors": value.Telemetry.Errors, "logs": value.Telemetry.Logs, "metrics": value.Telemetry.Metrics, "traces": value.Telemetry.Tracing}
+		permitted := map[string]bool{"errors": value.Telemetry.Errors, "logs": value.Telemetry.Logs, "metrics": value.Telemetry.Metrics, "traces": value.Telemetry.Tracing, "presets": value.Telemetry.Presets, "network": value.Telemetry.NetworkIdentity}
 		if !permitted[kind] {
 			return false
 		}
@@ -135,28 +147,30 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 		return run(ctx)
 	}
 	ctx = sentry.SetHubOnContext(ctx, r.hub)
-	if r.settings.Logs {
-		sentry.NewLogger(ctx).Info().Emit(operation + " started")
-	}
 	start := time.Now()
 	var span *sentry.Span
 	if r.settings.Tracing && operation != "daemon" {
 		span = sentry.StartSpan(ctx, operation, sentry.WithTransactionName(operation))
 		ctx = span.Context()
 	}
+	if r.settings.Logs {
+		sentry.NewLogger(ctx).Info().Emit(operation + " started")
+	}
 	defer func() {
 		panicked := recover()
 		if panicked != nil {
 			err = errors.New("panic")
-			r.failure(operation, "panic")
+			r.failure(ctx, operation, err, true)
 		} else if err != nil && !errors.Is(err, context.Canceled) {
 			// Error text can include tokens, IP addresses and local file paths.
 			// Report the error class and call stack; keep its text local.
-			r.failure(operation, errorClass(err))
+			r.failure(ctx, operation, err, false)
 		}
 		if r.settings.Logs {
 			logger := sentry.NewLogger(ctx)
-			if err != nil {
+			if errors.Is(err, context.Canceled) {
+				logger.Info().Emit(operation + " cancelled")
+			} else if err != nil {
 				logger.Error().Emit(operation + " failed")
 			} else {
 				logger.Info().Emit(operation + " completed")
@@ -166,7 +180,7 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 			meter := sentry.NewMeter(ctx)
 			meter.SetAttributes(attribute.String("operation", operation))
 			meter.Count("operation.completed", 1)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				meter.Count("operation.failed", 1)
 			}
 			if operation != "daemon" {
@@ -174,9 +188,14 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 			}
 		}
 		if span != nil {
-			if err != nil {
+			switch {
+			case errors.Is(err, context.Canceled):
+				span.Status = sentry.SpanStatusCanceled
+			case errors.Is(err, context.DeadlineExceeded):
+				span.Status = sentry.SpanStatusDeadlineExceeded
+			case err != nil:
 				span.Status = sentry.SpanStatusInternalError
-			} else {
+			default:
 				span.Status = sentry.SpanStatusOK
 			}
 			span.Finish()
@@ -188,37 +207,23 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 	return run(ctx)
 }
 
-func errorClass(err error) string {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, os.ErrPermission):
-		return "permission_denied"
-	case errors.Is(err, os.ErrNotExist):
-		return "not_found"
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return fmt.Sprintf("process_exit_%d", exit.ExitCode())
-	}
-	for range 16 {
-		cause := errors.Unwrap(err)
-		if cause == nil {
-			break
-		}
-		err = cause
-	}
-	return fmt.Sprintf("%T", err)
-}
-
-func (r *Reporter) failure(operation, class string) {
+func (r *Reporter) failure(ctx context.Context, operation string, err error, panicked bool) {
 	if !r.settings.Errors {
 		return
 	}
 	event := sentry.NewEvent()
 	event.Level = sentry.LevelError
 	event.Transaction = operation
-	event.Exception = []sentry.Exception{{Type: class, Value: operation + " failed (details retained locally)", Stacktrace: sentry.NewStacktrace()}}
+	if span := sentry.SpanFromContext(ctx); span != nil {
+		event.Contexts["trace"] = sentry.Context{"trace_id": span.TraceID, "span_id": span.SpanID, "parent_span_id": span.ParentSpanID}
+	}
+	// Let the SDK preserve wrapped and joined errors and any embedded stacks.
+	// BeforeSend removes raw messages and stack details before transport.
+	event.SetException(err, 16)
+	if panicked {
+		event.Exception = []sentry.Exception{{Type: "panic", Stacktrace: sentry.NewStacktrace(), Mechanism: &sentry.Mechanism{Type: "generic"}}}
+		event.Exception[0].Mechanism.SetUnhandled()
+	}
 	r.hub.CaptureEvent(event)
 }
 
@@ -241,6 +246,9 @@ func (r *Reporter) MetricsEnabled() bool {
 }
 
 func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+	if event.Transaction == "installation.report" {
+		return r.filterResearch(event)
+	}
 	if !operations[event.Transaction] {
 		return nil
 	}
@@ -256,22 +264,31 @@ func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry
 		Level: event.Level, Transaction: event.Transaction, Type: event.Type, StartTime: event.StartTime,
 	}
 	clean.Tags = r.metadata
+	clean.User = sentry.User{ID: r.installationID()}
+	if source := event.Contexts["trace"]; source != nil {
+		context := sentry.Context{}
+		for _, key := range []string{"trace_id", "span_id", "parent_span_id", "status"} {
+			if value, ok := source[key]; ok {
+				context[key] = value
+			}
+		}
+		clean.Contexts = map[string]sentry.Context{"trace": context}
+	}
 	if trace {
 		for _, span := range event.Spans {
 			if span != nil && operations[span.Op] {
 				clean.Spans = append(clean.Spans, &sentry.Span{TraceID: span.TraceID, SpanID: span.SpanID, ParentSpanID: span.ParentSpanID, Op: span.Op, Name: span.Op, Status: span.Status, StartTime: span.StartTime, EndTime: span.EndTime})
 			}
 		}
-		if source := event.Contexts["trace"]; source != nil {
-			context := sentry.Context{}
-			for _, key := range []string{"trace_id", "span_id", "parent_span_id", "status"} {
-				context[key] = source[key]
-			}
-			clean.Contexts = map[string]sentry.Context{"trace": context}
-		}
 	} else {
 		for _, exception := range event.Exception {
-			value := sentry.Exception{Type: exception.Type, Value: event.Transaction + " failed (details retained locally)"}
+			value := sentry.Exception{Type: exception.Type, Value: event.Transaction + " failed"}
+			if mechanism := exception.Mechanism; mechanism != nil {
+				value.Mechanism = &sentry.Mechanism{Type: "generic", Handled: mechanism.Handled, ParentID: mechanism.ParentID, ExceptionID: mechanism.ExceptionID, IsExceptionGroup: mechanism.IsExceptionGroup}
+				if mechanism.Type == "chained" {
+					value.Mechanism.Type = "chained"
+				}
+			}
 			if exception.Stacktrace != nil {
 				value.Stacktrace = &sentry.Stacktrace{}
 				for _, frame := range exception.Stacktrace.Frames {
@@ -286,6 +303,9 @@ func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry
 
 func (r *Reporter) attributes() map[string]attribute.Value {
 	result := map[string]attribute.Value{"sentry.release": attribute.StringValue(r.release)}
+	if id := r.installationID(); id != "" {
+		result["installation_id"] = attribute.StringValue(id)
+	}
 	for key, value := range r.metadata {
 		result[key] = attribute.StringValue(value)
 	}
@@ -298,7 +318,7 @@ func (r *Reporter) filterLog(log *sentry.Log) *sentry.Log {
 	}
 	valid := false
 	for op := range operations {
-		if log.Body == op+" failed" || log.Body == op+" completed" || log.Body == op+" started" {
+		if log.Body == op+" failed" || log.Body == op+" completed" || log.Body == op+" started" || log.Body == op+" cancelled" {
 			valid = true
 			break
 		}

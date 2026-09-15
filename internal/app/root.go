@@ -7,31 +7,34 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
 
-	"charm.land/huh/v2"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 	"github.com/spf13/cobra"
 )
 
 type Application struct {
-	Version    string
-	ConfigPath string
-	StateDir   string
-	Out        io.Writer
-	Err        io.Writer
-	monitor    *telemetry.Reporter
+	Version         string
+	ConfigPath      string
+	StateDir        string
+	In              io.Reader
+	Out             io.Writer
+	Err             io.Writer
+	monitor         *telemetry.Reporter
+	networkIdentity func(context.Context) telemetry.NetworkIdentity
+	reportConfig    *config.Config
+	reportApplied   bool
 }
 
 func Execute(version string) error {
 	application := &Application{
-		Version:    version,
-		ConfigPath: env("UDM_IPTV_CONFIG", config.DefaultPath),
-		StateDir:   env("UDM_IPTV_STATE_DIR", "/data/udm-iptv"),
-		Out:        os.Stdout,
-		Err:        os.Stderr,
+		Version:         version,
+		ConfigPath:      env("UDM_IPTV_CONFIG", config.DefaultPath),
+		StateDir:        env("UDM_IPTV_STATE_DIR", "/data/udm-iptv"),
+		Out:             os.Stdout,
+		In:              os.Stdin,
+		Err:             os.Stderr,
+		networkIdentity: telemetry.LookupNetwork,
 	}
 	root := application.root()
 	application.instrumentCommands(root)
@@ -42,7 +45,7 @@ func (application *Application) instrumentCommands(root *cobra.Command) {
 	for _, command := range root.Commands() {
 		application.instrumentCommands(command)
 		switch command.Name() {
-		case "install", "upgrade", "restart", "uninstall", "daemon", "dhcp-hook":
+		case "configure", "install", "upgrade", "restart", "uninstall", "daemon", "dhcp-hook":
 		default:
 			continue
 		}
@@ -51,23 +54,32 @@ func (application *Application) instrumentCommands(root *cobra.Command) {
 			continue
 		}
 		command.RunE = func(command *cobra.Command, args []string) error {
+			if command.Name() == "configure" && command.Flags().Changed("telemetry") {
+				if enabled, _ := command.Flags().GetBool("telemetry"); !enabled {
+					return run(command, args)
+				}
+			}
+			if command.Name() == "install" {
+				if dryRun, _ := command.Flags().GetBool("dry-run"); dryRun {
+					return run(command, args)
+				}
+			}
+			// Reporting after the command also covers first installation and a
+			// previously disabled user enabling reporting in the wizard.
+			if command.Name() == "configure" || command.Name() == "install" {
+				application.reportConfig, application.reportApplied = nil, false
+				defer func() { application.reportSavedConfiguration(command) }()
+			}
 			value, err := config.Load(application.ConfigPath)
 			if err != nil || !value.Telemetry.Enabled {
 				return run(command, args)
 			}
 			reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
 			if err != nil {
-				_ = writeString(application.Err, "Optional telemetry is unavailable; continuing without it.\n")
 				return run(command, args)
 			}
 			defer reporter.Close()
-			firmware := ""
-			if file, err := os.Open("/usr/lib/version"); err == nil {
-				data, _ := io.ReadAll(io.LimitReader(file, 64))
-				_ = file.Close()
-				firmware = strings.TrimSpace(string(data))
-			}
-			reporter.SetMetadata(detectBoard(), firmware, value.Proxy.Program, value.Profile)
+			setTelemetryMetadata(reporter, value)
 			application.monitor = reporter
 			defer func() { application.monitor = nil }()
 			operation := command.Name()
@@ -102,12 +114,14 @@ func (application *Application) root() *cobra.Command {
 	management := []*cobra.Command{
 		application.configureCommand(), application.installCommand(), application.restartCommand(),
 		application.uninstallCommand(), application.upgradeCommand(),
+		application.previewCommand(),
 	}
 	for _, child := range management {
 		child.GroupID = "manage"
 		command.AddCommand(child)
 	}
 	observability := []*cobra.Command{application.statusCommand(), application.diagnoseCommand()}
+	observability = append(observability, application.telemetryCommand())
 	for _, child := range observability {
 		child.GroupID = "observe"
 		command.AddCommand(child)
@@ -207,6 +221,8 @@ func (application *Application) configureCommand() *cobra.Command {
 				{"telemetry-logs", &value.Telemetry.Logs, telemetryOptions.Logs},
 				{"telemetry-metrics", &value.Telemetry.Metrics, telemetryOptions.Metrics},
 				{"telemetry-tracing", &value.Telemetry.Tracing, telemetryOptions.Tracing},
+				{"telemetry-presets", &value.Telemetry.Presets, telemetryOptions.Presets},
+				{"telemetry-network-identity", &value.Telemetry.NetworkIdentity, telemetryOptions.NetworkIdentity},
 			} {
 				if flags.Changed(option.name) {
 					*option.dst = option.src
@@ -216,18 +232,21 @@ func (application *Application) configureCommand() *cobra.Command {
 				value.Telemetry.TraceRate = telemetryOptions.TraceRate
 			}
 			if !nonInteractive {
-				if err := application.configureForm(&value); err != nil {
+				if err := application.configureForm(command.Context(), &value); err != nil {
 					return err
 				}
 			}
 			if err := config.Save(application.ConfigPath, value); err != nil {
 				return err
 			}
+			application.reportConfig = &value
 			if err := writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath); err != nil {
 				return err
 			}
 			if installed(application.StateDir) {
-				return application.restart(command.Context(), true)
+				err := application.restart(command.Context(), true)
+				application.reportApplied = err == nil
+				return err
 			}
 			return nil
 		},
@@ -250,12 +269,20 @@ func (application *Application) configureCommand() *cobra.Command {
 	flags.IntVar(&igmpVersion, "igmp-version", 0, "IGMP version: 2 or 3")
 	flags.BoolVar(&quickLeave, "quickleave", false, "enable quickleave")
 	flags.BoolVar(&debug, "debug", false, "enable verbose proxy logging")
-	flags.BoolVar(&telemetryOptions.Enabled, "telemetry", false, "opt in to operational telemetry sent to the maintainer through Sentry")
+	flags.BoolVar(&telemetryOptions.Enabled, "telemetry", true, "send diagnostic data")
 	flags.BoolVar(&telemetryOptions.Errors, "telemetry-errors", true, "report software failures when telemetry is enabled")
 	flags.BoolVar(&telemetryOptions.Logs, "telemetry-logs", true, "send structured lifecycle logs; never raw proxy logs")
 	flags.BoolVar(&telemetryOptions.Metrics, "telemetry-metrics", true, "send bounded operational counters")
 	flags.BoolVar(&telemetryOptions.Tracing, "telemetry-tracing", true, "send sampled operation timings")
+	flags.BoolVar(&telemetryOptions.Presets, "telemetry-presets", true, "share selected settings, changes and a random installation ID")
+	flags.BoolVar(&telemetryOptions.NetworkIdentity, "telemetry-network-identity", true, "include public IP and reverse-DNS hostname in research")
 	flags.Float64Var(&telemetryOptions.TraceRate, "telemetry-trace-rate", 0.1, "fraction of operations traced, from 0 to 1")
+	for _, name := range []string{
+		"telemetry-errors", "telemetry-logs", "telemetry-metrics", "telemetry-tracing",
+		"telemetry-presets", "telemetry-network-identity", "telemetry-trace-rate",
+	} {
+		_ = flags.MarkHidden(name)
+	}
 	_ = command.RegisterFlagCompletionFunc("profile", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		profiles := config.Profiles()
 		values := make([]string, 0, len(profiles))
@@ -273,90 +300,6 @@ func completeValues(values ...string) func(*cobra.Command, []string, string) ([]
 	return func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return values, cobra.ShellCompDirectiveNoFileComp
 	}
-}
-
-func (application *Application) configureForm(value *config.Config) error {
-	profileID := value.Profile
-	if profileID == "" || profileID == "legacy" {
-		profileID = "custom"
-	}
-	profileOptions := make([]huh.Option[string], 0)
-	for _, profile := range config.Profiles() {
-		profileOptions = append(profileOptions, huh.NewOption(profile.Name, profile.ID))
-	}
-	if err := huh.NewSelect[string]().Title("Provider profile").Description("Start from known provider defaults, then review every value.").Options(profileOptions...).Value(&profileID).Run(); err != nil {
-		return err
-	}
-	if profileID != value.Profile {
-		selected, err := config.FromProfile(profileID, *value)
-		if err != nil {
-			return err
-		}
-		*value = withDetectedInterfaces(selected)
-	}
-	natDestinations := join(value.WAN.NATDestinations)
-	proxySources := join(value.Proxy.SourceRanges)
-	lanInterfaces := join(value.LAN.Interfaces)
-	dhcpOptions := join(value.WAN.DHCPOptions)
-	vlan := strconv.Itoa(value.WAN.VLAN)
-	providerFields := []huh.Field{
-		huh.NewNote().Title("udm-iptv configuration").Description("Configure the dedicated IPTV uplink and the LANs that receive multicast."),
-	}
-	if profile, found := config.ProfileByID(profileID); found && profile.Note != "" {
-		providerFields = append(providerFields, huh.NewNote().Title("Provider note").Description(profile.Note))
-	}
-	providerFields = append(providerFields,
-		huh.NewInput().Title("Physical WAN interface").Description("The port carrying the provider IPTV VLAN.").Value(&value.WAN.Interface),
-		huh.NewInput().Title("IPTV VLAN ID").Description("Use 0 when IPTV is untagged.").Value(&vlan).Validate(func(value string) error {
-			parsed, err := strconv.Atoi(value)
-			if err != nil || parsed < 0 || parsed > 4094 {
-				return errors.New("enter a VLAN ID between 0 and 4094")
-			}
-			return nil
-		}),
-		huh.NewInput().Title("IPTV interface name").Value(&value.WAN.VLANInterface),
-		huh.NewInput().Title("Custom VLAN MAC").Description("Usually empty. Set only when the provider binds IPTV to a specific MAC.").Value(&value.WAN.VLANMAC),
-		huh.NewConfirm().Title("Obtain the IPTV address through DHCP?").Value(&value.WAN.DHCP),
-		huh.NewInput().Title("DHCP client options").Description("Passed as separate arguments to udhcpc.").Value(&dhcpOptions),
-		huh.NewInput().Title("Static IPTV address").Description("CIDR address used only when DHCP is disabled.").Value(&value.WAN.StaticAddress),
-		huh.NewConfirm().Title("Allow a DHCP default-route fallback?").Description("Usually No. RFC3442 provider routes are safer; enabling this can create a second default route.").Value(&value.WAN.AllowDefaultRoute),
-	)
-	form := huh.NewForm(
-		huh.NewGroup(providerFields...),
-		huh.NewGroup(
-			huh.NewInput().Title("NAT destination prefixes").Description("Space-separated unicast provider destinations. This does not control multicast source acceptance.").Value(&natDestinations),
-			huh.NewInput().Title("Proxy source prefixes").Description("Space-separated multicast source allowlist for igmpproxy. Leave empty for improxy.").Value(&proxySources),
-			huh.NewInput().Title("LAN interfaces").Description("Space-separated downstream interfaces, for example br0.").Value(&lanInterfaces),
-		),
-		huh.NewGroup(
-			huh.NewSelect[string]().Title("Multicast proxy").Description("improxy is recommended on current UniFi OS.").Options(
-				huh.NewOption("improxy (recommended)", "improxy"),
-				huh.NewOption("igmpproxy", "igmpproxy"),
-			).Value(&value.Proxy.Program),
-			huh.NewSelect[int]().Title("IGMP version").Description("KPN and most current receivers use IGMPv3.").Options(
-				huh.NewOption("IGMPv3 (recommended)", 3),
-				huh.NewOption("IGMPv2", 2),
-			).Value(&value.Proxy.IGMPVersion),
-			huh.NewConfirm().Title("Enable quickleave?").Description("Disable this when multiple receivers may watch through the same downstream interface.").Value(&value.Proxy.QuickLeave),
-			huh.NewConfirm().Title("Enable proxy debugging?").Description("Usually No. Enable temporarily only when collecting detailed troubleshooting logs.").Value(&value.Proxy.Debug),
-		),
-		huh.NewGroup(
-			huh.NewConfirm().Title("Send operational telemetry to the maintainer?").Description("Optional Sentry reporting. No configuration, credentials or diagnostic captures are uploaded. The receiving service sees your public IP. Choose No to disable all reporting.").Value(&value.Telemetry.Enabled),
-			huh.NewConfirm().Title("Report software errors?").Value(&value.Telemetry.Errors),
-			huh.NewConfirm().Title("Send structured lifecycle logs?").Value(&value.Telemetry.Logs),
-			huh.NewConfirm().Title("Send operational metrics?").Value(&value.Telemetry.Metrics),
-			huh.NewConfirm().Title("Send sampled operation timings?").Value(&value.Telemetry.Tracing),
-		),
-	)
-	if err := form.Run(); err != nil {
-		return err
-	}
-	value.WAN.VLAN, _ = strconv.Atoi(vlan)
-	value.WAN.NATDestinations = fields(natDestinations)
-	value.WAN.DHCPOptions = fields(dhcpOptions)
-	value.Proxy.SourceRanges = fields(proxySources)
-	value.LAN.Interfaces = fields(lanInterfaces)
-	return value.Validate()
 }
 
 func env(name, fallback string) string {
@@ -380,6 +323,3 @@ func requireRoot() error {
 	}
 	return nil
 }
-
-func join(values []string) string  { return strings.Join(values, " ") }
-func fields(value string) []string { return strings.Fields(value) }

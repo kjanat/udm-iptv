@@ -24,12 +24,14 @@ type Config struct {
 }
 
 type Telemetry struct {
-	Enabled   bool    `json:"enabled"`
-	Errors    bool    `json:"errors"`
-	Logs      bool    `json:"logs"`
-	Metrics   bool    `json:"metrics"`
-	Tracing   bool    `json:"tracing"`
-	TraceRate float64 `json:"traceRate"`
+	Presets         bool    `json:"presets"`
+	NetworkIdentity bool    `json:"networkIdentity"`
+	Enabled         bool    `json:"enabled"`
+	Errors          bool    `json:"errors"`
+	Logs            bool    `json:"logs"`
+	Metrics         bool    `json:"metrics"`
+	Tracing         bool    `json:"tracing"`
+	TraceRate       float64 `json:"traceRate"`
 }
 
 type WAN struct {
@@ -67,7 +69,7 @@ func Default() Config {
 		},
 		LAN:       LAN{Interfaces: []string{"br0"}},
 		Proxy:     Proxy{Program: "improxy", IGMPVersion: 3},
-		Telemetry: Telemetry{Errors: true, Logs: true, Metrics: true, Tracing: true, TraceRate: 0.1},
+		Telemetry: Telemetry{Enabled: true, Errors: true, Logs: true, Metrics: true, Tracing: true, TraceRate: 0.1, Presets: true, NetworkIdentity: true},
 	}
 }
 
@@ -205,6 +207,8 @@ func ImportLegacy(path string) (Config, error) {
 		values[key] = raw
 	}
 	value := Default()
+	// Legacy installations never selected telemetry; do not opt them in on migration.
+	value.Telemetry.Enabled = false
 	value.Profile = "legacy"
 	value.WAN.Interface = fallback(values["IPTV_WAN_INTERFACE"], value.WAN.Interface)
 	if vlan, parseErr := strconv.Atoi(fallback(values["IPTV_WAN_VLAN"], "4")); parseErr == nil {

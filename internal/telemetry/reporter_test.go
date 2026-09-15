@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,39 @@ type recordingTransport struct {
 	configured bool
 }
 
+func newTestReporter(settings config.Telemetry, version string, transport sentry.Transport) (*Reporter, error) {
+	return newReporter(settings, version, transport, "https://public@example.invalid/1")
+}
+
+func TestMissingBuildEndpointDoesNotUseEnvironment(t *testing.T) {
+	t.Setenv("SENTRY_DSN", "https://public@example.invalid/2")
+	transport := &recordingTransport{}
+	if _, err := newReporter(testSettings(), "test", transport, ""); err == nil || transport.configured {
+		t.Fatal("unstamped build initialized telemetry")
+	}
+	if r, err := newReporter(config.Telemetry{}, "test", transport, ""); err != nil || r.client != nil {
+		t.Fatal("disabled telemetry required a build endpoint")
+	}
+}
+
+func TestBuildEndpoint(t *testing.T) {
+	t.Setenv("SENTRY_DSN", "https://runtime@example.invalid/2")
+	r, err := New(testSettings(), "test", "", "")
+	if DSN == "" {
+		if err == nil {
+			t.Fatal("unstamped build accepted telemetry")
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.client.Options().Dsn != DSN {
+		t.Fatal("build endpoint was not used")
+	}
+}
+
 func (t *recordingTransport) Configure(sentry.ClientOptions) { t.configured = true }
 func (t *recordingTransport) SendEvent(event *sentry.Event) {
 	t.mu.Lock()
@@ -38,10 +72,39 @@ func testSettings() config.Telemetry {
 	return settings
 }
 
+func TestSDKConfigurationPreservesPrivacyAndSampling(t *testing.T) {
+	settings := testSettings()
+	settings.TraceRate = 0.2
+	r, err := newTestReporter(settings, "test", &recordingTransport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	options := r.client.Options()
+	collection := r.client.GetDataCollection()
+	if collection.UserInfo.Or(true) || options.Debug {
+		t.Fatal("SDK enabled personal data collection or debug output")
+	}
+	if len(collection.HTTPBodies) != 0 || collection.Cookies.Mode != sentry.CollectionOff || collection.QueryParams.Mode != sentry.CollectionOff || collection.HTTPHeaders.Request.Mode != sentry.CollectionOff || collection.HTTPHeaders.Response.Mode != sentry.CollectionOff {
+		t.Fatal("SDK enabled automatic HTTP data collection")
+	}
+	if !options.EnableTracing || options.TracesSampleRate != 0.2 || options.TracesSampler != nil {
+		t.Fatal("SDK ignored configured fixed sampling rate")
+	}
+	if options.BeforeSend == nil || options.BeforeSendTransaction == nil || options.BeforeSendLog == nil || options.BeforeSendMetric == nil {
+		t.Fatal("a telemetry product is missing its privacy filter")
+	}
+	if options.Release != "udm-iptv@test" || options.Environment != "production" || options.ServerName != "udm-iptv" {
+		t.Fatal("SDK metadata defaults changed")
+	}
+}
+
 func TestDisabledDoesNotInitializeSDK(t *testing.T) {
 	t.Setenv("SENTRY_DSN", DSN)
 	transport := &recordingTransport{}
-	r, err := newReporter(config.Default().Telemetry, "test", transport)
+	settings := config.Default().Telemetry
+	settings.Enabled = false
+	r, err := newTestReporter(settings, "test", transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,9 +117,64 @@ func TestDisabledDoesNotInitializeSDK(t *testing.T) {
 	}
 }
 
+func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
+	transport := &recordingTransport{}
+	r, err := newTestReporter(testSettings(), "test", transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := fmt.Errorf("secret wrapper: %w", errors.Join(errors.New("secret first"), &os.PathError{Op: "open", Path: "/secret/path", Err: os.ErrPermission}))
+	if err := r.Run(context.Background(), "install", func(context.Context) error { return cause }); err != cause {
+		t.Fatal("local error changed")
+	}
+	r.Close()
+	var failures int
+	for _, event := range transport.events {
+		if len(event.Exception) == 0 {
+			continue
+		}
+		failures++
+		if len(event.Exception) != 5 {
+			t.Fatalf("lost error chain: %+v", event.Exception)
+		}
+		ids := map[int]bool{}
+		groups, parents := 0, 0
+		for _, exception := range event.Exception {
+			if exception.Mechanism == nil {
+				t.Fatal("missing relationship")
+			}
+			ids[exception.Mechanism.ExceptionID] = true
+			if exception.Mechanism.IsExceptionGroup {
+				groups++
+			}
+		}
+		for _, exception := range event.Exception {
+			if parent := exception.Mechanism.ParentID; parent != nil {
+				parents++
+				if !ids[*parent] {
+					t.Fatal("dangling parent")
+				}
+			}
+		}
+		if groups != 1 || parents != 4 {
+			t.Fatalf("groups=%d parents=%d", groups, parents)
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "secret") {
+			t.Fatalf("private data leaked: %s", data)
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("expected one grouped event, got %d", failures)
+	}
+}
+
 func TestAllProductsAndPrivacy(t *testing.T) {
 	transport := &recordingTransport{}
-	r, err := newReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), "test", transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,16 +216,21 @@ func TestAllProductsAndPrivacy(t *testing.T) {
 }
 
 func TestFiltersDiscardUnknownData(t *testing.T) {
-	r, err := newReporter(testSettings(), "test", &recordingTransport{})
+	r, err := newTestReporter(testSettings(), "test", &recordingTransport{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
 	event := &sentry.Event{Transaction: "install", ServerName: "secret-host", Message: "secret-message", User: sentry.User{IPAddress: "192.0.2.55"}}
 	event.Contexts = map[string]sentry.Context{"device": {"secret": "secret-context"}}
+	event.Contexts["trace"] = sentry.Context{"trace_id": sentry.TraceID{1}, "span_id": sentry.SpanID{2}, "secret": "secret-trace-data"}
 	event.Attachments = []*sentry.Attachment{{Filename: "secret-file", Payload: []byte("secret-config")}}
 	event.Exception = []sentry.Exception{{Type: "error", Value: "secret-error", Stacktrace: &sentry.Stacktrace{Frames: []sentry.Frame{{Filename: "/home/secret/file.go", AbsPath: "secret-path", Vars: map[string]any{"password": "secret"}, ContextLine: "secret-source", Function: "main.run", Lineno: 42}}}}}
+	event.Exception[0].Mechanism = &sentry.Mechanism{Type: "secret", Description: "secret", Source: "secret", HelpLink: "secret", Data: map[string]any{"secret": "secret"}}
 	clean := r.filterEvent(event, nil)
+	if clean.Exception[0].Value != "install failed" {
+		t.Fatalf("unexpected exception message: %q", clean.Exception[0].Value)
+	}
 	data, err := json.Marshal(clean)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +268,7 @@ func TestProductSwitches(t *testing.T) {
 				settings.Tracing = true
 			}
 			transport := &recordingTransport{}
-			r, err := newReporter(settings, "test", transport)
+			r, err := newTestReporter(settings, "test", transport)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -186,7 +309,7 @@ func TestPersistentLimitsAndRevokedConsent(t *testing.T) {
 	if err := config.Save(path, value); err != nil {
 		t.Fatal(err)
 	}
-	r, err := newReporter(value.Telemetry, "test", &recordingTransport{})
+	r, err := newTestReporter(value.Telemetry, "test", &recordingTransport{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +332,7 @@ func TestPersistentLimitsAndRevokedConsent(t *testing.T) {
 
 func TestNestedTracesPreserveChildTimings(t *testing.T) {
 	transport := &recordingTransport{}
-	r, err := newReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), "test", transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +360,7 @@ func TestNestedTracesPreserveChildTimings(t *testing.T) {
 
 func TestPanicIsReportedWithoutSwallowingOrLeakingValue(t *testing.T) {
 	transport := &recordingTransport{}
-	r, err := newReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), "test", transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,6 +379,9 @@ func TestPanicIsReportedWithoutSwallowingOrLeakingValue(t *testing.T) {
 			continue
 		}
 		failures++
+		if mechanism := event.Exception[0].Mechanism; mechanism == nil || mechanism.Handled == nil || *mechanism.Handled {
+			t.Fatal("panic was not marked unhandled")
+		}
 		data, err := json.Marshal(event)
 		if err != nil {
 			t.Fatal(err)
@@ -273,7 +399,7 @@ func TestZeroTraceRateSendsNoTraces(t *testing.T) {
 	settings := testSettings()
 	settings.TraceRate = 0
 	transport := &recordingTransport{}
-	r, err := newReporter(settings, "test", transport)
+	r, err := newTestReporter(settings, "test", transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,5 +409,92 @@ func TestZeroTraceRateSendsNoTraces(t *testing.T) {
 		if event.Type == "transaction" {
 			t.Fatal("zero sampling rate sent a trace")
 		}
+	}
+}
+
+func TestErrorsAndLogsKeepActiveSpan(t *testing.T) {
+	transport := &recordingTransport{}
+	r, err := newTestReporter(testSettings(), "test", transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spans := map[string]*sentry.Span{}
+	_ = r.Run(context.Background(), "install", func(ctx context.Context) error {
+		spans["install"] = sentry.SpanFromContext(ctx)
+		return r.Run(ctx, "service.health", func(ctx context.Context) error {
+			spans["service.health"] = sentry.SpanFromContext(ctx)
+			return errors.New("private failure")
+		})
+	})
+	r.Close()
+	var failures, logs int
+	for _, event := range transport.events {
+		if len(event.Exception) > 0 {
+			failures++
+			span := spans[event.Transaction]
+			trace := event.Contexts["trace"]
+			if span == nil || trace["trace_id"] != span.TraceID || trace["span_id"] != span.SpanID {
+				t.Fatalf("error lost its active span: %+v", trace)
+			}
+		}
+		for _, log := range event.Logs {
+			logs++
+			span := spans[strings.Fields(log.Body)[0]]
+			if span == nil || log.TraceID != span.TraceID || log.SpanID != span.SpanID {
+				t.Fatalf("log lost its active span: %+v", log)
+			}
+		}
+	}
+	if failures != 2 || logs != 4 {
+		t.Fatalf("missing correlated records: errors=%d logs=%d", failures, logs)
+	}
+}
+
+func TestCancellationAndDeadlineTraceStatus(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		err      error
+		status   sentry.SpanStatus
+		failures int
+	}{
+		{"cancelled", context.Canceled, sentry.SpanStatusCanceled, 0},
+		{"deadline", context.DeadlineExceeded, sentry.SpanStatusDeadlineExceeded, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &recordingTransport{}
+			r, err := newTestReporter(testSettings(), "test", transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Run(context.Background(), "install", func(context.Context) error { return test.err }); err != test.err {
+				t.Fatal("operation result changed")
+			}
+			r.Close()
+			var traces, failures, failedMetrics int
+			for _, event := range transport.events {
+				if event.Type == "transaction" {
+					traces++
+					if event.Contexts["trace"]["status"] != test.status {
+						t.Fatalf("wrong status: %+v", event.Contexts["trace"])
+					}
+				}
+				if len(event.Exception) > 0 {
+					failures++
+				}
+				for _, metric := range event.Metrics {
+					if metric.Name == "operation.failed" {
+						failedMetrics++
+					}
+				}
+				for _, log := range event.Logs {
+					if test.failures == 0 && log.Level == sentry.LogLevelError {
+						t.Fatal("cancellation logged as error")
+					}
+				}
+			}
+			if traces != 1 || failures != test.failures || failedMetrics != test.failures {
+				t.Fatalf("unexpected signals: traces=%d errors=%d failed metrics=%d", traces, failures, failedMetrics)
+			}
+		})
 	}
 }
