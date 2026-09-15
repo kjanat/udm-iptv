@@ -1,0 +1,46 @@
+#:schema https://golangci-lint.run/jsonschema/golangci.jsonschema.json
+version = "2"
+
+[run]
+timeout = "5m"
+relative-path-mode = "gomod"
+modules-download-mode = "readonly"
+# Analyze tagged tests without executing privileged tests or sending telemetry.
+build-tags = ["integration", "sentrylive"]
+tests = true
+
+[linters]
+default = "standard"
+enable = [
+  "bidichk",
+  "bodyclose",
+  "contextcheck",
+  "copyloopvar",
+  "durationcheck",
+  "errorlint",
+  "fatcontext",
+  "gocheckcompilerdirectives",
+  "makezero",
+  "nilerr",
+  "nilnesserr",
+  "noctx",
+  "nolintlint",
+]
+
+[linters.settings.staticcheck]
+checks = ["all"]
+
+[linters.settings.nolintlint]
+require-explanation = true
+require-specific = true
+allow-unused = false
+
+[linters.exclusions]
+generated = "strict"
+warn-unused = true
+
+[issues]
+# Report the full backlog, including repeated findings.
+max-issues-per-linter = 0
+max-same-issues = 0
+fix = false

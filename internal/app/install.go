@@ -15,6 +15,7 @@ import (
 	systemd "github.com/coreos/go-systemd/v22/dbus"
 	"github.com/godbus/dbus/v5"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/spf13/cobra"
 )
@@ -27,41 +28,93 @@ const (
 )
 
 func (application *Application) installCommand() *cobra.Command {
-	var nonInteractive, replace bool
+	return application.installCommandWith(installDependencies{
+		load: func() (config.Config, error) { return config.Load(application.ConfigPath) },
+		legacy: func() (config.Config, bool, error) {
+			return importFirstLegacy([]string{"/etc/udm-iptv.conf", filepath.Join(application.StateDir, "legacy.conf")})
+		},
+		defaults: detectedDefaults, prompt: application.configureForm,
+		executable: os.Executable, requireRoot: requireRoot,
+		backend: installationBackend{application},
+	})
+}
+
+// Read-only discovery, interactive input and host mutation are separate seams.
+type installDependencies struct {
+	load        func() (config.Config, error)
+	legacy      func() (config.Config, bool, error)
+	defaults    func() config.Config
+	prompt      func(context.Context, *config.Config) error
+	executable  func() (string, error)
+	requireRoot func() error
+	backend     installer.Backend
+}
+
+func (application *Application) installCommandWith(deps installDependencies) *cobra.Command {
+	var nonInteractive, replace, dryRun bool
 	command := &cobra.Command{
 		Use:   "install",
 		Short: "Install the persistent service on this console",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			if err := requireRoot(); err != nil {
-				return err
+			if !dryRun {
+				if err := deps.requireRoot(); err != nil {
+					return err
+				}
 			}
-			if _, err := config.Load(application.ConfigPath); err != nil {
+			value, err := deps.load()
+			save := false
+			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					return err
 				}
-				value := detectedDefaults()
-				legacy, found, legacyErr := importFirstLegacy([]string{"/etc/udm-iptv.conf", filepath.Join(application.StateDir, "legacy.conf")})
+				legacy, found, legacyErr := deps.legacy()
 				if legacyErr != nil {
 					return legacyErr
 				}
 				if found {
 					value = legacy
+				} else {
+					value = deps.defaults()
 				}
-				if !nonInteractive {
-					if err := application.configureForm(&value); err != nil {
+				save = true
+			}
+			if !nonInteractive && (save || dryRun) {
+				if dryRun {
+					if err := writeString(application.Out, "Preview mode: changes made in this wizard will not be saved or applied.\n"); err != nil {
 						return err
 					}
 				}
-				if err := config.Save(application.ConfigPath, value); err != nil {
+				if err := deps.prompt(command.Context(), &value); err != nil {
 					return err
 				}
+				save = true
 			}
-			return application.install(command.Context(), replace)
+			executable, err := deps.executable()
+			if err != nil {
+				return err
+			}
+			configPath, err := filepath.Abs(application.ConfigPath)
+			if err != nil {
+				return err
+			}
+			stateDir, err := filepath.Abs(application.StateDir)
+			if err != nil {
+				return err
+			}
+			plan := installer.Plan{Config: value, ConfigPath: configPath, StateDir: stateDir, Executable: executable, SaveConfig: save, Replace: replace}
+			if dryRun {
+				return plan.Preview(application.Out)
+			}
+			if err := plan.Execute(command.Context(), deps.backend); err != nil {
+				return err
+			}
+			return writef(application.Out, "udm-iptv %s has started and is enabled to start after reboot. Installed in %s.\n", application.Version, application.StateDir)
 		},
 	}
 	command.Flags().BoolVar(&replace, "force", false, "replace an existing persistent installation")
 	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "install using the existing, imported, or detected configuration")
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview without system changes, service checks or telemetry")
 	return command
 }
 
@@ -82,64 +135,75 @@ func importFirstLegacy(paths []string) (config.Config, bool, error) {
 	return config.Config{}, false, nil
 }
 
-func (application *Application) install(ctx context.Context, replace bool) error {
-	executable, err := os.Executable()
-	if err != nil {
-		return err
+type installationBackend struct{ application *Application }
+
+func (backend installationBackend) Apply(ctx context.Context, action installer.Action, plan installer.Plan) error {
+	application := backend.application
+	target := filepath.Join(plan.StateDir, "bin", "udm-iptv")
+	switch action {
+	case installer.Preflight:
+		if installed(plan.StateDir) && !plan.Replace && !sameFile(plan.Executable, target) {
+			return errors.New("udm-iptv is already installed; use --force to replace it")
+		}
+		return nil
+	case installer.SaveConfig:
+		if err := config.Save(plan.ConfigPath, plan.Config); err != nil {
+			return err
+		}
+		application.reportConfig = &plan.Config
+		return nil
+	case installer.RemoveLegacy:
+		return removeLegacyPackage(ctx, application.Out, application.Err)
+	case installer.CopyBinary:
+		return copyExecutable(plan.Executable, target)
+	case installer.WriteFiles:
+		unit := systemdUnit(target, plan.ConfigPath, plan.StateDir)
+		if err := atomicWrite(unitPath, []byte(unit), 0o644); err != nil {
+			return err
+		}
+		tmpfiles := fmt.Sprintf("L+ %s - - - - %s\n", commandPath, target)
+		if err := atomicWrite(tmpfilesPath, []byte(tmpfiles), 0o644); err != nil {
+			return err
+		}
+		if err := replaceSymlink(target, commandPath); err != nil {
+			return err
+		}
+		if err := replaceSymlink(target, filepath.Join(plan.StateDir, "bin", "udhcpc-hook")); err != nil {
+			return err
+		}
+		var completion bytes.Buffer
+		if err := application.root().GenBashCompletion(&completion); err != nil {
+			return fmt.Errorf("install Bash completion: %w", err)
+		}
+		if err := atomicWrite(completionPath, completion.Bytes(), 0o644); err != nil {
+			return fmt.Errorf("install Bash completion: %w", err)
+		}
+		return nil
+	case installer.Activate:
+		connection, err := systemd.NewSystemConnectionContext(ctx)
+		if err != nil {
+			return fmt.Errorf("connect to systemd: %w", err)
+		}
+		defer connection.Close()
+		if err := connection.ReloadContext(ctx); err != nil {
+			return fmt.Errorf("reload systemd: %w", err)
+		}
+		if _, _, err := connection.EnableUnitFilesContext(ctx, []string{unitPath}, false, true); err != nil {
+			return fmt.Errorf("enable service: %w", err)
+		}
+		return restartAndWait(ctx, connection, "udm-iptv.service")
+	case installer.CheckHealth:
+		if err := application.waitHealthy(ctx, 30*time.Second, 6*time.Second); err != nil {
+			application.reportHealthFailure(ctx)
+			return fmt.Errorf("installation completed but the service is unhealthy: %w", err)
+		}
+		application.reportConfig, application.reportApplied = &plan.Config, true
+		return nil
+	case installer.Cleanup:
+		return removeObsoleteLegacyFiles(plan.StateDir)
+	default:
+		return fmt.Errorf("unknown installation action %q", action)
 	}
-	target := filepath.Join(application.StateDir, "bin", "udm-iptv")
-	if installed(application.StateDir) && !replace && !sameFile(executable, target) {
-		return errors.New("udm-iptv is already installed; use --force to replace it")
-	}
-	if err := removeLegacyPackage(ctx, application.Out, application.Err); err != nil {
-		return err
-	}
-	if err := copyExecutable(executable, target); err != nil {
-		return fmt.Errorf("install executable: %w", err)
-	}
-	unit := systemdUnit(target, application.ConfigPath, application.StateDir)
-	if err := atomicWrite(unitPath, []byte(unit), 0o644); err != nil {
-		return err
-	}
-	tmpfiles := fmt.Sprintf("L+ %s - - - - %s\n", commandPath, target)
-	if err := atomicWrite(tmpfilesPath, []byte(tmpfiles), 0o644); err != nil {
-		return err
-	}
-	if err := replaceSymlink(target, commandPath); err != nil {
-		return err
-	}
-	if err := replaceSymlink(target, filepath.Join(application.StateDir, "bin", "udhcpc-hook")); err != nil {
-		return err
-	}
-	var completion bytes.Buffer
-	if err := application.root().GenBashCompletion(&completion); err != nil {
-		return fmt.Errorf("install Bash completion: %w", err)
-	}
-	if err := atomicWrite(completionPath, completion.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("install Bash completion: %w", err)
-	}
-	connection, err := systemd.NewSystemConnectionContext(ctx)
-	if err != nil {
-		return fmt.Errorf("connect to systemd: %w", err)
-	}
-	defer connection.Close()
-	if err := connection.ReloadContext(ctx); err != nil {
-		return fmt.Errorf("reload systemd: %w", err)
-	}
-	if _, _, err := connection.EnableUnitFilesContext(ctx, []string{unitPath}, false, true); err != nil {
-		return fmt.Errorf("enable service: %w", err)
-	}
-	if err := restartAndWait(ctx, connection, "udm-iptv.service"); err != nil {
-		return err
-	}
-	if err := application.waitHealthy(ctx, 30*time.Second, 6*time.Second); err != nil {
-		application.reportHealthFailure(ctx)
-		return fmt.Errorf("installation completed but the service is unhealthy: %w", err)
-	}
-	if err := removeObsoleteLegacyFiles(application.StateDir); err != nil {
-		return err
-	}
-	return writef(application.Out, "udm-iptv %s has started and is enabled to start after reboot. Installed in %s.\n", application.Version, application.StateDir)
 }
 
 func removeObsoleteLegacyFiles(stateDir string) error {

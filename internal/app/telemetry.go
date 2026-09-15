@@ -10,15 +10,28 @@ import (
 	"time"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
+func setTelemetryMetadata(reporter *telemetry.Reporter, value config.Config) {
+	firmware := ""
+	if file, err := os.Open("/usr/lib/version"); err == nil {
+		data, _ := io.ReadAll(io.LimitReader(file, 64))
+		_ = file.Close()
+		firmware = strings.TrimSpace(string(data))
+	}
+	reporter.SetMetadata(detectBoard(), firmware, value.Proxy.Program, value.Profile)
+}
+
 func (application *Application) startTelemetryMetrics(parent context.Context) func() {
-	if !application.monitor.MetricsEnabled() {
+	if !application.monitor.MetricsEnabled() && !application.monitor.ResearchEnabled() {
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	started := time.Now()
+	lastObservation := time.Time{}
 	go func() {
 		defer close(done)
 		ticker := time.NewTicker(time.Minute)
@@ -28,7 +41,7 @@ func (application *Application) startTelemetryMetrics(parent context.Context) fu
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !application.monitor.MetricsEnabled() {
+				if !application.monitor.MetricsEnabled() && !application.monitor.ResearchEnabled() {
 					continue
 				}
 				application.monitor.Gauge(ctx, "daemon.uptime", time.Since(started).Seconds())
@@ -45,6 +58,15 @@ func (application *Application) startTelemetryMetrics(parent context.Context) fu
 					if properties, err := connection.GetAllPropertiesContext(sampleContext, "udm-iptv.service"); err == nil {
 						if restarts, ok := properties["NRestarts"]; ok {
 							application.monitor.Gauge(ctx, "daemon.restarts", float64(parseUint(restarts)))
+						}
+						if time.Since(lastObservation) >= time.Hour {
+							err := application.monitor.RecordObservation(telemetry.Observation{
+								UptimeSeconds: uint64(time.Since(started).Seconds()),
+								Restarts:      parseUint(properties["NRestarts"]), Active: properties["ActiveState"] == "active",
+							})
+							if err == nil {
+								lastObservation = time.Now()
+							}
 						}
 					}
 					connection.Close()

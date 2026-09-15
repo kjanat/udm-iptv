@@ -9,6 +9,36 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
+func TestHelpCopy(t *testing.T) {
+	var out strings.Builder
+	application := &Application{Out: &out, Err: &out}
+	root := application.root()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "telemetry") || strings.Contains(out.String(), "Sentry") {
+		t.Fatal("unexpected root help text")
+	}
+	out.Reset()
+	root = application.root()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"configure", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	help := out.String()
+	if !strings.Contains(help, "--telemetry") {
+		t.Fatal("configure help missing --telemetry")
+	}
+	if strings.Contains(help, "telemetry-errors") || strings.Contains(help, "Sentry") {
+		t.Fatal("unexpected configure help text")
+	}
+}
+
 func TestTelemetryConfigurationIsOptInAndPreservesSelection(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

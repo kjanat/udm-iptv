@@ -1,9 +1,8 @@
 name: Build
 on: pull_request
-concurrency:
-  group: build-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+concurrency: { group: "build-${{ github.event.pull_request.number }}", cancel-in-progress: true }
 permissions: { contents: read }
+env: { GORELEASER: "v2.18.1" }
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,36 +27,40 @@ jobs:
         run: go tool govulncheck ./...
       - name: Build release snapshot
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
         with:
           distribution: goreleaser
-          version: latest
+          version: ${{ env.GORELEASER }}
           args: release --snapshot --clean --skip=publish
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
-      - name: Validate Debian scripts
-        run: |
-          sh -n packaging/deb/config packaging/deb/preinstall packaging/deb/postinstall packaging/deb/preremove packaging/deb/postremove
-          shellcheck packaging/deb/config packaging/deb/preinstall packaging/deb/postinstall packaging/deb/preremove packaging/deb/postremove
-      - name: Validate Debian package
-        run: |
-          package=$(find dist -maxdepth 1 -type f -name '*.deb' -print -quit)
-          package_name=$(dpkg-deb --field "${package}" Package)
-          architecture=$(dpkg-deb --field "${package}" Architecture)
-          dependencies=$(dpkg-deb --field "${package}" Depends)
-          test "${package_name}" = udm-iptv
-          test "${architecture}" = arm64
-          grep -Eq '(^|, )improxy(, |$)' <<<"${dependencies}"
-          grep -Eq '(^|, )iptables(, |$)' <<<"${dependencies}"
-          control=$(mktemp -d)
-          dpkg-deb --control "${package}" "${control}"
-          test -x "${control}/config"
-          test -x "${control}/preinst"
-          test -x "${control}/postinst"
-          test -x "${control}/prerm"
-          test -x "${control}/postrm"
-          test -f "${control}/templates"
-          grep -Fq "configure --profile \"\${profile}\" --non-interactive" "${control}/postinst"
-          dpkg-deb --contents "${package}" | grep -E '/data/udm-iptv/bin/udm-iptv$'
-          dpkg-deb --contents "${package}" | grep -E '/usr/share/doc/udm-iptv/copyright$'
+      - parallel:
+          - name: Validate Debian scripts (syntax)
+            working-directory: packaging/deb
+            run: sh -n ./{config,preinstall,postinstall,preremove,postremove}
+          - name: Validate Debian scripts (shellcheck)
+            working-directory: packaging/deb
+            run: shellcheck ./{config,preinstall,postinstall,preremove,postremove}
+          - name: Validate Debian package
+            env: { package: dist/udm-iptv-arm64.deb }
+            run: |
+              test -f "${package}"
+              package_name=$(dpkg-deb --field "${package}" Package)
+              architecture=$(dpkg-deb --field "${package}" Architecture)
+              dependencies=$(dpkg-deb --field "${package}" Depends)
+              test "${package_name}" = udm-iptv
+              test "${architecture}" = arm64
+              grep -Eq '(^|, )improxy(, |$)' <<<"${dependencies}"
+              grep -Eq '(^|, )iptables(, |$)' <<<"${dependencies}"
+              control=$(mktemp -d)
+              dpkg-deb --control "${package}" "${control}"
+              test -x "${control}/config"
+              test -x "${control}/preinst"
+              test -x "${control}/postinst"
+              test -x "${control}/prerm"
+              test -x "${control}/postrm"
+              test -f "${control}/templates"
+              grep -Fq "configure --profile \"\${profile}\" --non-interactive" "${control}/postinst"
+              dpkg-deb --contents "${package}" | grep -E '/data/udm-iptv/bin/udm-iptv$'
+              dpkg-deb --contents "${package}" | grep -E '/usr/share/doc/udm-iptv/copyright$'
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
