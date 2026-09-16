@@ -295,13 +295,13 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, catalog confi
 	}
 }
 
-func configurationPages(value *config.Config, ports []Port, note string, fields *formValues) []page {
+func configurationPages(value *config.Config, ports []Port, note string, fields *formValues) []*page {
 	groups, _, _ := configurationGroups(value, ports, note, fields)
 
 	return groups
 }
 
-func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues) ([]page, *string, *[]string) {
+func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues) ([]*page, *string, *[]string) {
 	groups, selectedPort := wanGroups(&value.WAN.Interface, ports)
 	lanPages, selectedLAN := lanGroups(value.LAN.Interfaces, ports)
 	connection := newPage(

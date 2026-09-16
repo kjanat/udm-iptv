@@ -16,35 +16,38 @@ import (
 )
 
 const (
-	// frameContentWidth is the content width before the terminal size is known.
-	frameContentWidth = 100
-	// contentShare is the share of the terminal width the content takes, in percent.
+	// preferredContentWidth is the content width used whenever it fits.
+	preferredContentWidth = 100
+	// contentShare is the share of a wide terminal the content grows to, in percent.
 	contentShare = 60
 	// maxContentWidth keeps text lines readable on very wide terminals.
 	maxContentWidth = 160
-	// panelPaddingY pads the frame and help panel borders.
-	panelPaddingY = 1
-	// panelPaddingX pads the frame and help panel borders.
-	panelPaddingX = 2
-	// frameChromeY is what the frame's top and bottom border and padding take.
-	frameChromeY = 2 * (panelPaddingY + 1)
-	// frameChromeX is what the frame's left and right border and padding take.
-	frameChromeX = 2 * (panelPaddingX + 1)
-	// footerHeight is the status/hint row reserved below the viewport.
-	footerHeight = 3
-	// minContentWidth keeps narrow terminals from collapsing the frame further.
+	// minContentWidth is the narrowest the content shrinks to while the terminal can fit it.
 	minContentWidth = 20
+
+	// panelPaddingY pads the frame and help panel borders vertically.
+	panelPaddingY = 1
+	// panelPaddingX pads the frame and help panel borders horizontally.
+	panelPaddingX = 2
+	// borderSize is the width of one border line.
+	borderSize = 1
+	// frameChromeX is what the frame's left and right border and padding take.
+	frameChromeX = 2 * (panelPaddingX + borderSize)
+	// frameChromeY is what the frame's top and bottom border and padding take.
+	frameChromeY = 2 * (panelPaddingY + borderSize)
+	// frameExtraRows is the top row, the spacer before the progress line and the progress line.
+	frameExtraRows = 3
+	// outerMarginX keeps the frame border clear of the terminal edge.
+	outerMarginX = 2
+
 	// popupPaddingY pads the popup border vertically.
 	popupPaddingY = 1
 	// popupPaddingX pads the popup border horizontally.
 	popupPaddingX = 3
-	// popupPadding is the horizontal frame popupStyle adds around its content:
-	// padding and border on both sides.
-	popupPadding = 2 * (popupPaddingX + 1)
-	// hintGap separates a footer's text from its trailing hint.
+	// popupPadding is what the popup's left and right border and padding take.
+	popupPadding = 2 * (popupPaddingX + borderSize)
+	// hintGap separates the progress bar from the text on either side.
 	hintGap = 4
-	// outerMarginX keeps the frame border clear of the terminal edge.
-	outerMarginX = 2
 )
 
 var (
@@ -56,15 +59,14 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#7571F9")).
 			Padding(panelPaddingY, panelPaddingX)
-	helpTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
-	helpKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
-	helpKeys       = key.NewBinding(key.WithKeys("f1", "ctrl+_"), key.WithHelp("F1", "explain"))
-	quitKeys       = key.NewBinding(key.WithKeys("ctrl+c"))
-	backKeys       = key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "back"))
-	closeLabel     = "✕ close"
-	leaveLabel     = " Yes, leave "
-	stayLabel      = " No, stay "
-	popupStyle     = lipgloss.NewStyle().
+	accentStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
+	helpKeys    = key.NewBinding(key.WithKeys("f1", "ctrl+_"), key.WithHelp("F1", "explain"))
+	quitKeys    = key.NewBinding(key.WithKeys("ctrl+c"))
+	backKeys    = key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "back"))
+	closeLabel  = "✕ close"
+	leaveLabel  = " Yes, leave "
+	stayLabel   = " No, stay "
+	popupStyle  = lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(lipgloss.Color("#F780E2")).
 			Padding(popupPaddingY, popupPaddingX)
@@ -117,50 +119,54 @@ type page struct {
 	hidden func() bool
 }
 
-func newPage(fields ...huh.Field) page {
+func newPage(fields ...huh.Field) *page {
 	keys := make([]string, 0, len(fields))
 	for _, field := range fields {
 		keys = append(keys, field.GetKey())
 	}
 
-	return page{group: huh.NewGroup(fields...), keys: keys}
+	return &page{group: huh.NewGroup(fields...), keys: keys}
 }
 
-func (p page) title(text string) page {
+func (p *page) title(text string) *page {
 	p.group.Title(text)
 
 	return p
 }
 
-func (p page) description(text string) page {
+func (p *page) description(text string) *page {
 	p.group.Description(text)
 
 	return p
 }
 
-func (p page) hide(hidden func() bool) page {
+func (p *page) hide(hidden func() bool) *page {
 	p.group.WithHideFunc(hidden)
 	p.hidden = hidden
 
 	return p
 }
 
-func (p page) visible() bool {
-	return p.hidden == nil || !p.hidden()
-}
-
-func (p page) searching(s *searchable) page {
-	p.search = s
+func (p *page) searching(search *searchable) *page {
+	p.search = search
 
 	return p
 }
 
 // entering registers the popup input the page's list opens for its
 // "enter manually" row.
-func (p page) entering(entry *entryPrompt) page {
+func (p *page) entering(entry *entryPrompt) *page {
 	p.entry = entry
 
 	return p
+}
+
+func (p *page) visible() bool {
+	return p.hidden == nil || !p.hidden()
+}
+
+func (p *page) contains(key string) bool {
+	return slices.Contains(p.keys, key)
 }
 
 // ErrBack reports that the user stepped back out of a form's first page.
@@ -170,10 +176,31 @@ var ErrBack = errors.New("back to the previous form")
 // Wizard is one huh form plus the step numbers of the surrounding forms.
 type Wizard struct {
 	Form          *huh.Form
-	pages         []page
+	pages         []*page
 	before, after int
 	wentBack      bool
 	done          chan struct{}
+}
+
+func wizardForm(pages ...*page) *Wizard {
+	groups := make([]*huh.Group, 0, len(pages))
+	for _, p := range pages {
+		groups = append(groups, p.group)
+	}
+	keymap := huh.NewDefaultKeyMap()
+	for _, p := range pages {
+		if p.search != nil {
+			keymap.Select.Filter = key.NewBinding(key.WithKeys("/"), key.WithHelp("type", "search"))
+		}
+	}
+
+	return &Wizard{Form: huh.NewForm(groups...).WithWidth(preferredContentWidth).WithTheme(wizardTheme).WithKeyMap(keymap), pages: pages}
+}
+
+func (wizard *Wizard) steps(before, after int) *Wizard {
+	wizard.before, wizard.after = before, after
+
+	return wizard
 }
 
 // canBack reports whether a form precedes this one.
@@ -186,11 +213,34 @@ func (wizard *Wizard) onFirstPage() bool {
 	focused := focusedKey(wizard.Form)
 	for _, p := range wizard.pages {
 		if p.visible() {
-			return slices.Contains(p.keys, focused)
+			return p.contains(focused)
 		}
 	}
 
 	return false
+}
+
+// atFirstField reports whether focus is on the very first question of the form.
+func (wizard *Wizard) atFirstField() bool {
+	focused := focusedKey(wizard.Form)
+	for _, p := range wizard.pages {
+		if p.visible() {
+			return len(p.keys) > 0 && p.keys[0] == focused
+		}
+	}
+
+	return false
+}
+
+func (wizard *Wizard) focusedPage() (*page, bool) {
+	focused := focusedKey(wizard.Form)
+	for _, p := range wizard.pages {
+		if p.contains(focused) {
+			return p, true
+		}
+	}
+
+	return nil, false
 }
 
 // search returns the searchable list behind the focused field, if any.
@@ -202,17 +252,6 @@ func (wizard *Wizard) search() *searchable {
 	return nil
 }
 
-func (wizard *Wizard) focusedPage() (page, bool) {
-	focused := focusedKey(wizard.Form)
-	for _, p := range wizard.pages {
-		if slices.Contains(p.keys, focused) {
-			return p, true
-		}
-	}
-
-	return page{}, false
-}
-
 // entry returns the popup input behind the focused list, if any.
 func (wizard *Wizard) entry() *entryPrompt {
 	if p, ok := wizard.focusedPage(); ok {
@@ -220,28 +259,6 @@ func (wizard *Wizard) entry() *entryPrompt {
 	}
 
 	return nil
-}
-
-func wizardForm(pages ...page) *Wizard {
-	groups := make([]*huh.Group, 0, len(pages))
-	for _, p := range pages {
-		groups = append(groups, p.group)
-	}
-
-	keymap := huh.NewDefaultKeyMap()
-	for _, p := range pages {
-		if p.search != nil {
-			keymap.Select.Filter = key.NewBinding(key.WithKeys("/"), key.WithHelp("type", "search"))
-		}
-	}
-
-	return &Wizard{Form: huh.NewForm(groups...).WithWidth(frameContentWidth).WithTheme(wizardTheme).WithKeyMap(keymap), pages: pages}
-}
-
-func (wizard *Wizard) steps(before, after int) *Wizard {
-	wizard.before, wizard.after = before, after
-
-	return wizard
 }
 
 func (wizard *Wizard) visiblePages() int {
@@ -289,12 +306,25 @@ func (wizard *Wizard) progress() (int, int) {
 // RunForm supplies terminal input, output and execution to the wizard.
 type RunForm func(context.Context, *Wizard) error
 
-// Observer receives wizard interactions worth counting: "help", "quit.prompt"
-// and "abort", with the key of the question that had focus.
-type Observer func(event, question string)
+// Event is a wizard interaction worth counting.
+type Event string
+
+// The events a Frame reports to its Observer.
+const (
+	EventHelp       Event = "help"
+	EventQuitPrompt Event = "quit.prompt"
+	EventAbort      Event = "abort"
+	EventBack       Event = "back"
+	EventEntryOpen  Event = "entry.open"
+)
+
+// Observer receives events with the key of the question that had focus.
+type Observer func(event Event, question string)
 
 // Frame owns the screen around a wizard: alternate screen buffer, a bordered
 // box centered in the terminal, a progress line and an optional header.
+// Input has three modes, in precedence order: the quit prompt, the entry
+// popup, and the wizard itself.
 type Frame struct {
 	wizard         *Wizard
 	header         string
@@ -328,124 +358,169 @@ func (frame *Frame) Init() tea.Cmd {
 	return frame.wizard.Form.Init()
 }
 
-// Update handles resize, help, quit and quit-confirmation, forwarding
-// everything else to the wrapped wizard.
+// Update dispatches on the message kind; anything unknown goes to the form.
 func (frame *Frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case setWizardMsg:
-		frame.wizard = msg.wizard
-		frame.wizard.Form.WithWidth(frame.contentWidth())
-		init := frame.wizard.Form.Init()
-
-		return frame, tea.Batch(init, frame.resize())
+		return frame, frame.setWizard(msg.wizard)
 	case wizardDoneMsg:
-		if frame.wizard.done != nil {
-			close(frame.wizard.done)
-			frame.wizard.done = nil
-		}
+		frame.finishWizard()
 
 		return frame, nil
 	case tea.WindowSizeMsg:
-		frame.width, frame.height = msg.Width, msg.Height
-		frame.wizard.Form.WithWidth(frame.contentWidth())
-
-		return frame, frame.resize()
+		return frame, frame.handleResize(msg)
 	case tea.MouseClickMsg:
-		if msg.Button != tea.MouseLeft {
-			return frame, nil
-		}
-		switch {
-		case frame.quitPrompt && hits(msg.X, msg.Y, frame.leaveX, frame.leaveY, leaveLabel):
-			return frame, frame.leave()
-		case frame.quitPrompt && hits(msg.X, msg.Y, frame.stayX, frame.stayY, stayLabel):
-			frame.quitPrompt = false
-		case hits(msg.X, msg.Y, frame.closeX, frame.closeY, closeLabel):
-			return frame, frame.askToLeave()
-		}
-
-		return frame, nil
+		return frame, frame.handleMouse(msg)
 	case tea.KeyPressMsg:
-		if frame.quitPrompt {
-			frame.escArmed = false
+		return frame, frame.handleKey(msg)
+	default:
+		return frame, frame.forward(msg)
+	}
+}
 
-			return frame, frame.answerQuitPrompt(msg)
-		}
-		if frame.entry != nil {
-			frame.escArmed = false
+// setWizard swaps in the next form of the session and lets the box shrink
+// to it.
+func (frame *Frame) setWizard(wizard *Wizard) tea.Cmd {
+	frame.wizard = wizard
+	frame.rows = 0
+	frame.wizard.Form.WithWidth(frame.contentWidth())
 
-			return frame, frame.answerEntry(msg.Text, msg.Code == tea.KeyEnter, msg.Code == tea.KeyBackspace, msg.Code == tea.KeyEscape,
-				msg.Code == tea.KeyUp, msg.Code == tea.KeyDown)
-		}
-		if entry := frame.wizard.entry(); entry != nil && hoversManualEntry(frame.wizard.Form) &&
-			(msg.Code == tea.KeyEnter || msg.Code == tea.KeySpace || msg.Text == "x") {
-			frame.openEntry(entry)
+	return tea.Batch(frame.wizard.Form.Init(), frame.resize())
+}
 
-			return frame, nil
-		}
-		armed := frame.escArmed
-		frame.escArmed = msg.Code == tea.KeyEscape
-		if search := frame.wizard.search(); search != nil && msg.Mod == 0 {
-			if msg.Text == "/" {
-				return frame, nil
-			}
-			if search.keystroke(msg.Text, msg.Code == tea.KeyBackspace, msg.Code == tea.KeyEscape) {
-				return frame, frame.forward(searchChangedMsg{})
-			}
-		}
-		if key.Matches(msg, quitKeys) {
-			return frame, frame.askToLeave()
-		}
-		if msg.Code == tea.KeyEscape && !filtering(frame.wizard.Form) {
-			return frame, frame.escape(armed)
-		}
-		if key.Matches(msg, backKeys) && frame.wizard.canBack() && frame.wizard.onFirstPage() {
-			return frame, frame.goBack()
-		}
-		if key.Matches(msg, helpKeys) {
-			frame.help = !frame.help
-			if frame.help {
-				frame.observe("help")
-			}
+func (frame *Frame) finishWizard() {
+	if frame.wizard.done != nil {
+		close(frame.wizard.done)
+		frame.wizard.done = nil
+	}
+}
 
-			return frame, nil
-		}
-		if frame.help {
-			frame.help = false
+func (frame *Frame) handleResize(msg tea.WindowSizeMsg) tea.Cmd {
+	frame.width, frame.height = msg.Width, msg.Height
+	frame.wizard.Form.WithWidth(frame.contentWidth())
 
-			return frame, nil
+	return frame.resize()
+}
+
+// handleMouse treats the quit prompt and the entry popup as modal: clicks
+// never reach what lies behind them.
+func (frame *Frame) handleMouse(msg tea.MouseClickMsg) tea.Cmd {
+	if msg.Button != tea.MouseLeft {
+		return nil
+	}
+	if frame.quitPrompt {
+		switch {
+		case hits(msg.X, msg.Y, frame.leaveX, frame.leaveY, leaveLabel):
+			return frame.leave()
+		case hits(msg.X, msg.Y, frame.stayX, frame.stayY, stayLabel):
+			frame.quitPrompt = false
 		}
-		if msg.Text != "" && !isDigits(msg.Text) && focusedKey(frame.wizard.Form) == "vlan" {
-			return frame, nil
-		}
+
+		return nil
+	}
+	if frame.entry != nil {
+		return nil
+	}
+	if hits(msg.X, msg.Y, frame.closeX, frame.closeY, closeLabel) {
+		return frame.askToLeave()
 	}
 
-	return frame, frame.forward(msg)
+	return nil
+}
+
+// handleKey routes a key by mode: quit prompt, entry popup, then the
+// frame's own keys, then the form.
+func (frame *Frame) handleKey(msg tea.KeyPressMsg) tea.Cmd {
+	if frame.quitPrompt {
+		frame.escArmed = false
+
+		return frame.answerQuitPrompt(msg)
+	}
+	if frame.entry != nil {
+		frame.escArmed = false
+
+		return frame.answerEntry(msg)
+	}
+	if entry := frame.wizard.entry(); entry != nil && hoversManualEntry(frame.wizard.Form) && opensEntry(msg) {
+		frame.openEntry(entry)
+
+		return nil
+	}
+	armed := frame.escArmed
+	frame.escArmed = msg.Code == tea.KeyEscape
+	if search := frame.wizard.search(); search != nil && msg.Mod == 0 {
+		if msg.Text == "/" {
+			return nil
+		}
+		if search.keystroke(msg.Text, msg.Code == tea.KeyBackspace, msg.Code == tea.KeyEscape) {
+			return frame.forward(searchChangedMsg{})
+		}
+	}
+	switch {
+	case key.Matches(msg, quitKeys):
+		return frame.askToLeave()
+	case msg.Code == tea.KeyEscape && !filtering(frame.wizard.Form):
+		return frame.escape(armed)
+	case key.Matches(msg, backKeys) && frame.wizard.canBack() && frame.wizard.atFirstField():
+		return frame.goBack()
+	case key.Matches(msg, helpKeys):
+		frame.help = !frame.help
+		if frame.help {
+			frame.observe(EventHelp)
+		}
+
+		return nil
+	case frame.help:
+		frame.help = false
+
+		return nil
+	case msg.Text != "" && !isDigits(msg.Text) && focusedKey(frame.wizard.Form) == "vlan":
+		return nil
+	default:
+		return frame.forward(msg)
+	}
+}
+
+func opensEntry(msg tea.KeyPressMsg) bool {
+	return msg.Code == tea.KeyEnter || msg.Code == tea.KeySpace || msg.Text == "x"
+}
+
+// hoverable is a huh list whose cursor row can be read.
+type hoverable interface {
+	Hovered() (string, bool)
+	GetFiltering() bool
+}
+
+// filterable is a huh field with a type-to-filter mode.
+type filterable interface {
+	GetFiltering() bool
 }
 
 // hoversManualEntry reports whether the focused list's cursor sits on the
 // "enter manually" row.
 func hoversManualEntry(form *huh.Form) bool {
-	switch field := form.GetFocusedField().(type) {
-	case *huh.Select[string]:
-		hovered, ok := field.Hovered()
-
-		return ok && !field.GetFiltering() && hovered == manualPort
-	case *huh.MultiSelect[string]:
-		hovered, ok := field.Hovered()
-
-		return ok && !field.GetFiltering() && hovered == manualPort
-	default:
+	field, ok := form.GetFocusedField().(hoverable)
+	if !ok || field.GetFiltering() {
 		return false
 	}
+	hovered, ok := field.Hovered()
+
+	return ok && hovered == manualPort
+}
+
+func filtering(form *huh.Form) bool {
+	field, ok := form.GetFocusedField().(filterable)
+
+	return ok && field.GetFiltering()
 }
 
 func (frame *Frame) resize() tea.Cmd {
 	if frame.width == 0 {
 		return nil
 	}
-	height := frame.height - frameChromeY - footerHeight
+	height := max(1, frame.height-frameChromeY-frameExtraRows)
 
-	return frame.forward(tea.WindowSizeMsg{Width: frame.contentWidth(), Height: max(height, 1)})
+	return frame.forward(tea.WindowSizeMsg{Width: frame.contentWidth(), Height: height})
 }
 
 func (frame *Frame) forward(msg tea.Msg) tea.Cmd {
@@ -474,25 +549,26 @@ func (frame *Frame) askToLeave() tea.Cmd {
 		return frame.leave()
 	}
 	frame.help, frame.quitPrompt, frame.stayFocused = false, true, false
-	frame.observe("quit.prompt")
+	frame.observe(EventQuitPrompt)
 
 	return nil
 }
 
 func (frame *Frame) leave() tea.Cmd {
 	frame.quitPrompt = false
-	frame.observe("abort")
+	frame.observe(EventAbort)
 
 	return frame.forward(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 }
 
-// escape steps back one page, or one form on the first page. A second
-// escape in a row, or one with nothing to go back to, offers to leave.
+// escape steps back one question, or one form on the first question. A
+// second escape in a row, or one with nothing to go back to, offers to
+// leave.
 func (frame *Frame) escape(armed bool) tea.Cmd {
 	switch {
 	case armed:
 		return frame.askToLeave()
-	case !frame.wizard.onFirstPage():
+	case !frame.wizard.atFirstField():
 		return frame.forward(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	case frame.wizard.canBack():
 		return frame.goBack()
@@ -504,7 +580,7 @@ func (frame *Frame) escape(armed bool) tea.Cmd {
 // goBack ends the current form so the session re-runs the previous one.
 func (frame *Frame) goBack() tea.Cmd {
 	frame.wizard.wentBack = true
-	frame.observe("back")
+	frame.observe(EventBack)
 
 	return func() tea.Msg { return wizardDoneMsg{} }
 }
@@ -534,29 +610,19 @@ func hits(x, y, atX, atY int, label string) bool {
 	return atY >= 0 && y == atY && x >= atX && x < atX+lipgloss.Width(label)
 }
 
-func filtering(form *huh.Form) bool {
-	switch field := form.GetFocusedField().(type) {
-	case *huh.Select[string]:
-		return field.GetFiltering()
-	case *huh.Select[int]:
-		return field.GetFiltering()
-	case *huh.MultiSelect[string]:
-		return field.GetFiltering()
-	default:
-		return false
-	}
-}
-
+// contentWidth is the width policy: the preferred width when it fits, else
+// what fits; on wide terminals grow toward the content share, capped; and
+// never wider than the terminal can hold.
 func (frame *Frame) contentWidth() int {
 	if frame.width == 0 {
-		return frameContentWidth
+		return preferredContentWidth
 	}
+	available := max(1, frame.width-frameChromeX-outerMarginX)
+	preferred := min(preferredContentWidth, available)
+	responsive := min(frame.width*contentShare/100, maxContentWidth)
+	target := max(minContentWidth, preferred, responsive)
 
-	available := frame.width - frameChromeX - outerMarginX
-	share := min(frame.width*contentShare/100, maxContentWidth)
-	width := max(min(available, frameContentWidth), share)
-
-	return max(min(width, available), minContentWidth)
+	return min(target, available)
 }
 
 func (frame *Frame) render() string {
@@ -620,7 +686,7 @@ func (frame *Frame) quitPopup() string {
 	hint := progressTextStyle.Render("←/→ choose  enter confirm  y/n  esc back")
 
 	return popupStyle.Render(lipgloss.JoinVertical(lipgloss.Center,
-		helpTitleStyle.Render("Leave the wizard?"),
+		accentStyle.Render("Leave the wizard?"),
 		"",
 		"Nothing has been saved. The current configuration stays as it is.",
 		"",
@@ -648,46 +714,52 @@ func (frame *Frame) helpBox() string {
 	}
 	width := frame.contentWidth()
 	body := lipgloss.NewStyle().Width(width).Render(entry.text)
-	footer := helpKeyStyle.Render("any key") + progressTextStyle.Render(" back to the question")
-	text := lipgloss.JoinVertical(lipgloss.Left, helpTitleStyle.Render(entry.title), "", body)
+	footer := accentStyle.Render("any key") + progressTextStyle.Render(" back to the question")
+	text := lipgloss.JoinVertical(lipgloss.Left, accentStyle.Render(entry.title), "", body)
 	text = lipgloss.NewStyle().Width(width).Height(frame.rows).Render(text)
 
 	return helpStyle.Render(lipgloss.JoinVertical(lipgloss.Left, text, "", footer))
 }
 
-func (frame *Frame) observe(event string) {
+func (frame *Frame) observe(event Event) {
 	if frame.observer != nil {
 		frame.observer(event, focusedKey(frame.wizard.Form))
 	}
 }
 
+// progressLine shows the hints, a bar and the question count. When the bar
+// has no room it degrades to the count alone.
 func (frame *Frame) progressLine() string {
 	step, total := frame.wizard.progress()
-	hint := helpKeyStyle.Render("F1") + progressTextStyle.Render(" explain  ") +
-		helpKeyStyle.Render("esc") + progressTextStyle.Render(" back  ") +
-		helpKeyStyle.Render("esc twice") + progressTextStyle.Render(" leave")
 	text := fmt.Sprintf("Question %d of %d", step, total)
-	width := max(frame.contentWidth()-lipgloss.Width(text)-lipgloss.Width(hint)-hintGap, 0)
+	hint := accentStyle.Render("F1") + progressTextStyle.Render(" explain  ") +
+		accentStyle.Render("esc") + progressTextStyle.Render(" back  ") +
+		accentStyle.Render("esc twice") + progressTextStyle.Render(" leave")
+	barWidth := frame.contentWidth() - lipgloss.Width(text) - lipgloss.Width(hint) - hintGap
+	if barWidth <= 0 {
+		return progressTextStyle.Render(text)
+	}
 	filled := 0
 	if total > 0 {
-		filled = min(width*step/total, width)
+		filled = min(barWidth*step/total, barWidth)
 	}
-	bar := progressDoneStyle.Render(strings.Repeat("━", filled)) + progressLeftStyle.Render(strings.Repeat("─", width-filled))
+	bar := progressDoneStyle.Render(strings.Repeat("━", filled)) + progressLeftStyle.Render(strings.Repeat("─", barWidth-filled))
 
 	return hint + "  " + bar + "  " + progressTextStyle.Render(text)
 }
 
 // Session keeps one terminal program alive across the forms of a wizard so
-// the alternate screen is entered once.
+// the alternate screen is entered once. The program outlives any single
+// Run; each Run watches its own context, and Close stops the program.
 type Session struct {
 	header   string
 	observer Observer
 	input    io.Reader
 	output   io.Writer
 	program  *tea.Program
-	// finished closes when the program has exited; runErr holds its error.
+	// finished closes when the program has exited; err holds its error.
 	finished chan struct{}
-	runErr   error
+	err      error
 	closed   sync.Once
 }
 
@@ -704,11 +776,8 @@ func (session *Session) Observe(observer Observer) *Session {
 	return session
 }
 
-// Run displays wizard until it is submitted or aborted, reusing the session's
-// alternate screen across successive wizards.
-// Run shows the wizard and waits for it to finish. The terminal program is
-// started on the first call and outlives the call's context: every Run
-// watches its own ctx, and Close stops the program.
+// Run shows the wizard and waits for it to finish, or for ctx to end. The
+// terminal program is started on the first call; Close stops it.
 func (session *Session) Run(ctx context.Context, wizard *Wizard) error {
 	wizard.done = make(chan struct{})
 	wizard.Form.SubmitCmd = func() tea.Msg { return wizardDoneMsg{} }
@@ -723,11 +792,11 @@ func (session *Session) Run(ctx context.Context, wizard *Wizard) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-session.finished:
-		if session.runErr == nil || errors.Is(session.runErr, tea.ErrInterrupted) {
+		if session.err == nil || errors.Is(session.err, tea.ErrInterrupted) {
 			return huh.ErrUserAborted
 		}
 
-		return session.runErr
+		return session.err
 	}
 	if wizard.wentBack {
 		return ErrBack
@@ -745,7 +814,7 @@ func (session *Session) start(wizard *Wizard) {
 	session.program = tea.NewProgram(frame, tea.WithInput(session.input), tea.WithOutput(session.output))
 	session.finished = make(chan struct{})
 	go func() {
-		_, session.runErr = session.program.Run()
+		_, session.err = session.program.Run()
 		close(session.finished)
 	}()
 }

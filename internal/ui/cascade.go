@@ -24,10 +24,10 @@ type cascadeStep struct {
 
 // page builds the step's list for the previous answer. last drops the
 // "All …" row. It returns false when the step has nothing to offer.
-func (step cascadeStep) page(previous string, last bool, answer *string) (page, bool) {
+func (step cascadeStep) page(previous string, last bool, answer *string) (*page, bool) {
 	options := step.options(previous)
 	if len(options) == 0 {
-		return page{}, false
+		return nil, false
 	}
 	search := &searchable{all: options, pinned: step.extra}
 	filters := step.plural

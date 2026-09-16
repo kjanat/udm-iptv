@@ -19,7 +19,7 @@ func TestImprovementPromptCopy(t *testing.T) {
 	form.Init()
 	form.Update(tea.WindowSizeMsg{Width: 180, Height: 45})
 	view := form.View()
-	if lipgloss.Width(view) > frameContentWidth {
+	if lipgloss.Width(view) > preferredContentWidth {
 		t.Fatalf("form stretched to %d columns", lipgloss.Width(view))
 	}
 	if !strings.Contains(view, "Help improve udm-iptv?") {

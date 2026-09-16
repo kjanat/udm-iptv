@@ -47,8 +47,8 @@ func (application *Application) configureForm(ctx context.Context, value *config
 		catalog.Profiles[i].Config = device.WithInterfaces(catalog.Profiles[i].Config)
 	}
 
-	session := application.wizardSession("").Observe(func(event, question string) {
-		application.monitor.WizardEvent(ctx, event, question)
+	session := application.wizardSession("").Observe(func(event ui.Event, question string) {
+		application.monitor.WizardEvent(ctx, string(event), question)
 	})
 	defer session.Close()
 
