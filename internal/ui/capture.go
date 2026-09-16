@@ -109,9 +109,9 @@ func (model captureModel) View() tea.View {
 	}
 	identity := ""
 	if model.pid > 0 {
-		identity = fmt.Sprintf(" · PID %d", model.pid)
+		identity = fmt.Sprintf("  PID %d", model.pid)
 	}
-	status := fmt.Sprintf("%s%s · remaining %s · ↑/↓ scroll · q/Ctrl-C closes the viewer", state, identity, remaining)
+	status := fmt.Sprintf("%s%s  remaining %s  ↑/↓ scroll  q/Ctrl-C closes the viewer", state, identity, remaining)
 	view := tea.NewView(title + "\n" + status + "\n\n" + model.viewport.View() + "\n" + model.capturePath)
 
 	return view

@@ -245,7 +245,7 @@ func TestEveryQuestionHasHelp(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, []Port{{Name: "eth8"}}, "", &fields)
-	keys := []string{"country", "provider", "profile", "accept"}
+	keys := []string{"country", "provider", "accept"}
 	for _, p := range groups {
 		keys = append(keys, p.keys...)
 	}
@@ -290,10 +290,10 @@ func TestHelpOverlayExplainsFocusedQuestion(t *testing.T) {
 	}
 }
 
-func TestEnterOnManualNetworkEntryTicksIt(t *testing.T) {
+func TestEnterOnManualNetworkEntryOpensPicker(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, selectedPort, selectedLAN, _ := configurationGroups(&value, []Port{{Name: "br0", AddressesKnown: true}}, "", &fields)
+	groups, selectedPort, selectedLAN := configurationGroups(&value, []Port{{Name: "br0", AddressesKnown: true}, {Name: "eth9", AddressesKnown: true}}, "", &fields)
 	*selectedPort = "eth8"
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.Init()
@@ -303,23 +303,32 @@ func TestEnterOnManualNetworkEntryTicksIt(t *testing.T) {
 	}
 	frame.wizard.Form.GetFocusedField().Focus()
 	frame.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	if containsString(*selectedLAN, manualPort) {
-		t.Fatal("manual entry ticked before enter")
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if frame.entry == nil {
+		t.Fatal("enter on the manual row did not open the picker")
 	}
-	_, cmd := frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !containsString(*selectedLAN, manualPort) || !containsString(*selectedLAN, "br0") || cmd == nil {
-		t.Fatalf("enter on the manual row: selected=%v cmd=%v", *selectedLAN, cmd != nil)
+	if focusedKey(frame.wizard.Form) != "lan" {
+		t.Fatalf("picker changed the page to %q", focusedKey(frame.wizard.Form))
 	}
-	_, cmd = frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !containsString(*selectedLAN, manualPort) || cmd == nil {
-		t.Fatalf("second enter changed the tick: %v", *selectedLAN)
+	view := plain(frame)
+	for _, want := range []string{"Add a network", "eth9"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("picker lacks %q", want)
+		}
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if frame.entry != nil || !containsString(*selectedLAN, "eth9") || containsString(*selectedLAN, manualPort) {
+		t.Fatalf("picking a known interface: entry=%v selected=%v", frame.entry != nil, *selectedLAN)
+	}
+	if !strings.Contains(plain(frame), "[x] eth9") {
+		t.Fatalf("picked interface not ticked in the list:\n%s", plain(frame))
 	}
 }
 
 func TestCtrlCAsksBeforeLeaving(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _, _ := configurationGroups(&value, nil, "", &fields)
+	groups, _, _ := configurationGroups(&value, nil, "", &fields)
 	var events []string
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.observer = func(event, question string) { events = append(events, event+":"+question) }
@@ -355,7 +364,7 @@ func TestCtrlCAsksBeforeLeaving(t *testing.T) {
 func TestEscapeLeavesUnlessFiltering(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}, {Name: "eth9"}}, "", &fields)
+	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}, {Name: "eth9"}}, "", &fields)
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -384,7 +393,7 @@ func TestEscapeLeavesUnlessFiltering(t *testing.T) {
 func TestCloseButtonAndPopupButtonsAreClickable(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _, _ := configurationGroups(&value, nil, "", &fields)
+	groups, _, _ := configurationGroups(&value, nil, "", &fields)
 	frame := NewFrame(wizardForm(groups...), "Preview")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -427,7 +436,7 @@ func TestFrameScalesWithTerminal(t *testing.T) {
 	}
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _, _ := configurationGroups(&value, nil, "", &fields)
+	groups, _, _ := configurationGroups(&value, nil, "", &fields)
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 300, Height: 80})

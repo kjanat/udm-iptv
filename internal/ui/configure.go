@@ -43,66 +43,105 @@ func Configure(ctx context.Context, value *config.Config, catalog config.Catalog
 	return ConfigureSuggested(ctx, value, catalog, run, "", ports...)
 }
 
-// selection is the country → provider → profile path the wizard walks.
-// An empty country means custom settings without a provider profile.
+// selection is the country → provider path the wizard walks. choice is
+// "provider/profile": a provider with several networks lists one row per
+// network. An empty country means custom settings without a profile;
+// allChoices as country widens the provider list to the whole catalog.
 type selection struct {
-	country, provider, profile string
+	country, choice string
+}
+
+func choiceOf(provider, profile string) string {
+	return provider + "/" + profile
+}
+
+// profile returns the profile ID inside the choice, or custom.
+func (chosen selection) profile() string {
+	if chosen.country == "" {
+		return "custom"
+	}
+	_, profile, found := strings.Cut(chosen.choice, "/")
+	if !found {
+		return "custom"
+	}
+
+	return profile
 }
 
 func startingSelection(catalog config.Catalog, current, suggestion string) selection {
 	if provider, found := catalog.ProviderByID(suggestion); found {
-		return selection{country: provider.Countries[0], provider: provider.ID, profile: provider.Profiles[0]}
+		return selection{country: provider.Countries[0], choice: choiceOf(provider.ID, provider.Profiles[0])}
 	}
 	if country, provider, found := catalog.Locate(current); found {
-		return selection{country: country, provider: provider, profile: current}
+		return selection{country: country, choice: choiceOf(provider, current)}
 	}
 
 	return selection{}
 }
 
-func countryPage(catalog config.Catalog, chosen *string) page {
-	options := make([]huh.Option[string], 0, len(catalog.Countries)+1)
+func providersFor(catalog config.Catalog, country string) []config.Provider {
+	if country == allChoices {
+		return catalog.Providers
+	}
+
+	return catalog.ProvidersIn(country)
+}
+
+func countryName(catalog config.Catalog, code string) string {
+	for _, country := range catalog.Countries {
+		if country.Code == code {
+			return country.Name
+		}
+	}
+
+	return code
+}
+
+func countryOptions(catalog config.Catalog) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(catalog.Countries))
 	for _, country := range catalog.Countries {
 		label := country.Name
 		if country.LocalName != country.Name {
-			label += " · " + country.LocalName
+			label = annotate(label, country.LocalName)
 		}
 		options = append(options, huh.NewOption(label, country.Code))
 	}
-	options = append(options, huh.NewOption("Other country or provider · custom settings", ""))
 
-	return newPage(huh.NewSelect[string]().Key("country").
-		Title("Where do you live?").
-		Description("Pick your country to see the TV providers known to work there.").
-		Options(options...).Height(len(options) + selectChrome).Value(chosen))
+	return options
 }
 
-func providerPage(providers []config.Provider, suggestion string, chosen *string) page {
+// annotate appends secondary details in parentheses: "KPN (Netherlands)".
+func annotate(label string, notes ...string) string {
+	notes = slices.DeleteFunc(slices.Clone(notes), func(note string) bool { return note == "" })
+	if len(notes) == 0 {
+		return label
+	}
+
+	return label + " (" + strings.Join(notes, ", ") + ")"
+}
+
+// providerOptions lists one row per provider, or one per network for a
+// provider that runs several: "Vivo (São Paulo network)".
+func providerOptions(catalog config.Catalog, country, suggestion string) []huh.Option[string] {
+	providers := providersFor(catalog, country)
 	options := make([]huh.Option[string], 0, len(providers))
 	for _, provider := range providers {
-		label := provider.Name
-		if provider.ID == suggestion {
-			label += " · PTR suggestion"
+		for _, profile := range catalog.ProfilesOf(provider.ID) {
+			var notes []string
+			if len(provider.Profiles) > 1 {
+				notes = append(notes, profile.Name)
+			}
+			if country == allChoices {
+				notes = append(notes, countryName(catalog, provider.Countries[0]))
+			}
+			if provider.ID == suggestion {
+				notes = append(notes, "PTR suggestion")
+			}
+			options = append(options, huh.NewOption(annotate(provider.Name, notes...), choiceOf(provider.ID, profile.ID)))
 		}
-		options = append(options, huh.NewOption(label, provider.ID))
 	}
 
-	return newPage(huh.NewSelect[string]().Key("provider").
-		Title("Who is your TV provider?").
-		Description("The company you pay for TV.").
-		Options(options...).Height(len(options) + selectChrome).Value(chosen))
-}
-
-func profilePage(profiles []config.Profile, chosen *string) page {
-	options := make([]huh.Option[string], 0, len(profiles))
-	for _, profile := range profiles {
-		options = append(options, huh.NewOption(profile.Name, profile.ID))
-	}
-
-	return newPage(huh.NewSelect[string]().Key("profile").
-		Title("Which network are you on?").
-		Description("Loads matching defaults. You can change them next.").
-		Options(options...).Height(len(options) + selectChrome).Value(chosen))
+	return options
 }
 
 func ensureChoice(chosen *string, ids []string) {
@@ -111,76 +150,96 @@ func ensureChoice(chosen *string, ids []string) {
 	}
 }
 
-// questions counts the selection questions the current path will ask.
-func (chosen selection) questions(catalog config.Catalog) int {
-	count := 1
-	if chosen.country == "" {
-		return count
+// profileSteps is the country → provider chain.
+func profileSteps(catalog config.Catalog, suggestion string) []cascadeStep {
+	return []cascadeStep{
+		{
+			key: "country", title: "Where do you live?", plural: "countries",
+			description: "Type to search. Pick your country.",
+			options:     func(string) []huh.Option[string] { return countryOptions(catalog) },
+			extra:       []huh.Option[string]{huh.NewOption("Manual", "")},
+			ends:        func(answer string) bool { return answer == "" },
+		},
+		{
+			key: "provider", title: "Who is your TV provider?", plural: "providers",
+			description: "Type to search. TV Company.",
+			options:     func(country string) []huh.Option[string] { return providerOptions(catalog, country, suggestion) },
+		},
 	}
-	if len(catalog.ProvidersIn(chosen.country)) > 1 {
-		count++
-	}
-	if len(catalog.ProfilesOf(chosen.provider)) > 1 {
-		count++
-	}
-
-	return count
 }
 
-// chooseProfile runs the country, provider and profile questions, skipping any
-// question with a single answer. It returns the number of questions asked.
-func chooseProfile(ctx context.Context, catalog config.Catalog, run RunForm, chosen *selection, suggestion string, remaining int) (int, error) {
-	asked := 0
-	after := func() int { return chosen.questions(catalog) - asked - 1 + remaining + 1 }
-	err := run(ctx, wizardForm(countryPage(catalog, &chosen.country)).steps(asked, after()))
-	if err != nil {
-		return asked, err
-	}
-	asked++
-	if chosen.country == "" {
-		chosen.provider, chosen.profile = "", "custom"
+// chooseProfile walks the chain from step start and returns the number of
+// questions asked. remaining counts the questions that follow the chain.
+func chooseProfile(ctx context.Context, catalog config.Catalog, run RunForm, chosen *selection, suggestion string, remaining, start int) (int, error) {
+	answers := []*string{&chosen.country, &chosen.choice}
 
-		return asked, nil
+	return cascade(ctx, run, profileSteps(catalog, suggestion), answers, remaining, start)
+}
+
+// applyProfile replaces the draft with the chosen profile's settings, keeping
+// the telemetry choice.
+func applyProfile(catalog config.Catalog, value *config.Config, profileID string) error {
+	if profileID == value.Profile {
+		return nil
 	}
-	providers := catalog.ProvidersIn(chosen.country)
-	ensureChoice(&chosen.provider, providerIDs(providers))
-	if len(providers) > 1 {
-		err = run(ctx, wizardForm(providerPage(providers, suggestion, &chosen.provider)).steps(asked, after()))
-		if err != nil {
-			return asked, err
+	if profileID == "custom" {
+		value.Profile = "custom"
+
+		return nil
+	}
+	profile, found := catalog.Profile(profileID)
+	if !found {
+		return fmt.Errorf("unknown provider profile %q", profileID)
+	}
+	selected := clone(profile.Config)
+	selected.Telemetry = value.Telemetry
+	*value = selected
+
+	return nil
+}
+
+// settingsForm builds the settings pages for the draft and returns the
+// wizard plus the function that copies the answers back into the draft.
+func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, asked int) (*Wizard, func() error) {
+	note := ""
+	if profile, found := catalog.Profile(value.Profile); found {
+		note = profile.Note
+	}
+	fields := newFormValues(*value)
+	groups, selectedPort, selectedLAN := configurationGroups(value, ports, note, &fields)
+	apply := func() error {
+		if *selectedPort != manualPort {
+			value.WAN.Interface = *selectedPort
 		}
-		asked++
-	}
-	profiles := catalog.ProfilesOf(chosen.provider)
-	ensureChoice(&chosen.profile, profileIDs(profiles))
-	if len(profiles) > 1 {
-		err = run(ctx, wizardForm(profilePage(profiles, &chosen.profile)).steps(asked, after()))
-		if err != nil {
-			return asked, err
-		}
-		asked++
+		value.WAN.VLAN, _ = strconv.Atoi(fields.vlan)
+		value.WAN.NATDestinations = splitList(fields.nat)
+		value.WAN.DHCPOptions = strings.Fields(fields.dhcpOptions)
+		value.Proxy.SourceRanges = splitList(fields.sources)
+		value.LAN.Interfaces = resolveLAN(*selectedLAN)
+
+		return value.Validate()
 	}
 
-	return asked, nil
+	return wizardForm(groups...).steps(asked, 1), apply
 }
 
-func providerIDs(providers []config.Provider) []string {
-	result := make([]string, 0, len(providers))
-	for _, provider := range providers {
-		result = append(result, provider.ID)
-	}
-
-	return result
+func reviewForm(value config.Config, before int, accepted *bool) *Wizard {
+	return wizardForm(newPage(
+		huh.NewConfirm().Key("accept").Title("Use these settings?").
+			Description(reviewSummary(value)).
+			Affirmative("Continue").Negative("Cancel").Value(accepted),
+	)).steps(before, 0)
 }
 
-func profileIDs(profiles []config.Profile) []string {
-	result := make([]string, 0, len(profiles))
-	for _, profile := range profiles {
-		result = append(result, profile.ID)
-	}
+// wizardStage is where ConfigureSuggested is in its chain → settings →
+// review sequence. Stepping back moves one stage earlier.
+type wizardStage int
 
-	return result
-}
+const (
+	stageChain wizardStage = iota
+	stageSettings
+	stageReview
+)
 
 // ConfigureSuggested highlights evidence without treating it as an applied choice.
 // The caller supplies a provider ID only for a new, unconfigured installation.
@@ -191,73 +250,68 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, catalog confi
 	chosen := startingSelection(catalog, value.Profile, suggestion)
 	fields := newFormValues(*value)
 	estimate := configurationPages(value, ports, "", &fields)
-	asked, err := chooseProfile(ctx, catalog, run, &chosen, suggestion, wizardForm(estimate...).visibleFields())
-	if err != nil {
-		return err
-	}
-	if chosen.profile != value.Profile {
-		if chosen.profile == "custom" {
-			value.Profile = "custom"
-		} else {
-			profile, found := catalog.Profile(chosen.profile)
-			if !found {
-				return fmt.Errorf("unknown provider profile %q", chosen.profile)
+	remaining := wizardForm(estimate...).visibleFields() + 1
+	stage, start, asked := stageChain, 0, 0
+	var settings *Wizard
+	var apply func() error
+	accepted := true
+	for {
+		switch stage {
+		case stageChain:
+			count, err := chooseProfile(ctx, catalog, run, &chosen, suggestion, remaining, start)
+			if err != nil {
+				return err
 			}
-			selected := clone(profile.Config)
-			selected.Telemetry = value.Telemetry
-			*value = selected
+			asked = count
+			if err := applyProfile(catalog, value, chosen.profile()); err != nil {
+				return err
+			}
+			settings, apply = settingsForm(catalog, value, ports, asked)
+			stage = stageSettings
+		case stageSettings:
+			err := run(ctx, settings)
+			if errors.Is(err, ErrBack) {
+				stage, start = stageChain, max(asked-1, 0)
+
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if err := apply(); err != nil {
+				return err
+			}
+			stage = stageReview
+		case stageReview:
+			err := run(ctx, reviewForm(*value, asked+settings.visiblePages(), &accepted))
+			if errors.Is(err, ErrBack) {
+				settings, apply = settingsForm(catalog, value, ports, asked)
+				stage = stageSettings
+
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if !accepted {
+				return context.Canceled
+			}
+			*original = draft
+
+			return nil
 		}
 	}
-
-	note := ""
-	if profile, found := catalog.Profile(value.Profile); found {
-		note = profile.Note
-	}
-	fields = newFormValues(*value)
-	groups, selectedPort, selectedLAN, lanExtra := configurationGroups(value, ports, note, &fields)
-	settings := wizardForm(groups...).steps(asked, 1)
-	err = run(ctx, settings)
-	if err != nil {
-		return err
-	}
-	if *selectedPort != manualPort {
-		value.WAN.Interface = *selectedPort
-	}
-	value.WAN.VLAN, _ = strconv.Atoi(fields.vlan)
-	value.WAN.NATDestinations = splitList(fields.nat)
-	value.WAN.DHCPOptions = strings.Fields(fields.dhcpOptions)
-	value.Proxy.SourceRanges = splitList(fields.sources)
-	value.LAN.Interfaces = resolveLAN(*selectedLAN, *lanExtra)
-	err = value.Validate()
-	if err != nil {
-		return err
-	}
-	accepted := true
-	err = run(ctx, wizardForm(newPage(
-		huh.NewConfirm().Key("accept").Title("Use these settings?").
-			Description(reviewSummary(*value)).
-			Affirmative("Continue").Negative("Cancel").Value(&accepted),
-	)).steps(asked+settings.visiblePages(), 0))
-	if err != nil {
-		return err
-	}
-	if !accepted {
-		return context.Canceled
-	}
-	*original = draft
-
-	return nil
 }
 
 func configurationPages(value *config.Config, ports []Port, note string, fields *formValues) []page {
-	groups, _, _, _ := configurationGroups(value, ports, note, fields) //nolint:dogsled //nolint:nolintlint
+	groups, _, _ := configurationGroups(value, ports, note, fields)
 
 	return groups
 }
 
-func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues) ([]page, *string, *[]string, *string) {
+func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues) ([]page, *string, *[]string) {
 	groups, selectedPort := wanGroups(&value.WAN.Interface, ports)
-	lanPages, selectedLAN, lanExtra := lanGroups(value.LAN.Interfaces, ports)
+	lanPages, selectedLAN := lanGroups(value.LAN.Interfaces, ports)
 	connection := newPage(
 		huh.NewInput().Key("vlan").Title("IPTV VLAN ID").
 			Description("Use 0 when IPTV is untagged.").
@@ -364,11 +418,11 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 		newPage(telemetryConsent(&value.Telemetry)),
 	)
 
-	return groups, selectedPort, selectedLAN, lanExtra
+	return groups, selectedPort, selectedLAN
 }
 
 func reviewSummary(value config.Config) string {
-	return fmt.Sprintf("%s · %s · VLAN %d · %s\nLAN: %s", value.Profile, value.WAN.Interface, value.WAN.VLAN, value.Proxy.Program, strings.Join(value.LAN.Interfaces, ", "))
+	return fmt.Sprintf("%s, %s, VLAN %d, %s\nLAN: %s", value.Profile, value.WAN.Interface, value.WAN.VLAN, value.Proxy.Program, strings.Join(value.LAN.Interfaces, ", "))
 }
 
 func telemetryConsent(settings *config.Telemetry) huh.Field {

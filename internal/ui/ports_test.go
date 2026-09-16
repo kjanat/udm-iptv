@@ -28,6 +28,9 @@ func TestWANPortSelection(t *testing.T) {
 	}
 
 	groups, selected = wanGroups(&current, nil)
+	if len(groups) != 1 {
+		t.Fatalf("manual entry became a page: %d pages", len(groups))
+	}
 	form = wizardForm(groups...).Form
 	field = form.GetFocusedField()
 	field.Focus()
@@ -35,9 +38,9 @@ func TestWANPortSelection(t *testing.T) {
 	if *selected != manualPort {
 		t.Fatal("manual fallback unavailable")
 	}
-	form.NextGroup()
-	if _, ok := form.GetFocusedField().(*huh.Input); !ok {
-		t.Fatal("manual selection did not open input")
+	field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(form.Errors()) == 0 {
+		t.Fatal("the manual row must not pass as a port name")
 	}
 }
 
@@ -56,7 +59,7 @@ func TestWANPortLabels(t *testing.T) {
 }
 
 func TestLANNetworkSelection(t *testing.T) {
-	groups, selected, _ := lanGroups([]string{"br0"}, []Port{
+	groups, selected := lanGroups([]string{"br0"}, []Port{
 		{Name: "eth8", Description: "connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true},
 		{Name: "br0", Addresses: []string{"192.168.1.1/24"}, AddressesKnown: true},
 		{Name: "br4", Addresses: []string{"192.168.4.1/24"}, AddressesKnown: true},
@@ -82,17 +85,18 @@ func TestLANNetworkSelection(t *testing.T) {
 		t.Fatal("selected networks asked for manual names")
 	}
 
-	groups, selected, extra := lanGroups(nil, nil)
+	groups, selected = lanGroups(nil, nil)
+	if len(groups) != 1 {
+		t.Fatalf("manual entry became a page: %d pages", len(groups))
+	}
 	form = wizardForm(groups...).Form
-	if !reflect.DeepEqual(*selected, []string{manualPort}) {
-		t.Fatal("manual fallback unavailable")
+	field := form.GetFocusedField()
+	field.Focus()
+	field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(form.Errors()) == 0 {
+		t.Fatal("empty selection passed")
 	}
-	form.NextGroup()
-	if _, ok := form.GetFocusedField().(*huh.Input); !ok {
-		t.Fatal("manual selection did not open input")
-	}
-	*extra = "br4"
-	if got := resolveLAN(*selected, *extra); !reflect.DeepEqual(got, []string{"br4"}) {
+	if got := resolveLAN([]string{manualPort, "br4", "br4"}); !reflect.DeepEqual(got, []string{"br4"}) {
 		t.Fatalf("resolved %v", got)
 	}
 }
@@ -102,9 +106,9 @@ func TestLANKindLabels(t *testing.T) {
 		port Port
 		want string
 	}{
-		{Port{Name: "br0", AddressesKnown: true, Addresses: []string{"192.168.1.1/24"}}, "br0 · LAN · 192.168.1.1/24"},
-		{Port{Name: "br4", AddressesKnown: true, Addresses: []string{"192.168.4.1/24"}}, "br4 · VLAN 4 · 192.168.4.1/24"},
-		{Port{Name: "eth0.10", AddressesKnown: true, Addresses: []string{"10.0.10.1/24"}}, "eth0.10 · VLAN 10 · 10.0.10.1/24"},
+		{Port{Name: "br0", AddressesKnown: true, Addresses: []string{"192.168.1.1/24"}}, "br0 (LAN, 192.168.1.1/24)"},
+		{Port{Name: "br4", AddressesKnown: true, Addresses: []string{"192.168.4.1/24"}}, "br4 (VLAN 4, 192.168.4.1/24)"},
+		{Port{Name: "eth0.10", AddressesKnown: true, Addresses: []string{"10.0.10.1/24"}}, "eth0.10 (VLAN 10, 10.0.10.1/24)"},
 	} {
 		if got := test.port.lanLabel(); got != test.want {
 			t.Fatalf("got %q, want %q", got, test.want)
@@ -117,9 +121,9 @@ func TestPortAddressLabels(t *testing.T) {
 		port Port
 		want string
 	}{
-		{Port{Name: "eth8", AddressesKnown: true}, "eth8 · no assigned IP"},
-		{Port{Name: "eth9"}, "eth9 · addresses unavailable"},
-		{Port{Name: "br0", AddressesKnown: true, Addresses: []string{"192.168.1.1/24", "2001:db8::1/64"}}, "br0 · 192.168.1.1/24, 2001:db8::1/64"},
+		{Port{Name: "eth8", AddressesKnown: true}, "eth8 (no assigned IP)"},
+		{Port{Name: "eth9"}, "eth9 (addresses unavailable)"},
+		{Port{Name: "br0", AddressesKnown: true, Addresses: []string{"192.168.1.1/24", "2001:db8::1/64"}}, "br0 (192.168.1.1/24, 2001:db8::1/64)"},
 	} {
 		if got := test.port.label(); got != test.want {
 			t.Fatalf("got %q, want %q", got, test.want)
