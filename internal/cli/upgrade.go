@@ -1,9 +1,9 @@
 package cli
 
 import (
-	"github.com/kjanat/udm-iptv/internal/installer"
-
 	"github.com/spf13/cobra"
+
+	"github.com/kjanat/udm-iptv/internal/installer"
 )
 
 func (application *Application) upgradeCommand() *cobra.Command {

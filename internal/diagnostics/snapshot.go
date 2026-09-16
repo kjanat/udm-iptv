@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kjanat/udm-iptv/internal/service"
-
 	"github.com/coreos/go-iptables/iptables"
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/vishvananda/netlink"
+
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/network"
-	"github.com/vishvananda/netlink"
+	"github.com/kjanat/udm-iptv/internal/service"
 )
 
 // Collector reads router state for snapshots and bounded captures.

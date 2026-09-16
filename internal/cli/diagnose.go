@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"github.com/spf13/cobra"
+
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/diagnostics"
 	"github.com/kjanat/udm-iptv/internal/ui"
-
-	tea "charm.land/bubbletea/v2"
-	"github.com/spf13/cobra"
 )
 
 func (application *Application) diagnoseCommand() *cobra.Command {

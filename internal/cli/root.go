@@ -7,9 +7,10 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/spf13/cobra"
+
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
-	"github.com/spf13/cobra"
 )
 
 type Application struct {

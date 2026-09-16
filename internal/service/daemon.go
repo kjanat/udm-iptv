@@ -15,15 +15,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kjanat/udm-iptv/internal/atomicfile"
-	"github.com/kjanat/udm-iptv/internal/telemetry"
-
 	sdnotify "github.com/coreos/go-systemd/v22/daemon"
 	"github.com/vishvananda/netlink"
 
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/kjanat/udm-iptv/internal/runtimebundle"
+	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
 // Daemon supervises the IPTV network and proxy lifecycle.

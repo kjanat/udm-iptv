@@ -10,6 +10,7 @@ import (
 	"time"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 

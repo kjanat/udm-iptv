@@ -4,11 +4,11 @@ import (
 	"errors"
 	"os"
 
-	"github.com/kjanat/udm-iptv/internal/device"
-	"github.com/kjanat/udm-iptv/internal/installer"
+	"github.com/spf13/cobra"
 
 	"github.com/kjanat/udm-iptv/internal/config"
-	"github.com/spf13/cobra"
+	"github.com/kjanat/udm-iptv/internal/device"
+	"github.com/kjanat/udm-iptv/internal/installer"
 )
 
 func (application *Application) configureCommand() *cobra.Command {

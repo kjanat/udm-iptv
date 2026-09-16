@@ -75,6 +75,16 @@ allow-unused        = false
 generated   = "strict"
 warn-unused = true
 
+[formatters]
+enable = ["gci", "goimports"]
+
+[formatters.settings.gci]
+sections     = ["standard", "default", "localmodule"]
+custom-order = true
+
+[formatters.settings.goimports]
+local-prefixes = ["github.com/kjanat/udm-iptv"]
+
 [issues]
 # Report the full backlog, including repeated findings.
 max-issues-per-linter = 0

@@ -14,6 +14,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/getsentry/sentry-go/attribute"
+
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 

@@ -3,9 +3,9 @@ package cli
 import (
 	"encoding/json"
 
-	"github.com/kjanat/udm-iptv/internal/diagnostics"
-
 	"github.com/spf13/cobra"
+
+	"github.com/kjanat/udm-iptv/internal/diagnostics"
 )
 
 func (application *Application) statusCommand() *cobra.Command {

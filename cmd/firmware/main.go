@@ -12,8 +12,9 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/kjanat/udm-iptv/internal/firmware"
 	"github.com/spf13/cobra"
+
+	"github.com/kjanat/udm-iptv/internal/firmware"
 )
 
 func main() {

@@ -17,8 +17,9 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/kjanat/udm-iptv/internal/config"
 	"golang.org/x/sys/unix"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 // SettingsSnapshot deliberately excludes interface names, addresses, MACs,

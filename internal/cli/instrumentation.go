@@ -6,11 +6,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/kjanat/udm-iptv/internal/device"
+	"github.com/spf13/cobra"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/device"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
-	"github.com/spf13/cobra"
 )
 
 func setTelemetryMetadata(reporter *telemetry.Reporter, value config.Config) {
