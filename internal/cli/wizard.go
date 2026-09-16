@@ -94,7 +94,7 @@ func suggestedProfile(identity telemetry.NetworkIdentity) string {
 	return ""
 }
 
-const previewHeader = "Preview · Example data. Nothing is applied or sent."
+const previewHeader = "Preview"
 
 func (application *Application) previewCommand() *cobra.Command {
 	return application.previewCommandWith(func(ctx context.Context, value *config.Config) error {

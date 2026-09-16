@@ -127,7 +127,7 @@ func TestConfigurationPageFits(t *testing.T) {
 		{Name: "br0", Description: "example: LAN", Addresses: []string{"192.168.1.1/24"}, AddressesKnown: true},
 		{Name: "br4", Addresses: []string{"192.168.4.1/24"}, AddressesKnown: true},
 	}, "IPTV DNS servers: 177.16.30.67 and 177.16.30.7.", &fields)
-	frame := NewFrame(wizardForm(groups...), "Preview · Example data.")
+	frame := NewFrame(wizardForm(groups...), "Preview")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 180, Height: 45})
 	boxRows := 0
@@ -155,7 +155,7 @@ func TestConfigurationPageFits(t *testing.T) {
 		if top < 0 || bottom < 0 {
 			t.Fatal("page has no box")
 		}
-		if above, below := top-3, 44-bottom; above < 3 || below < 3 || above-below > 2 || below-above > 2 {
+		if above, below := top-1, 44-bottom; above < 3 || below < 3 || above-below > 2 || below-above > 2 {
 			t.Fatalf("box is not vertically centered: %d rows above the header, %d below", above, below)
 		}
 		right := 180 - lipgloss.Width(strings.TrimRight(lines[top], " "))
@@ -168,8 +168,8 @@ func TestConfigurationPageFits(t *testing.T) {
 		if bottom-top != boxRows {
 			t.Fatalf("box height changed between pages: %d rows, then %d", boxRows, bottom-top)
 		}
-		if !strings.Contains(lines[top-3], "Preview · Example data.") {
-			t.Fatalf("header missing above the box: %q", lines[top-3])
+		if row := lines[top-1]; !strings.Contains(row, "PREVIEW") || !strings.Contains(row, closeLabel) || strings.Index(row, "PREVIEW") > strings.Index(row, closeLabel) {
+			t.Fatalf("badge and close button missing from the row above the box: %q", row)
 		}
 		for _, jammed := range []string{"quickleave?Off", "logs?Temporary", "address?Most"} {
 			if strings.Contains(view.Content, jammed) {
@@ -405,6 +405,59 @@ func TestCloseButtonAndPopupButtonsAreClickable(t *testing.T) {
 	frame.Update(tea.MouseClickMsg{X: leaveX + 1, Y: leaveY, Button: tea.MouseLeft})
 	if frame.wizard.Form.State != huh.StateAborted {
 		t.Fatal("click on Yes, leave did not leave")
+	}
+}
+
+func TestFrameScalesWithTerminal(t *testing.T) {
+	for _, test := range []struct{ width, want int }{{80, 72}, {120, 100}, {200, 120}, {400, 160}, {30, 22}} {
+		frame := &Frame{width: test.width}
+		if got := frame.contentWidth(); got != test.want {
+			t.Errorf("width %d: content %d, want %d", test.width, got, test.want)
+		}
+	}
+	value := config.Default()
+	fields := newFormValues(value)
+	groups, _, _, _ := configurationGroups(&value, nil, "", &fields)
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 300, Height: 80})
+	if width := lipgloss.Width(strings.TrimSpace(strings.Split(frame.View().Content, "\n")[boxTop(frame.View().Content)])); width < 150 {
+		t.Fatalf("box did not grow with the terminal: %d columns", width)
+	}
+}
+
+func boxTop(content string) int {
+	for i, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "╭") {
+			return i
+		}
+	}
+
+	return 0
+}
+
+func TestProviderListShowsEveryProvider(t *testing.T) {
+	value := config.Default()
+	calls := 0
+	err := Configure(context.Background(), &value, config.Profiles(), func(_ context.Context, wizard *Wizard) error {
+		calls++
+		if calls > 1 {
+			return huh.ErrUserAborted
+		}
+		frame := NewFrame(wizard, "")
+		frame.Init()
+		frame.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
+		view := frame.View().Content
+		for _, profile := range config.Profiles() {
+			if !strings.Contains(view, profile.Name) {
+				t.Errorf("provider %q scrolled out of view", profile.Name)
+			}
+		}
+
+		return nil
+	})
+	if !errors.Is(err, huh.ErrUserAborted) {
+		t.Fatal(err)
 	}
 }
 

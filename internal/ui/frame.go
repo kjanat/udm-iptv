@@ -15,10 +15,17 @@ import (
 )
 
 const (
+	// frameContentWidth is the content width before the terminal size is known.
 	frameContentWidth = 100
-	frameChrome       = 6
-	// panelPaddingY and panelPaddingX pad the frame and help panel borders.
+	// contentShare is the share of the terminal width the content takes, in percent.
+	contentShare = 60
+	// maxContentWidth keeps text lines readable on very wide terminals.
+	maxContentWidth = 160
+	// frameChrome is the sum of the frame's top and bottom borders and padding.
+	frameChrome = 6
+	// panelPaddingY pads the frame and help panel borders.
 	panelPaddingY = 1
+	// panelPaddingX pads the frame and help panel borders.
 	panelPaddingX = 2
 	// footerHeight is the status/hint row reserved below the viewport.
 	footerHeight = 3
@@ -55,6 +62,7 @@ var (
 	progressDoneStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#7571F9"))
 	progressLeftStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
 	progressTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+	badgeStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#1A1A1A")).Background(lipgloss.Color("#F7C948")).Padding(0, 1)
 )
 
 var wizardTheme = huh.ThemeFunc(func(isDark bool) *huh.Styles {
@@ -298,7 +306,7 @@ func (frame *Frame) resize() tea.Cmd {
 	if frame.width == 0 {
 		return nil
 	}
-	height := frame.height - frameChrome - lipgloss.Height(frame.header) - footerHeight
+	height := frame.height - frameChrome - footerHeight
 
 	return frame.forward(tea.WindowSizeMsg{Width: frame.contentWidth(), Height: max(height, 1)})
 }
@@ -384,7 +392,11 @@ func (frame *Frame) contentWidth() int {
 		return frameContentWidth
 	}
 
-	return max(min(frame.width-frameChrome-outerMarginX, frameContentWidth), minContentWidth)
+	available := frame.width - frameChrome - outerMarginX
+	share := min(frame.width*contentShare/100, maxContentWidth)
+	width := max(min(available, frameContentWidth), share)
+
+	return max(min(width, available), minContentWidth)
 }
 
 func (frame *Frame) render() string {
@@ -398,11 +410,7 @@ func (frame *Frame) render() string {
 	if frame.help {
 		box = frame.helpBox()
 	}
-	closeRow := lipgloss.PlaceHorizontal(lipgloss.Width(box), lipgloss.Right, progressTextStyle.Render(closeLabel))
-	content := lipgloss.JoinVertical(lipgloss.Left, closeRow, box)
-	if frame.header != "" {
-		content = lipgloss.JoinVertical(lipgloss.Center, frame.header, "", content)
-	}
+	content := lipgloss.JoinVertical(lipgloss.Left, frame.topRow(lipgloss.Width(box)), box)
 	if frame.width > 0 && frame.height > 0 {
 		content = lipgloss.Place(frame.width, frame.height, lipgloss.Center, lipgloss.Center, content)
 	}
@@ -425,6 +433,19 @@ func (frame *Frame) overlay(content, popup string) string {
 	canvas.Compose(lipgloss.NewCompositor(lipgloss.NewLayer(content), lipgloss.NewLayer(popup).X(x).Y(y).Z(1)))
 
 	return canvas.Render()
+}
+
+// topRow puts the badge, when there is one, on the left and the close
+// button on the right, on the row above the box.
+func (frame *Frame) topRow(width int) string {
+	close := progressTextStyle.Render(closeLabel)
+	if frame.header == "" {
+		return lipgloss.PlaceHorizontal(width, lipgloss.Right, close)
+	}
+	badge := badgeStyle.Render(strings.ToUpper(frame.header))
+	gap := max(1, width-lipgloss.Width(badge)-lipgloss.Width(close))
+
+	return badge + strings.Repeat(" ", gap) + close
 }
 
 func (frame *Frame) quitPopup() string {

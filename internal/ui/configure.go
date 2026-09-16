@@ -24,8 +24,6 @@ type formValues struct {
 const (
 	// selectChrome is the extra rows a select adds around its visible options.
 	selectChrome = 4
-	// maxProfileSelectHeight caps the provider dropdown so it never dwarfs the screen.
-	maxProfileSelectHeight = 12
 	// igmpVersion2 is IGMPv2, the compatibility fallback next to the recommended v3.
 	igmpVersion2 = 2
 )
@@ -67,7 +65,7 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []co
 	selector := huh.NewSelect[string]().Key("profile").
 		Title("Who is your TV provider?").
 		Description("Loads matching defaults. You can change them next.").
-		Options(profileOptions...).Height(min(maxProfileSelectHeight, len(profileOptions)+selectChrome)).Value(&profileID)
+		Options(profileOptions...).Height(len(profileOptions) + selectChrome).Value(&profileID)
 	fields := newFormValues(*value)
 	estimate := configurationPages(value, ports, "", &fields)
 	err := run(ctx, wizardForm(newPage(selector)).steps(0, wizardForm(estimate...).visiblePages()+1))

@@ -39,8 +39,6 @@ const (
 	// manualEntrySlots reserves room for the "enter manually" and blank options
 	// appended after the discovered ports.
 	manualEntrySlots = 2
-	// maxPortSelectHeight caps the port dropdown so it never dwarfs the screen.
-	maxPortSelectHeight = 8
 )
 
 func wanGroups(current *string, ports []Port) ([]page, *string) {
@@ -63,7 +61,7 @@ func wanGroups(current *string, ports []Port) ([]page, *string) {
 		newPage(huh.NewSelect[string]().Key("wan-port").
 			Title("Which connection goes to your provider?").
 			Description("Usually Internet route. Connected means link detected, not provider verified.").
-			Options(options...).Height(min(maxPortSelectHeight, len(options)+selectChrome)).Value(&selected)).title("Internet port"),
+			Options(options...).Height(len(options) + selectChrome).Value(&selected)).title("Internet port"),
 		newPage(huh.NewInput().Key("wan-interface").Title("Interface name").
 			Description("Enter the interface name from UniFi or ip link.").
 			Placeholder("eth8").Value(current).Validate(validateInterface)).hide(func() bool { return selected != manualPort }),
@@ -130,7 +128,7 @@ func lanGroups(current []string, ports []Port) ([]page, *[]string, *string) {
 		newPage(huh.NewMultiSelect[string]().Key("lan").
 			Title("Which networks should receive IPTV?").
 			Description("Press space to tick or untick a network, Enter when done. br0 is LAN. Other brN are VLANs.").
-			Options(options...).Height(min(maxPortSelectHeight, len(options)+selectChrome)).
+			Options(options...).Height(len(options) + selectChrome).
 			Value(&selected).
 			Validate(func(values []string) error {
 				if len(resolveLAN(values, extra)) == 0 && !containsString(values, manualPort) {
