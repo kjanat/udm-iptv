@@ -62,7 +62,7 @@ func listHeight(options []huh.Option[string]) int {
 	return len(options) + manualEntrySlots + maxManualEntries + selectChrome
 }
 
-func wanGroups(current *string, ports []Port) ([]page, *string) {
+func wanGroups(current *string, ports []Port) ([]*page, *string) {
 	selected := *current
 	options := make([]huh.Option[string], 0, len(ports)+manualEntrySlots)
 	for _, port := range ports {
@@ -94,7 +94,7 @@ func wanGroups(current *string, ports []Port) ([]page, *string) {
 		},
 	}
 
-	return []page{
+	return []*page{
 		newPage(huh.NewSelect[string]().Key("wan-port").
 			Title("Which connection goes to your provider?").
 			Description("Usually Internet route. Connected means link detected, not provider verified.").
@@ -130,7 +130,7 @@ func isDownstreamName(name string) bool {
 	return strings.HasPrefix(name, "br") || strings.HasPrefix(name, "eth0.")
 }
 
-func lanGroups(current []string, ports []Port) ([]page, *[]string) {
+func lanGroups(current []string, ports []Port) ([]*page, *[]string) {
 	selected := resolveLAN(current)
 	options := make([]huh.Option[string], 0, len(ports)+len(current)+manualEntrySlots)
 	for _, port := range ports {
@@ -164,7 +164,7 @@ func lanGroups(current []string, ports []Port) ([]page, *[]string) {
 		},
 	}
 
-	return []page{
+	return []*page{
 		newPage(huh.NewMultiSelect[string]().Key("lan").
 			Title("Which networks should receive IPTV?").
 			Description("Press space to tick or untick a network, Enter when done. br0 is LAN. Other brN are VLANs.").

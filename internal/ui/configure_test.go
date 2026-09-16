@@ -211,19 +211,22 @@ func TestConfigureFailureDoesNotChangeInput(t *testing.T) {
 	}
 }
 
-func TestFrameKeepsBoxHeightAcrossForms(t *testing.T) {
+func TestFrameFitsBoxToEachForm(t *testing.T) {
 	settings := config.Default()
 	fields := newFormValues(settings)
 	groups := configurationPages(&settings, nil, "", &fields)
 	frame := NewFrame(wizardForm(newPage(telemetryConsent(&settings.Telemetry))), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	first := lipgloss.Height(frame.View().Content)
+	short := boxRows(frame.View().Content)
+	if lipgloss.Height(frame.View().Content) != 40 {
+		t.Fatal("view does not fill the terminal")
+	}
 	frame.Update(setWizardMsg{wizard: wizardForm(groups...)})
 	tall := boxRows(frame.View().Content)
 	frame.Update(setWizardMsg{wizard: wizardForm(newPage(telemetryConsent(&settings.Telemetry)))})
-	if first != 40 || boxRows(frame.View().Content) != tall {
-		t.Fatalf("box shrank after a tall form: %d, then %d", tall, boxRows(frame.View().Content))
+	if tall <= short || boxRows(frame.View().Content) != short {
+		t.Fatalf("box rows: short %d, tall %d, back to %d", short, tall, boxRows(frame.View().Content))
 	}
 }
 
@@ -346,7 +349,7 @@ func TestCtrlCAsksBeforeLeaving(t *testing.T) {
 	groups, _, _ := configurationGroups(&value, nil, "", &fields)
 	var events []string
 	frame := NewFrame(wizardForm(groups...), "")
-	frame.observer = func(event, question string) { events = append(events, event+":"+question) }
+	frame.observer = func(event Event, question string) { events = append(events, string(event)+":"+question) }
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}

@@ -65,7 +65,7 @@ func (entry *entryPrompt) choices(text string) []entryChoice {
 
 func (frame *Frame) openEntry(entry *entryPrompt) {
 	frame.entry, frame.entryText, frame.entryCursor, frame.entryErr = entry, "", 0, nil
-	frame.observe("entry.open")
+	frame.observe(EventEntryOpen)
 }
 
 func (frame *Frame) closeEntry() {
@@ -74,16 +74,16 @@ func (frame *Frame) closeEntry() {
 
 // answerEntry handles a key while the entry popup is open. Accepting a
 // choice mutates the list, so the form gets a refresh message to redraw.
-func (frame *Frame) answerEntry(text string, enter, backspace, escape, up, down bool) tea.Cmd {
+func (frame *Frame) answerEntry(msg tea.KeyPressMsg) tea.Cmd {
 	choices := frame.entry.choices(frame.entryText)
 	switch {
-	case escape:
+	case msg.Code == tea.KeyEscape:
 		frame.closeEntry()
-	case up && len(choices) > 0:
+	case msg.Code == tea.KeyUp && len(choices) > 0:
 		frame.entryCursor = (frame.entryCursor + len(choices) - 1) % len(choices)
-	case down && len(choices) > 0:
+	case msg.Code == tea.KeyDown && len(choices) > 0:
 		frame.entryCursor = (frame.entryCursor + 1) % len(choices)
-	case enter:
+	case msg.Code == tea.KeyEnter:
 		if len(choices) == 0 {
 			return nil
 		}
@@ -101,14 +101,14 @@ func (frame *Frame) answerEntry(text string, enter, backspace, escape, up, down 
 		frame.closeEntry()
 
 		return frame.forward(searchChangedMsg{})
-	case backspace:
+	case msg.Code == tea.KeyBackspace:
 		runes := []rune(frame.entryText)
 		if len(runes) > 0 {
 			frame.entryText = string(runes[:len(runes)-1])
 		}
 		frame.entryCursor, frame.entryErr = 0, nil
-	case entryText(text):
-		frame.entryText += text
+	case entryText(msg.Text):
+		frame.entryText += msg.Text
 		frame.entryCursor, frame.entryErr = 0, nil
 	}
 
@@ -122,7 +122,7 @@ func (frame *Frame) entryPopup() string {
 	if line == "" {
 		line = progressTextStyle.Render(frame.entry.placeholder)
 	}
-	rows := []string{helpTitleStyle.Render(frame.entry.title), "", body, "", helpKeyStyle.Render("> ") + line}
+	rows := []string{accentStyle.Render(frame.entry.title), "", body, "", accentStyle.Render("> ") + line}
 	choices := frame.entry.choices(frame.entryText)
 	cursor := min(frame.entryCursor, max(len(choices)-1, 0))
 	for i, choice := range choices {

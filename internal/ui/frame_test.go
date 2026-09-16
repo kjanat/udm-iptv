@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 
 	"github.com/kjanat/udm-iptv/internal/config"
 )
@@ -17,9 +18,9 @@ func TestFirstPageIsRecognizedOnEveryField(t *testing.T) {
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	focusPage(frame, "vlan")
-	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	frame.Update(huh.NextField())
 	if focusedKey(frame.wizard.Form) != "dhcp" {
-		t.Fatalf("enter did not move to the second field, focused %q", focusedKey(frame.wizard.Form))
+		t.Fatalf("focus did not move to the second field, focused %q", focusedKey(frame.wizard.Form))
 	}
 	if !frame.wizard.onFirstPage() {
 		t.Fatal("second field of the first page not recognized as the first page")
@@ -27,10 +28,16 @@ func TestFirstPageIsRecognizedOnEveryField(t *testing.T) {
 	if p, ok := frame.wizard.focusedPage(); !ok || p.keys[0] != "vlan" {
 		t.Fatal("focused page not found from its second field")
 	}
-	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	_, cmd := frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	frame.Update(cmd())
 	if focusedKey(frame.wizard.Form) != "vlan" || frame.wizard.wentBack {
 		t.Fatal("escape on the second field must step to the first field, not out of the form")
 	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !frame.quitPrompt || frame.wizard.wentBack {
+		t.Fatal("a second escape in a row must offer to leave")
+	}
+	frame.Update(tea.KeyPressMsg{Text: "n", Code: 'n'})
 	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if !frame.wizard.wentBack {
 		t.Fatal("escape on the first field of the first page must step back a form")
