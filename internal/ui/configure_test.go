@@ -227,7 +227,8 @@ func TestFrameKeepsBoxHeightAcrossForms(t *testing.T) {
 	}
 }
 
-func boxRows(content string) int {
+// boxBounds returns the rows of the frame's top and bottom borders, or -1.
+func boxBounds(content string) (int, int) {
 	top, bottom := -1, -1
 	for i, line := range strings.Split(content, "\n") {
 		if strings.Contains(line, "╭") {
@@ -238,7 +239,27 @@ func boxRows(content string) int {
 		}
 	}
 
+	return top, bottom
+}
+
+func boxRows(content string) int {
+	top, bottom := boxBounds(content)
+
 	return bottom - top
+}
+
+func boxTop(content string) int {
+	top, _ := boxBounds(content)
+
+	return max(top, 0)
+}
+
+// focusPage advances the form to the page whose first field has key.
+func focusPage(frame *Frame, key string) {
+	for focusedKey(frame.wizard.Form) != key {
+		frame.wizard.Form.NextGroup()
+	}
+	frame.wizard.Form.GetFocusedField().Focus()
 }
 
 func TestEveryQuestionHasHelp(t *testing.T) {
@@ -269,10 +290,7 @@ func TestHelpOverlayExplainsFocusedQuestion(t *testing.T) {
 	frame := NewFrame(wizardForm(groups...).steps(1, 1), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	for focusedKey(frame.wizard.Form) != "vlan" {
-		frame.wizard.Form.NextGroup()
-	}
-	frame.wizard.Form.GetFocusedField().Focus()
+	focusPage(frame, "vlan")
 	if view := frame.View().Content; !strings.Contains(view, "Question 3 of") || !strings.Contains(view, "F1") {
 		t.Fatalf("progress line missing question counter or help hint")
 	}
@@ -298,10 +316,7 @@ func TestEnterOnManualNetworkEntryOpensPicker(t *testing.T) {
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	for focusedKey(frame.wizard.Form) != "lan" {
-		frame.wizard.Form.NextGroup()
-	}
-	frame.wizard.Form.GetFocusedField().Focus()
+	focusPage(frame, "lan")
 	frame.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if frame.entry == nil {
@@ -317,7 +332,7 @@ func TestEnterOnManualNetworkEntryOpensPicker(t *testing.T) {
 		}
 	}
 	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if frame.entry != nil || !containsString(*selectedLAN, "eth9") || containsString(*selectedLAN, manualPort) {
+	if frame.entry != nil || !slices.Contains(*selectedLAN, "eth9") || slices.Contains(*selectedLAN, manualPort) {
 		t.Fatalf("picking a known interface: entry=%v selected=%v", frame.entry != nil, *selectedLAN)
 	}
 	if !strings.Contains(plain(frame), "[x] eth9") {
@@ -445,16 +460,6 @@ func TestFrameScalesWithTerminal(t *testing.T) {
 	}
 }
 
-func boxTop(content string) int {
-	for i, line := range strings.Split(content, "\n") {
-		if strings.Contains(line, "╭") {
-			return i
-		}
-	}
-
-	return 0
-}
-
 func TestCountryListShowsEveryCountry(t *testing.T) {
 	value := config.Default()
 	calls := 0
@@ -487,10 +492,7 @@ func TestVLANFieldAcceptsDigitsOnly(t *testing.T) {
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	for focusedKey(frame.wizard.Form) != "vlan" {
-		frame.wizard.Form.NextGroup()
-	}
-	frame.wizard.Form.GetFocusedField().Focus()
+	focusPage(frame, "vlan")
 	for _, msg := range []tea.KeyPressMsg{{Text: "s", Code: 's'}, {Text: "-", Code: '-'}, {Text: " ", Code: tea.KeySpace}} {
 		frame.Update(msg)
 		if fields.vlan != "4" {

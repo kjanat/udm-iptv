@@ -30,7 +30,7 @@ func TestImprovementPromptCopy(t *testing.T) {
 			t.Fatalf("unexpected prompt text %q", text)
 		}
 	}
-	if form.GetFocusedField().GetKey() != "telemetry" {
+	if focusedKey(form) != "telemetry" {
 		t.Fatal("prompt is not the telemetry confirm")
 	}
 	form.NextGroup()

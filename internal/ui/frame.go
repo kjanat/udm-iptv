@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 
@@ -21,18 +22,25 @@ const (
 	contentShare = 60
 	// maxContentWidth keeps text lines readable on very wide terminals.
 	maxContentWidth = 160
-	// frameChrome is the sum of the frame's top and bottom borders and padding.
-	frameChrome = 6
 	// panelPaddingY pads the frame and help panel borders.
 	panelPaddingY = 1
 	// panelPaddingX pads the frame and help panel borders.
 	panelPaddingX = 2
+	// frameChromeY is what the frame's top and bottom border and padding take.
+	frameChromeY = 2 * (panelPaddingY + 1)
+	// frameChromeX is what the frame's left and right border and padding take.
+	frameChromeX = 2 * (panelPaddingX + 1)
 	// footerHeight is the status/hint row reserved below the viewport.
 	footerHeight = 3
 	// minContentWidth keeps narrow terminals from collapsing the frame further.
 	minContentWidth = 20
-	// popupPadding is the horizontal frame popupStyle adds around its content.
-	popupPadding = 8
+	// popupPaddingY pads the popup border vertically.
+	popupPaddingY = 1
+	// popupPaddingX pads the popup border horizontally.
+	popupPaddingX = 3
+	// popupPadding is the horizontal frame popupStyle adds around its content:
+	// padding and border on both sides.
+	popupPadding = 2 * (popupPaddingX + 1)
 	// hintGap separates a footer's text from its trailing hint.
 	hintGap = 4
 	// outerMarginX keeps the frame border clear of the terminal edge.
@@ -59,7 +67,7 @@ var (
 	popupStyle     = lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(lipgloss.Color("#F780E2")).
-			Padding(1, 3)
+			Padding(popupPaddingY, popupPaddingX)
 	focusedButtonStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFDF5")).Background(lipgloss.Color("#F780E2"))
 	blurredButtonStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFDF5")).Background(lipgloss.Color("#444444"))
 	progressDoneStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#7571F9"))
@@ -178,7 +186,7 @@ func (wizard *Wizard) onFirstPage() bool {
 	focused := focusedKey(wizard.Form)
 	for _, p := range wizard.pages {
 		if p.visible() {
-			return len(p.keys) > 0 && p.keys[0] == focused
+			return slices.Contains(p.keys, focused)
 		}
 	}
 
@@ -197,7 +205,7 @@ func (wizard *Wizard) search() *searchable {
 func (wizard *Wizard) focusedPage() (page, bool) {
 	focused := focusedKey(wizard.Form)
 	for _, p := range wizard.pages {
-		if len(p.keys) > 0 && p.keys[0] == focused {
+		if slices.Contains(p.keys, focused) {
 			return p, true
 		}
 	}
@@ -435,7 +443,7 @@ func (frame *Frame) resize() tea.Cmd {
 	if frame.width == 0 {
 		return nil
 	}
-	height := frame.height - frameChrome - footerHeight
+	height := frame.height - frameChromeY - footerHeight
 
 	return frame.forward(tea.WindowSizeMsg{Width: frame.contentWidth(), Height: max(height, 1)})
 }
@@ -544,7 +552,7 @@ func (frame *Frame) contentWidth() int {
 		return frameContentWidth
 	}
 
-	available := frame.width - frameChrome - outerMarginX
+	available := frame.width - frameChromeX - outerMarginX
 	share := min(frame.width*contentShare/100, maxContentWidth)
 	width := max(min(available, frameContentWidth), share)
 
@@ -593,14 +601,14 @@ func (frame *Frame) overlay(content, popup string) string {
 // topRow puts the badge, when there is one, on the left and the close
 // button on the right, on the row above the box.
 func (frame *Frame) topRow(width int) string {
-	close := progressTextStyle.Render(closeLabel)
+	closeButton := progressTextStyle.Render(closeLabel)
 	if frame.header == "" {
-		return lipgloss.PlaceHorizontal(width, lipgloss.Right, close)
+		return lipgloss.PlaceHorizontal(width, lipgloss.Right, closeButton)
 	}
 	badge := badgeStyle.Render(strings.ToUpper(frame.header))
-	gap := max(1, width-lipgloss.Width(badge)-lipgloss.Width(close))
+	gap := max(1, width-lipgloss.Width(badge)-lipgloss.Width(closeButton))
 
-	return badge + strings.Repeat(" ", gap) + close
+	return badge + strings.Repeat(" ", gap) + closeButton
 }
 
 func (frame *Frame) quitPopup() string {
@@ -622,10 +630,11 @@ func (frame *Frame) quitPopup() string {
 	))
 }
 
-func locate(content, text string) (x, y int) {
-	for y, line := range strings.Split(content, "\n") {
+// locate returns the column and row where text first appears, or -1, -1.
+func locate(content, text string) (int, int) {
+	for row, line := range strings.Split(content, "\n") {
 		if before, _, ok := strings.Cut(line, text); ok {
-			return lipgloss.Width(before), y
+			return lipgloss.Width(before), row
 		}
 	}
 
@@ -656,12 +665,12 @@ func (frame *Frame) progressLine() string {
 	step, total := frame.wizard.progress()
 	hint := helpKeyStyle.Render("F1") + progressTextStyle.Render(" explain  ") +
 		helpKeyStyle.Render("esc") + progressTextStyle.Render(" back  ") +
-		helpKeyStyle.Render("esc esc") + progressTextStyle.Render(" leave")
+		helpKeyStyle.Render("esc twice") + progressTextStyle.Render(" leave")
 	text := fmt.Sprintf("Question %d of %d", step, total)
-	width := frame.contentWidth() - lipgloss.Width(text) - lipgloss.Width(hint) - hintGap
+	width := max(frame.contentWidth()-lipgloss.Width(text)-lipgloss.Width(hint)-hintGap, 0)
 	filled := 0
 	if total > 0 {
-		filled = width * step / total
+		filled = min(width*step/total, width)
 	}
 	bar := progressDoneStyle.Render(strings.Repeat("━", filled)) + progressLeftStyle.Render(strings.Repeat("─", width-filled))
 
@@ -676,7 +685,9 @@ type Session struct {
 	input    io.Reader
 	output   io.Writer
 	program  *tea.Program
-	finished chan error
+	// finished closes when the program has exited; runErr holds its error.
+	finished chan struct{}
+	runErr   error
 	closed   sync.Once
 }
 
@@ -695,31 +706,28 @@ func (session *Session) Observe(observer Observer) *Session {
 
 // Run displays wizard until it is submitted or aborted, reusing the session's
 // alternate screen across successive wizards.
+// Run shows the wizard and waits for it to finish. The terminal program is
+// started on the first call and outlives the call's context: every Run
+// watches its own ctx, and Close stops the program.
 func (session *Session) Run(ctx context.Context, wizard *Wizard) error {
 	wizard.done = make(chan struct{})
 	wizard.Form.SubmitCmd = func() tea.Msg { return wizardDoneMsg{} }
 	wizard.Form.CancelCmd = wizard.Form.SubmitCmd
 	if session.program == nil {
-		frame := NewFrame(wizard, session.header)
-		frame.observer = session.observer
-		session.program = tea.NewProgram(frame, tea.WithContext(ctx), tea.WithInput(session.input), tea.WithOutput(session.output))
-		session.finished = make(chan error, 1)
-		go func() {
-			_, err := session.program.Run()
-			session.finished <- err
-		}()
+		session.start(wizard)
 	} else {
 		session.program.Send(setWizardMsg{wizard: wizard})
 	}
 	select {
 	case <-wizard.done:
-	case err := <-session.finished:
-		session.finished <- err
-		if err == nil || errors.Is(err, tea.ErrInterrupted) {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-session.finished:
+		if session.runErr == nil || errors.Is(session.runErr, tea.ErrInterrupted) {
 			return huh.ErrUserAborted
 		}
 
-		return err
+		return session.runErr
 	}
 	if wizard.wentBack {
 		return ErrBack
@@ -729,6 +737,17 @@ func (session *Session) Run(ctx context.Context, wizard *Wizard) error {
 	}
 
 	return nil
+}
+
+func (session *Session) start(wizard *Wizard) {
+	frame := NewFrame(wizard, session.header)
+	frame.observer = session.observer
+	session.program = tea.NewProgram(frame, tea.WithInput(session.input), tea.WithOutput(session.output))
+	session.finished = make(chan struct{})
+	go func() {
+		_, session.runErr = session.program.Run()
+		close(session.finished)
+	}()
 }
 
 // Close leaves the alternate screen. It is safe to call more than once.

@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -51,9 +50,7 @@ func (entry *entryPrompt) choices(text string) []entryChoice {
 	needle := strings.ToLower(strings.TrimSpace(text))
 	var result []entryChoice
 	names := splitList(text)
-	exact := len(names) == 1 && slices.ContainsFunc(entry.candidates, func(candidate huh.Option[string]) bool {
-		return candidate.Value == names[0]
-	})
+	exact := len(names) == 1 && hasOption(entry.candidates, names[0])
 	if len(names) > 0 && !exact {
 		result = append(result, entryChoice{label: "Use " + strings.Join(names, ", "), values: names, typed: true})
 	}
