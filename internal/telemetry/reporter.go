@@ -307,7 +307,7 @@ func (r *Reporter) MetricsEnabled() bool {
 }
 
 func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
-	if event.Transaction == "installation.report" {
+	if event.Transaction == researchTransaction {
 		return r.filterResearch(event)
 	}
 	if !operations[event.Transaction] {

@@ -28,6 +28,9 @@ const (
 	researchIdentitySize = 16
 	// researchStateLimit bounds the persisted research state file.
 	researchStateLimit = 65536
+	// researchTransaction tags the Sentry event a research report rides on;
+	// filterResearch and filterEvent both branch on it.
+	researchTransaction = "installation.report"
 )
 
 // SettingsSnapshot deliberately excludes interface names, addresses, MACs,
@@ -304,7 +307,7 @@ func (r *Reporter) Feedback(answer, provider string) error {
 
 func (r *Reporter) sendResearch(report researchReport) bool {
 	event := sentry.NewEvent()
-	event.Transaction, event.Level = "installation.report", sentry.LevelInfo
+	event.Transaction, event.Level = researchTransaction, sentry.LevelInfo
 	event.Contexts = map[string]sentry.Context{"research": {"report": report}}
 
 	return r.hub.CaptureEvent(event) != nil
@@ -325,7 +328,7 @@ func (r *Reporter) filterResearch(event *sentry.Event) *sentry.Event {
 	return &sentry.Event{
 		EventID: event.EventID, Timestamp: event.Timestamp,
 		Platform: "go", Release: r.release, Level: sentry.LevelInfo,
-		Message: "Installation " + report.Kind, Transaction: "installation.report",
+		Message: "Installation " + report.Kind, Transaction: researchTransaction,
 		User: sentry.User{ID: report.InstallationID},
 		Tags: r.metadata, Contexts: map[string]sentry.Context{"research": {"report": report}},
 	}

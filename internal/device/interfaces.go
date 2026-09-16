@@ -57,22 +57,26 @@ func wanInterfaceForBoard(board string) string {
 	return candidates[0]
 }
 
+// wanEth4 is the WAN candidate name shared by several board families below,
+// each with an otherwise unrelated kernel interface layout.
+const wanEth4 = "eth4"
+
 func wanInterfacesForBoard(board string) []string {
 	switch strings.ToUpper(strings.TrimSpace(board)) {
 	case "UDM", "UDR":
-		return []string{"eth4"}
+		return []string{wanEth4}
 	case "UXGPRO":
 		return []string{"eth0", "eth2"}
 	case "UDR7":
-		return []string{"eth3", "eth4", "eth2"}
+		return []string{"eth3", wanEth4, "eth2"}
 	case "UDW":
 		return []string{"eth18", "eth19"}
 	case "UXG":
 		return []string{"eth1"}
 	case "UDRULT", "UXGB", "UCGMAX":
-		return []string{"eth4", "eth3"}
+		return []string{wanEth4, "eth3"}
 	case "UCGF":
-		return []string{"eth6", "eth4"}
+		return []string{"eth6", wanEth4}
 	case "UDMPRO", "UDMPROSE", "UDMSE", "UDMPROMAX", "UDMEA4C":
 		return []string{"eth8", "eth9"}
 	default:

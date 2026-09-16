@@ -1,3 +1,5 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-issue-forms.json
+---
 name: Bug Report
 description: Report a bug in udm-iptv.
 labels: "kind/bug"
@@ -13,17 +15,14 @@ body:
     attributes:
       label: Diagnostic Information
       description: Please provide the diagnostic output of `udm-iptv-diag`.
-    validations:
-      required: true
+    validations: { required: false }
   - type: textarea
     attributes:
       label: Describe the Bug
       description: A clear and concise description of what the bug is.
-    validations:
-      required: true
+    validations: { required: true }
   - type: textarea
     attributes:
       label: Expected Behavior
       description: A clear and concise description of what you expected to happen.
-    validations:
-      required: true
+    validations: { required: true }

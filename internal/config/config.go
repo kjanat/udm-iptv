@@ -250,7 +250,7 @@ func ImportLegacy(path string) (Config, error) {
 	value := Default()
 	// Legacy installations never selected telemetry; do not opt them in on migration.
 	value.Telemetry.Enabled = false
-	value.Profile = "legacy"
+	value.Profile = profileLegacy
 	value.WAN.Interface = fallback(values["IPTV_WAN_INTERFACE"], value.WAN.Interface)
 	if vlan, parseErr := strconv.Atoi(fallback(values["IPTV_WAN_VLAN"], "4")); parseErr == nil {
 		value.WAN.VLAN = vlan

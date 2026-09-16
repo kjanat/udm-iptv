@@ -53,6 +53,13 @@ var embeddedCatalogSchema []byte
 
 const catalogSchemaURL = "https://raw.githubusercontent.com/kjanat/udm-iptv/refs/heads/go/internal/config/profiles.schema.json"
 
+const (
+	// profileCustom marks a configuration with no matching provider profile.
+	profileCustom = "custom"
+	// profileLegacy marks a configuration imported from the legacy shell format.
+	profileLegacy = "legacy"
+)
+
 var errCatalogReference = errors.New("catalog reference")
 
 type catalogDocument struct {
@@ -283,7 +290,7 @@ func (definition profileDefinition) resolve(id string) Profile {
 func Profiles() []Profile {
 	known := embedded().Profiles
 	result := make([]Profile, 0, 1+len(known))
-	result = append(result, Profile{ID: "custom", Name: "Custom", Config: Default()})
+	result = append(result, Profile{ID: profileCustom, Name: "Custom", Config: Default()})
 	result = append(result, known...)
 	sort.Slice(result, func(left, right int) bool { return result[left].Name < result[right].Name })
 
@@ -295,7 +302,7 @@ func Profiles() []Profile {
 // If the ID corresponds to a known profile, it returns that profile.
 // If the ID is unknown, it returns false.
 func ProfileByID(id string) (Profile, bool) {
-	if id == "custom" || id == "legacy" {
+	if id == profileCustom || id == profileLegacy {
 		return Profile{ID: id, Name: "Custom"}, true
 	}
 
@@ -308,7 +315,7 @@ func ProfileByID(id string) (Profile, bool) {
 // preserving the telemetry setting from the current configuration.
 // If the ID is unknown, it returns an error.
 func FromProfile(id string, current Config) (Config, error) {
-	if id == "custom" || id == "legacy" {
+	if id == profileCustom || id == profileLegacy {
 		current.Profile = id
 
 		return current, nil

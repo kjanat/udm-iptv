@@ -34,6 +34,8 @@ func run() error {
 const (
 	catalogClientTimeout  = 15 * time.Minute
 	catalogRequestTimeout = 45 * time.Second
+	// operationBuild names the subcommand that builds firmware test images.
+	operationBuild = "build"
 )
 
 func command() *cobra.Command {
@@ -65,7 +67,7 @@ func command() *cobra.Command {
 	}}
 	published.Flags().StringVar(&output, "output", "", "Append matrix to GitHub output file.")
 	root.AddCommand(published)
-	for _, operation := range []string{"build", "publish"} {
+	for _, operation := range []string{operationBuild, "publish"} {
 		var model, releases, cache string
 		cmd := &cobra.Command{Use: operation, Short: operation + " firmware images.", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) (result error) {
 			var pair []firmware.Release
@@ -82,7 +84,7 @@ func command() *cobra.Command {
 				}
 			}()
 			pipeline.Images = engine
-			if operation == "build" {
+			if operation == operationBuild {
 				return pipeline.Build(cmd.Context(), image, model, cache, pair)
 			}
 
@@ -90,7 +92,7 @@ func command() *cobra.Command {
 		}}
 		cmd.Flags().StringVar(&model, "model", os.Getenv("MODEL"), "Router model.")
 		cmd.Flags().StringVar(&releases, "releases", os.Getenv("FIRMWARES"), "Firmware pair JSON.")
-		if operation == "build" {
+		if operation == operationBuild {
 			cmd.Flags().StringVar(&cache, "cache", os.Getenv("CACHE"), "Extraction workspace.")
 		}
 		root.AddCommand(cmd)

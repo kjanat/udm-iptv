@@ -16,6 +16,11 @@ import (
 // firmwareVersionLimit bounds the read from /usr/lib/version, a one-line file.
 const firmwareVersionLimit = 64
 
+const (
+	commandConfigure = "configure"
+	commandInstall   = "install"
+)
+
 func setTelemetryMetadata(reporter *telemetry.Reporter, value config.Config) {
 	firmware := ""
 	if file, err := os.Open("/usr/lib/version"); err == nil {
@@ -30,7 +35,7 @@ func (application *Application) instrumentCommands(root *cobra.Command) {
 	for _, command := range root.Commands() {
 		application.instrumentCommands(command)
 		switch command.Name() {
-		case "configure", "install", "upgrade", "restart", "uninstall", "daemon", "dhcp-hook":
+		case commandConfigure, commandInstall, "upgrade", "restart", "uninstall", "daemon", "dhcp-hook":
 		default:
 			continue
 		}
@@ -39,19 +44,19 @@ func (application *Application) instrumentCommands(root *cobra.Command) {
 			continue
 		}
 		command.RunE = func(command *cobra.Command, args []string) error {
-			if command.Name() == "configure" && command.Flags().Changed("telemetry") {
+			if command.Name() == commandConfigure && command.Flags().Changed("telemetry") {
 				if enabled, _ := command.Flags().GetBool("telemetry"); !enabled {
 					return run(command, args)
 				}
 			}
-			if command.Name() == "install" {
+			if command.Name() == commandInstall {
 				if dryRun, _ := command.Flags().GetBool("dry-run"); dryRun {
 					return run(command, args)
 				}
 			}
 			// Reporting after the command also covers first installation and a
 			// previously disabled user enabling reporting in the wizard.
-			if command.Name() == "configure" || command.Name() == "install" {
+			if command.Name() == commandConfigure || command.Name() == commandInstall {
 				application.reportConfig, application.reportApplied = nil, false
 				defer func() { application.reportSavedConfiguration(command) }()
 			}

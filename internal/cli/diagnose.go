@@ -21,8 +21,14 @@ import (
 	"github.com/kjanat/udm-iptv/internal/ui"
 )
 
+const (
+	formatText  = "text"
+	formatJSONL = "jsonl"
+	formatBoth  = "both"
+)
+
 func (application *Application) diagnoseCommand() *cobra.Command {
-	options := diagnostics.Options{Format: "text", Verbosity: "normal"}
+	options := diagnostics.Options{Format: formatText, Verbosity: "normal"}
 	command := &cobra.Command{
 		Use: "diagnose", Short: "Collect privacy-conscious IPTV diagnostics", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -36,7 +42,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if options.Format == "jsonl" {
+				if options.Format == formatJSONL {
 					return json.NewEncoder(application.Out).Encode(diagnostics.Event{Time: value.Timestamp, Type: "snapshot", Snapshot: &value})
 				}
 
@@ -60,7 +66,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 		if options.Capture > 0 && options.Capture < time.Second {
 			return errors.New("capture duration must be at least 1s")
 		}
-		if options.Format != "text" && options.Format != "jsonl" && options.Format != "both" {
+		if options.Format != formatText && options.Format != formatJSONL && options.Format != formatBoth {
 			return fmt.Errorf("unknown format %q", options.Format)
 		}
 		if options.Verbosity != "summary" && options.Verbosity != "normal" && options.Verbosity != "debug" {
@@ -69,7 +75,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 		if options.Follow && options.Capture == 0 {
 			return errors.New("--follow requires --capture")
 		}
-		if options.Capture == 0 && options.Format == "both" {
+		if options.Capture == 0 && options.Format == formatBoth {
 			return errors.New("--format both requires --capture")
 		}
 		if options.FollowFile != "" && (command.Flags().Changed("capture") || options.Follow) {
@@ -99,11 +105,11 @@ func (application *Application) startCapture(options diagnostics.Options) error 
 	}
 	base := filepath.Join(directory, "udm-iptv-"+stamp+"-"+strconv.Itoa(os.Getpid()))
 	var paths []string
-	if options.Format == "text" || options.Format == "both" {
+	if options.Format == formatText || options.Format == formatBoth {
 		options.TextPath = base + ".txt"
 		paths = append(paths, options.TextPath)
 	}
-	if options.Format == "jsonl" || options.Format == "both" {
+	if options.Format == formatJSONL || options.Format == formatBoth {
 		options.JSONPath = base + ".jsonl"
 		paths = append(paths, options.JSONPath)
 	}
@@ -150,13 +156,13 @@ func (application *Application) startCapture(options diagnostics.Options) error 
 	if err := writef(application.Out, "Expected completion: %s (%s from now).\n", completion.Format(time.RFC3339), options.Capture.Round(time.Second)); err != nil {
 		return err
 	}
-	if options.Format == "text" || options.Format == "both" {
+	if options.Format == formatText || options.Format == formatBoth {
 		err := writef(application.Out, "Share-ready text: %s\n", options.TextPath)
 		if err != nil {
 			return err
 		}
 	}
-	if options.Format == "jsonl" || options.Format == "both" {
+	if options.Format == formatJSONL || options.Format == formatBoth {
 		err := writef(application.Out, "Structured JSON Lines: %s\n", options.JSONPath)
 		if err != nil {
 			return err
@@ -192,7 +198,7 @@ func (application *Application) diagnoseWorkerCommand() *cobra.Command {
 	flags := command.Flags()
 	flags.DurationVar(&options.Capture, "duration", 0, "capture duration")
 	flags.StringVar(&options.Verbosity, "verbosity", "normal", "capture verbosity")
-	flags.StringVar(&options.Format, "format", "text", "capture format")
+	flags.StringVar(&options.Format, "format", formatText, "capture format")
 	flags.StringVar(&options.TextPath, "text", "", "text output")
 	flags.StringVar(&options.JSONPath, "jsonl", "", "JSON Lines output")
 	_ = command.MarkFlagRequired("duration")

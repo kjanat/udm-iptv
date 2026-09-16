@@ -11,6 +11,10 @@ import (
 // sysfsValueLimit bounds a sysfs attribute read; these files hold one short token.
 const sysfsValueLimit = 64
 
+// notChecked marks a status field the collector deliberately left unverified,
+// distinct from a value known to be disabled or unhealthy.
+const notChecked = "not checked"
+
 type downstreamStatus struct {
 	Interface string `json:"interface"`
 	Link      string `json:"link"`
@@ -25,7 +29,7 @@ func inspectDownstream(system fs.FS, interfaces []string) []downstreamStatus {
 	read := func(name string, choices map[string]string) string {
 		file, err := system.Open(name)
 		if err != nil {
-			return "not checked"
+			return notChecked
 		}
 		defer closeIgnoringError(file)
 		data, err := io.ReadAll(io.LimitReader(file, sysfsValueLimit))
@@ -35,7 +39,7 @@ func inspectDownstream(system fs.FS, interfaces []string) []downstreamStatus {
 			}
 		}
 
-		return "not checked"
+		return notChecked
 	}
 	for _, name := range interfaces {
 		base := path.Join("class/net", name)
