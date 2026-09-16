@@ -221,6 +221,26 @@ func validInterface(name string) bool {
 	return name != "." && name != ".." && interfacePattern.MatchString(name)
 }
 
+// Clone returns a copy whose slices no longer alias value's.
+func (value Config) Clone() Config {
+	value.WAN.DHCPOptions = slices.Clone(value.WAN.DHCPOptions)
+	value.WAN.NATDestinations = slices.Clone(value.WAN.NATDestinations)
+	value.WAN.StaticRoutes = slices.Clone(value.WAN.StaticRoutes)
+	value.Proxy.SourceRanges = slices.Clone(value.Proxy.SourceRanges)
+	value.LAN.Interfaces = slices.Clone(value.LAN.Interfaces)
+
+	return value
+}
+
+// ValidateInterfaceName reports whether name is a usable Linux interface name.
+func ValidateInterfaceName(name string) error {
+	if !validInterface(name) {
+		return fmt.Errorf("%q is not a valid Linux interface name", name)
+	}
+
+	return nil
+}
+
 // ImportLegacy converts the former shell configuration without executing it.
 func ImportLegacy(path string) (Config, error) {
 	data, err := os.ReadFile(path)
@@ -264,7 +284,7 @@ func ImportLegacy(path string) (Config, error) {
 	if options, found := values["IPTV_WAN_DHCP_OPTIONS"]; found {
 		value.WAN.DHCPOptions = strings.Fields(options)
 	}
-	value.WAN.AllowDefaultRoute = value.WAN.DHCP && !slicesContains(strings.Fields(values["NO_GATEWAY"]), value.WAN.Interface)
+	value.WAN.AllowDefaultRoute = value.WAN.DHCP && !slices.Contains(strings.Fields(values["NO_GATEWAY"]), value.WAN.Interface)
 	value.WAN.StaticAddress = values["IPTV_WAN_STATIC_IP"]
 	if destinations, found := values["IPTV_WAN_RANGES"]; found {
 		value.WAN.NATDestinations = normalizeLegacyPrefixes(strings.Fields(destinations))
@@ -326,8 +346,4 @@ func mergePrefixes(groups ...[]string) []string {
 	}
 
 	return result
-}
-
-func slicesContains(values []string, wanted string) bool {
-	return slices.Contains(values, wanted)
 }

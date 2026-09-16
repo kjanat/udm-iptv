@@ -66,6 +66,7 @@ list-mode = "strict"
 allow     = [
   "$gostd",
   "charm.land/",
+  "github.com/charmbracelet/",
   "github.com/coreos/",
   "github.com/getsentry/",
   "github.com/godbus/",
@@ -73,7 +74,7 @@ allow     = [
   "github.com/kjanat/",
   "github.com/moby/",
   "github.com/opencontainers/",
-  "github.com/santhosh-tekuri/jsonschema/",
+  "github.com/santhosh-tekuri/",
   "github.com/spf13/",
   "github.com/vishvananda/",
   "golang.org/x/",
@@ -114,6 +115,9 @@ ignore-tests         = true
 # from validated config or literal binary names — never from untrusted
 # network input, so these taint-analysis codes are structurally noisy here.
 excludes = ["G204", "G304", "G702"]
+
+[linters.settings.mnd]
+ignored-numbers = ["2", "100"]
 
 [linters.settings.staticcheck]
 checks = ["all"]

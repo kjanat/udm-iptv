@@ -309,24 +309,38 @@ func ProfileByID(id string) (Profile, bool) {
 	return embedded().Profile(id)
 }
 
-// FromProfile returns a configuration based on the specified provider profile ID.
-// If the ID is "custom" or "legacy", it returns the provided current configuration.
-// If the ID corresponds to a known profile, it returns the configuration for that profile,
-// preserving the telemetry setting from the current configuration.
-// If the ID is unknown, it returns an error.
+// FromProfile applies the profile ID to current using the embedded catalog.
 func FromProfile(id string, current Config) (Config, error) {
+	return embedded().Apply(id, current)
+}
+
+// Apply returns current re-labelled for "custom" or "legacy", or a fresh copy
+// of the named profile's settings that keeps current's telemetry choice.
+func (catalog Catalog) Apply(id string, current Config) (Config, error) {
 	if id == profileCustom || id == profileLegacy {
 		current.Profile = id
 
 		return current, nil
 	}
-	if value, found := embedded().Profile(id); found {
-		value.Config.Telemetry = current.Telemetry
+	profile, found := catalog.Profile(id)
+	if !found {
+		return Config{}, fmt.Errorf("unknown provider profile %q", id)
+	}
+	value := profile.Config.Clone()
+	value.Telemetry = current.Telemetry
 
-		return value.Config, nil
+	return value, nil
+}
+
+// Country looks up a market by ISO code.
+func (catalog Catalog) Country(code string) (Country, bool) {
+	for _, country := range catalog.Countries {
+		if country.Code == code {
+			return country, true
+		}
 	}
 
-	return Config{}, fmt.Errorf("unknown provider profile %q", id)
+	return Country{}, false
 }
 
 // InferLegacyProfile recognizes a provider only when every provider-specific

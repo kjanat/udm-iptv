@@ -85,7 +85,7 @@ func TestLANNetworkSelection(t *testing.T) {
 		t.Fatal("selected networks asked for manual names")
 	}
 
-	groups, selected = lanGroups(nil, nil)
+	groups, _ = lanGroups(nil, nil)
 	if len(groups) != 1 {
 		t.Fatalf("manual entry became a page: %d pages", len(groups))
 	}

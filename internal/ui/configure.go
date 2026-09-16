@@ -26,6 +26,8 @@ const (
 	selectChrome = 4
 	// igmpVersion2 is IGMPv2, the compatibility fallback next to the recommended v3.
 	igmpVersion2 = 2
+	// reviewQuestions is the one confirmation the wizard ends with.
+	reviewQuestions = 1
 )
 
 func newFormValues(value config.Config) formValues {
@@ -70,7 +72,7 @@ func (chosen selection) profile() string {
 
 func startingSelection(catalog config.Catalog, current, suggestion string) selection {
 	if provider, found := catalog.ProviderByID(suggestion); found {
-		return selection{country: provider.Countries[0], choice: choiceOf(provider.ID, provider.Profiles[0])}
+		return selection{country: provider.Countries[0], choice: choiceOf(provider.ID, catalog.ProfilesOf(provider.ID)[0].ID)}
 	}
 	if country, provider, found := catalog.Locate(current); found {
 		return selection{country: country, choice: choiceOf(provider, current)}
@@ -88,10 +90,8 @@ func providersFor(catalog config.Catalog, country string) []config.Provider {
 }
 
 func countryName(catalog config.Catalog, code string) string {
-	for _, country := range catalog.Countries {
-		if country.Code == code {
-			return country.Name
-		}
+	if country, found := catalog.Country(code); found {
+		return country.Name
 	}
 
 	return code
@@ -177,23 +177,16 @@ func chooseProfile(ctx context.Context, catalog config.Catalog, run RunForm, cho
 }
 
 // applyProfile replaces the draft with the chosen profile's settings, keeping
-// the telemetry choice.
+// the telemetry choice. Re-choosing the current profile keeps the draft.
 func applyProfile(catalog config.Catalog, value *config.Config, profileID string) error {
 	if profileID == value.Profile {
 		return nil
 	}
-	if profileID == "custom" {
-		value.Profile = "custom"
-
-		return nil
+	applied, err := catalog.Apply(profileID, *value)
+	if err != nil {
+		return err
 	}
-	profile, found := catalog.Profile(profileID)
-	if !found {
-		return fmt.Errorf("unknown provider profile %q", profileID)
-	}
-	selected := clone(profile.Config)
-	selected.Telemetry = value.Telemetry
-	*value = selected
+	*value = applied
 
 	return nil
 }
@@ -248,9 +241,8 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, catalog confi
 	draft := clone(*value)
 	value = &draft
 	chosen := startingSelection(catalog, value.Profile, suggestion)
-	fields := newFormValues(*value)
-	estimate := configurationPages(value, ports, "", &fields)
-	remaining := wizardForm(estimate...).visibleFields() + 1
+	estimate, _ := settingsForm(catalog, value, ports, 0)
+	remaining := estimate.visibleFields() + reviewQuestions
 	stage, start, asked := stageChain, 0, 0
 	var settings *Wizard
 	var apply func() error
@@ -433,20 +425,11 @@ func telemetryConsent(settings *config.Telemetry) huh.Field {
 }
 
 func clone(value config.Config) config.Config {
-	value.WAN.DHCPOptions = slices.Clone(value.WAN.DHCPOptions)
-	value.WAN.NATDestinations = slices.Clone(value.WAN.NATDestinations)
-	value.WAN.StaticRoutes = slices.Clone(value.WAN.StaticRoutes)
-	value.Proxy.SourceRanges = slices.Clone(value.Proxy.SourceRanges)
-	value.LAN.Interfaces = slices.Clone(value.LAN.Interfaces)
-
-	return value
+	return value.Clone()
 }
 
 func validateInterface(name string) error {
-	value := config.Default()
-	value.WAN.Interface = name
-
-	return value.Validate()
+	return config.ValidateInterfaceName(name)
 }
 
 func splitList(value string) []string {
