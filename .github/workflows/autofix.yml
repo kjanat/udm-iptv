@@ -1,31 +1,28 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+---
 name: autofix.ci
-on:
-  push: { branches: [master] }
-  pull_request: null
-
+on: { push: { branches: [master] }, pull_request: null }
 permissions: { contents: read }
-
 jobs:
   autofix:
     runs-on: ubuntu-latest
     if: github.event.pull_request.stack == null
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # Without this action, dprint has to recompile the wasm plugins each time the action runs,
-      # which is often, and wastes time, energy, and sanity.
-      - uses: kjanat/install-dprint@fc7e4f62965bab609a936c9e58ad4893bb9da961 # v2
-      - { uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e, with: { go-version-file: go.mod } } # v7
+      - parallel:
+          - uses: tombi-toml/setup-tombi@ea139001852855a7f1cf30a9b60c71ebb6446a99 # v1.5.5
+          - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+            with: { version-file: .tool-versions, install-only: true }
+          - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+            with: { go-version-file: go.mod }
+          - uses: kjanat/dprint-check@v3 # Without this action, dprint has to recompile the wasm plugins each time the action runs, which is often, and wastes time, energy, and sanity.
+            with: { install-only: true }
       - name: x/tools/go/analysis modernize
         run: go run golang.org/x/tools/go/analysis/passes/modernize/cmd/modernize@latest -fix ./...
       - name: format the code
-        # autofix-ci will fail if the .github directory is touched
-        run: dprint fmt --allow-no-files --diff --excludes .github
-      - name: Setup Golangci-Lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with: { version: latest, install-only: true }
-      - run: golangci-lint fmt
+        run: dprint fmt --allow-no-files --diff --excludes .github # autofix-ci will fail if the .github directory is touched
       - uses: autofix-ci/action@c5b2d67aa2274e7b5a18224e8171550871fc7e4a # v1
         with:
-          comment: Applied automated formatting and modernization fixes. Please review the generated commit.
+          comment: Applied automated formatting/modernization. Please review the generated commit.
           commit-message: Apply automated formatting and modernization fixes
           fail-fast: ${{ github.event_name == 'pull_request' }}

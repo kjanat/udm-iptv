@@ -41,7 +41,7 @@ func (application *Application) configureCommand() *cobra.Command {
 	var dhcp, allowDefaultRoute, quickLeave, debug bool
 	telemetryOptions := config.Default().Telemetry
 	command := &cobra.Command{
-		Use:     "configure",
+		Use:     commandConfigure,
 		Aliases: []string{"reconfigure"},
 		Short:   "Configure IPTV",
 		Args:    cobra.NoArgs,

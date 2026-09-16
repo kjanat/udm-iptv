@@ -85,6 +85,28 @@ forbid = [                                                                      
   { pattern = "^os\\.WriteFile$", msg = "use atomicfile.Write so a crash never leaves a partial file" },
 ]
 
+[linters.settings.goconst]
+ignore-string-values = [
+  "build",
+  "completed",
+  "custom",
+  "daemon",
+  "exec",
+  "firmware",
+  "freedom",
+  "igmpproxy",
+  "image",
+  "improxy",
+  "kpn",
+  "log",
+  "publish",
+  "timeout",
+  "tweak",
+  "unknown",
+  "xs4all",
+]
+ignore-tests         = true
+
 [linters.settings.gosec]
 # udm-iptv is a local CLI/daemon administered by its own operator: file
 # paths come from --config/--output/--text flags or discovered system state

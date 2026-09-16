@@ -1,3 +1,5 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+---
 name: CI
 on:
   pull_request:
@@ -11,8 +13,11 @@ on:
       artifact:
         description: Validated binaries and Debian package.
         value: ${{ jobs.build.outputs.artifact }}
-concurrency: { group: "ci-${{ github.event.pull_request.number || github.ref }}", cancel-in-progress: true }
-permissions: { contents: read }
+  workflow_run:
+    workflows: [autofix.ci]
+    types: [completed]
+concurrency: { group: "ci-${{ github.event.pull_request.number || github.ref }}", queue: single }
+permissions: { contents: &r read }
 jobs:
   build:
     uses: $/.github/workflows/build.yml
@@ -34,6 +39,11 @@ jobs:
         }
       - name: Test Go
         run: go test -race ./...
+
+  actionlint:
+    name: Lint GitHub Actions workflows
+    runs-on: ubuntu-latest
+    steps: [*Checkout, { uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 }] # v1.17
 
   integration:
     name: Integration (${{ matrix.package }})
@@ -59,22 +69,37 @@ jobs:
         env: { TEST: "${{ matrix.test }}" }
         run: sudo "${RUNNER_TEMP}/integration.test" -test.run "^${TEST}$" -test.v
 
+  fmt:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - *Checkout
+      - *Go
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with: { version-file: &TV .tool-versions, install-only: true }
+      - uses: tombi-toml/setup-tombi@ea139001852855a7f1cf30a9b60c71ebb6446a99 # v1.5.5
+      - name: Check formatting
+        uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3
+
   lint:
     name: Lint and vulnerabilities
     runs-on: ubuntu-latest
+    permissions: { contents: *r, pull-requests: *r }
     steps:
       - *Checkout
       - *Go
       - parallel:
-          - name: Check formatting
-            uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3
-          - name: Lint workflows
-            uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 # v1.17
           - name: Vet Go
             run: go vet -tags firmware ./...
           - name: Lint Go
             uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-            with: { version: latest, args: --build-tags firmware }
+            with: {
+              version-file: *TV,
+              args: "--build-tags firmware",
+              only-new-issues: "${{ github.repository_owner != github.event.pull_request.head.repo.owner.login }}",
+            }
           - name: Check Go vulnerabilities
             run: go tool govulncheck ./...
           - name: Lint shell scripts
@@ -123,7 +148,7 @@ jobs:
   catalog:
     name: Resolve published firmware
     runs-on: ubuntu-latest
-    permissions: { contents: read, packages: read }
+    permissions: { contents: *r, packages: *r }
     outputs: { matrix: "${{ steps.catalog.outputs.matrix }}" }
     steps:
       - *Checkout

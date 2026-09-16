@@ -99,7 +99,7 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		Network:    inspectLink(network.Target(value)),
 		Downstream: inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces),
 	}
-	result.Switches, result.NativeProxy, result.Playback = "not checked", "not checked", "not checked"
+	result.Switches, result.NativeProxy, result.Playback = notChecked, notChecked, notChecked
 	if state, stateErr := service.ReadRuntimeState(); stateErr == nil {
 		result.Service.Proxy = state.Proxy
 		result.Service.ProxyPID = state.ProxyPID

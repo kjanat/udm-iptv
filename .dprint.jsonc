@@ -1,6 +1,7 @@
 {
 	"$schema": "https://dprint.dev/schemas/v0.json",
 	"useTabs": true,
+	"incremental": true,
 	"excludes": ["dist/**", "**/vendor"],
 	"json": {},
 	"jsonSchemaSort": {
@@ -37,8 +38,9 @@
 				"cacheKeyFiles": ["tombi.toml"]
 			},
 			{
-				"command": "gofmt -s",
-				"exts": ["go"]
+				"command": "golangci-lint fmt --stdin",
+				"exts": ["go"],
+				"cacheKeyFiles": [".golangci.toml"],
 			}
 		]
 	},

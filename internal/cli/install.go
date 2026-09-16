@@ -68,7 +68,7 @@ type installDependencies struct {
 func (application *Application) installCommandWith(deps installDependencies) *cobra.Command {
 	var nonInteractive, replace, dryRun bool
 	command := &cobra.Command{
-		Use:   "install",
+		Use:   commandInstall,
 		Short: "Install the persistent service on this console",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {

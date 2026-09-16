@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://www.schemastore.org/dependabot-2.0.json
-# Set update schedule for GitHub Actions
 ---
+# Set update schedule for GitHub Actions
 version: 2
 updates:
   - package-ecosystem: gomod
