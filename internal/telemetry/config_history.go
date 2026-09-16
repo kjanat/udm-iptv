@@ -271,9 +271,11 @@ func (r *Reporter) Feedback(answer, provider string) error {
 	if answer != "working" && answer != "problems" && answer != "not-using" {
 		return errors.New("choose working, problems or not-using")
 	}
-	if provider != "" && provider != "xs4all" && provider != "freedom" {
-		if _, ok := config.ProfileByID(provider); !ok {
-			return errors.New("unknown provider; use a profile ID, xs4all or freedom")
+	if provider != "" {
+		_, isProfile := config.ProfileByID(provider)
+		_, isProvider := config.DefaultCatalog().ProviderByID(provider)
+		if !isProfile && !isProvider {
+			return errors.New("unknown provider; use a provider or profile ID")
 		}
 	}
 	if !r.researchEnabled() {

@@ -3,7 +3,17 @@
 	"useTabs": true,
 	"excludes": ["dist/**", "**/vendor"],
 	"json": {},
-	"markdown": { "emphasisKind": "asterisks", "lineWidth": 100, "textWrap": "maintain" },
+	"jsonSchemaSort": {
+		"associations": [
+			"**/schema.json",
+			"**/*.schema.json"
+		]
+	},
+	"markdown": {
+		"emphasisKind": "asterisks",
+		"lineWidth": 100,
+		"textWrap": "maintain"
+	},
 	"shfmt": {
 		"useTabs": true,
 		"binaryNextLine": true,
@@ -33,6 +43,7 @@
 		]
 	},
 	"plugins": [
+		"https://plugins.dprint.dev/kjanat/json-schema-sort-0.1.2.wasm",
 		"https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
 		"npm:@dprint/json@0.24.0",
 		"npm:@dprint/markdown@0.24.0",

@@ -17,19 +17,22 @@ func TestSuggestedProviderIsDraftUntilReview(t *testing.T) {
 		value := config.Default()
 		original := clone(value)
 		calls := 0
-		err := ConfigureSuggested(context.Background(), &value, config.Profiles(), func(_ context.Context, wizard *Wizard) error {
+		err := ConfigureSuggested(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {
 			form := wizard.Form
 			calls++
-			if calls == 1 && form.GetFocusedField().GetValue() != "tweak" {
+			if calls == 1 && form.GetFocusedField().GetValue() != "NL" {
+				t.Fatal("suggested country not preselected")
+			}
+			if calls == 2 && form.GetFocusedField().GetValue() != "tweak" {
 				t.Fatal("suggestion not preselected")
 			}
-			if calls == 3 && !accept {
+			if calls == 4 && !accept {
 				return huh.ErrUserAborted
 			}
 
 			return nil
 		}, "tweak")
-		if calls != 3 {
+		if calls != 4 {
 			t.Fatalf("missing review: %d calls", calls)
 		}
 		if accept {
@@ -46,10 +49,10 @@ func TestReviewDeclinePreservesConfiguration(t *testing.T) {
 	value := config.Default()
 	original := clone(value)
 	calls := 0
-	err := Configure(context.Background(), &value, config.Profiles(), func(_ context.Context, wizard *Wizard) error {
+	err := Configure(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {
 		form := wizard.Form
 		calls++
-		if calls == 3 {
+		if calls == 4 {
 			field := form.GetFocusedField()
 			field.Focus()
 			_, _ = field.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
@@ -66,10 +69,11 @@ func TestProviderSuggestionCanBeOverridden(t *testing.T) {
 	value := config.Default()
 	chosen := ""
 	calls := 0
-	err := ConfigureSuggested(t.Context(), &value, config.Profiles(), func(_ context.Context, wizard *Wizard) error {
+	catalog := config.DefaultCatalog()
+	err := ConfigureSuggested(t.Context(), &value, catalog, func(_ context.Context, wizard *Wizard) error {
 		form := wizard.Form
 		calls++
-		if calls == 1 {
+		if calls == 2 {
 			field := form.GetFocusedField()
 			field.Focus()
 			_, _ = field.Update(tea.KeyPressMsg{Code: tea.KeyUp})
@@ -82,7 +86,7 @@ func TestProviderSuggestionCanBeOverridden(t *testing.T) {
 
 		return nil
 	}, "tweak")
-	if err != nil || chosen == "tweak" || value.Profile != chosen {
+	if err != nil || chosen == "tweak" || value.Profile != catalog.ProfilesOf(chosen)[0].ID {
 		t.Fatalf("manual selection lost: %s, %v", chosen, err)
 	}
 }

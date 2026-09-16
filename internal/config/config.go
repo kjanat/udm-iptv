@@ -30,13 +30,6 @@ const (
 	hostPrefixBits = 32
 )
 
-// kpnDHCPOptions and kpnNATDestinations are shared by Default and the "kpn"
-// and "solcon" entries in profiles.go, which use identical values.
-var (
-	kpnDHCPOptions     = []string{"-O", "staticroutes", "-V", "IPTV_RG"}
-	kpnNATDestinations = []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"}
-)
-
 // Config is the persisted configuration file format. It is a superset of the
 // legacy shell configuration, which is imported and converted to this format.
 type Config struct {
@@ -105,7 +98,9 @@ func genericBase() Config {
 // Default is the kpn profile applied to the generic base: KPN is the primary
 // market and the config a fresh install starts from before the wizard runs.
 func Default() Config {
-	return profileDefinitions["kpn"].resolve("kpn").Config
+	kpn, _ := embedded().Profile("kpn")
+
+	return kpn.Config
 }
 
 // Load reads and validates the configuration file at path.
@@ -290,9 +285,9 @@ func ImportLegacy(path string) (Config, error) {
 	}
 	if profile, found := InferLegacyProfile(value); found {
 		value.Profile = profile
-		known := profiles[profile].Config
-		value.WAN.NATDestinations = append([]string(nil), known.WAN.NATDestinations...)
-		value.Proxy.SourceRanges = mergePrefixes(known.Proxy.SourceRanges, legacyLANSources)
+		known, _ := embedded().Profile(profile)
+		value.WAN.NATDestinations = append([]string(nil), known.Config.WAN.NATDestinations...)
+		value.Proxy.SourceRanges = mergePrefixes(known.Config.Proxy.SourceRanges, legacyLANSources)
 	}
 
 	return value, value.Validate()

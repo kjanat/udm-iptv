@@ -1,9 +1,16 @@
 package config
 
 import (
+	"bytes"
+	_ "embed"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
+	"sync"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // Profile represents a provider profile with its ID, name, note,
@@ -15,141 +22,258 @@ type Profile struct {
 	Config Config
 }
 
-// profileDefinition holds the definition of a provider profile,
-// including its name, WAN configuration, source ranges,
-// and an optional note.
+// Country is a market with at least one provider.
+type Country struct {
+	Code      string
+	Name      string
+	LocalName string
+}
+
+// Provider is a brand a subscriber recognizes; it maps to one or more profiles.
+type Provider struct {
+	ID        string
+	Name      string
+	Countries []string
+	Profiles  []string
+}
+
+// Catalog is the country → provider → profile hierarchy the wizard walks.
+// Slices are sorted by display name.
+type Catalog struct {
+	Countries []Country
+	Providers []Provider
+	Profiles  []Profile
+}
+
+//go:embed profiles.json
+var embeddedCatalog []byte
+
+//go:embed profiles.schema.json
+var embeddedCatalogSchema []byte
+
+const catalogSchemaURL = "https://raw.githubusercontent.com/kjanat/udm-iptv/refs/heads/go/internal/config/profiles.schema.json"
+
+var errCatalogReference = errors.New("catalog reference")
+
+type catalogDocument struct {
+	Schema        string                        `json:"$schema"`
+	SchemaVersion int                           `json:"schemaVersion"`
+	Countries     map[string]countryDefinition  `json:"countries"`
+	Providers     map[string]providerDefinition `json:"providers"`
+	Profiles      map[string]profileDefinition  `json:"profiles"`
+}
+
+type countryDefinition struct {
+	Name      string `json:"name"`
+	LocalName string `json:"localName"`
+}
+
+type providerDefinition struct {
+	Name      string   `json:"name"`
+	Countries []string `json:"countries"`
+	Profiles  []string `json:"profiles"`
+}
+
 type profileDefinition struct {
-	Name    string
-	WAN     WAN
-	Sources []string
-	Note    string
+	Name         string     `json:"name"`
+	Note         string     `json:"note"`
+	WAN          profileWAN `json:"wan"`
+	SourceRanges []string   `json:"sourceRanges"`
 }
 
-const (
-	// vlanVivoSP is the IPTV VLAN Vivo assigns in São Paulo, Brazil.
-	vlanVivoSP = 20
-	// vlanVivoGVT is the IPTV VLAN Vivo assigns on its former GVT network.
-	vlanVivoGVT = 4000
-)
-
-var profileDefinitions = map[string]profileDefinition{
-	"bt": {
-		Name: "BT (GB)",
-		WAN: WAN{
-			VLAN: 0, DHCP: false, StaticAddress: "10.20.30.1/24",
-			NATDestinations: []string{"109.159.247.0/24"},
-		},
-		Sources: []string{"224.0.0.0/4", "109.159.247.0/24"},
-	},
-	"init7": {
-		Name: "Init7 (CH)",
-		WAN: WAN{
-			VLAN: 0, DHCP: false, NATDestinations: []string{"77.109.128.0/19"},
-		},
-		Sources: []string{"224.0.0.0/8", "239.77.0.0/16", "77.109.128.0/19", "233.50.230.0/24"},
-	},
-	"kpn": {
-		Name: "KPN / XS4ALL / Freedom (NL)",
-		WAN: WAN{
-			VLAN: DefaultKPNVLAN, DHCP: true, DHCPOptions: kpnDHCPOptions,
-			NATDestinations: kpnNATDestinations,
-		},
-		Sources: kpnNATDestinations,
-	},
-	"magentatv": {
-		Name: "MagentaTV (DE)",
-		WAN: WAN{
-			Interface: "ppp0", VLAN: 0, DHCP: false,
-			NATDestinations: []string{"87.141.0.0/16", "193.158.0.0/15"},
-		},
-		Sources: []string{"224.0.0.0/4", "87.141.0.0/16", "193.158.0.0/15"},
-	},
-	"meo": {
-		Name: "MEO (PT)",
-		WAN: WAN{
-			VLAN: 0, DHCP: false,
-			NATDestinations: []string{"10.159.0.0/16", "10.173.0.0/16", "194.65.46.0/23", "213.13.16.0/20"},
-		},
-		Sources: []string{"10.159.0.0/16", "10.173.0.0/16", "194.65.46.0/23", "213.13.16.0/20", "224.0.0.0/4"},
-	},
-	"posttv": {
-		Name: "PostTV (LU)",
-		WAN: WAN{
-			Interface: "eth8.35", VLAN: 0, DHCP: false, StaticAddress: "10.10.10.10/32",
-			NATDestinations: []string{"172.19.9.0/24"},
-		},
-		Sources: []string{"172.19.9.0/24"},
-	},
-	"solcon": {
-		Name: "Solcon (NL)",
-		WAN: WAN{
-			VLAN: DefaultKPNVLAN, DHCP: true, DHCPOptions: kpnDHCPOptions,
-			NATDestinations: []string{"10.0.0.0/8", "10.252.0.0/16", "10.253.0.0/16", "217.166.0.0/16"},
-		},
-		Sources: []string{"10.0.0.0/8", "10.252.0.0/16", "10.253.0.0/16", "217.166.0.0/16"},
-	},
-	"swisscom": {
-		Name: "Swisscom (CH)",
-		WAN: WAN{
-			VLAN: 0, DHCP: false, NATDestinations: []string{"195.186.0.0/16", "213.3.72.0/24"},
-		},
-		Sources: []string{"195.186.0.0/16", "213.3.72.0/24", "224.0.0.0/4"},
-	},
-	"telenor": {
-		Name: "Telenor (NO)",
-		WAN: WAN{
-			VLAN: 0, DHCP: false, NATDestinations: []string{"93.91.111.0/24", "148.122.7.125/32"},
-		},
-		Sources: []string{"224.0.0.0/4", "93.91.111.0/24", "148.122.7.125/32"},
-	},
-	"tweak": {
-		Name: "Tweak (NL)",
-		WAN: WAN{
-			VLAN: DefaultKPNVLAN, DHCP: true, DHCPOptions: []string{"-O", "staticroutes"}, NATDestinations: []string{"0.0.0.0/0"},
-		},
-		Sources: []string{"0.0.0.0/0"},
-	},
-	"vivo": {
-		Name: "Vivo SP (BR)",
-		WAN: WAN{
-			VLAN: vlanVivoSP, DHCP: true,
-			NATDestinations: []string{"172.28.0.0/14", "201.0.52.0/23", "200.161.71.0/24", "177.16.0.0/16"},
-		},
-		Sources: []string{"172.28.0.0/14", "201.0.52.0/23", "200.161.71.0/24", "177.16.0.0/16"},
-		Note:    "IPTV DNS servers: 177.16.30.67 and 177.16.30.7.",
-	},
-	"vivogvt": {
-		Name: "Vivo GVT (BR)",
-		WAN: WAN{
-			VLAN: vlanVivoGVT, DHCP: false, StaticAddress: "10.0.0.1/32", NATDestinations: []string{"0.0.0.0/0"},
-		},
-		Sources: []string{"0.0.0.0/0"},
-	},
+type profileWAN struct {
+	Interface       string   `json:"interface"`
+	VLAN            int      `json:"vlan"`
+	DHCP            bool     `json:"dhcp"`
+	DHCPOptions     []string `json:"dhcpOptions"`
+	StaticAddress   string   `json:"staticAddress"`
+	NATDestinations []string `json:"natDestinations"`
 }
 
-var profiles = buildProfiles()
+var catalogSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
+	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(embeddedCatalogSchema))
+	if err != nil {
+		return nil, fmt.Errorf("parse catalog schema: %w", err)
+	}
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource(catalogSchemaURL, document); err != nil {
+		return nil, fmt.Errorf("register catalog schema: %w", err)
+	}
+	schema, err := compiler.Compile(catalogSchemaURL)
+	if err != nil {
+		return nil, fmt.Errorf("compile catalog schema: %w", err)
+	}
 
-func buildProfiles() map[string]Profile {
-	result := make(map[string]Profile, len(profileDefinitions))
-	for id, definition := range profileDefinitions {
-		result[id] = definition.resolve(id)
+	return schema, nil
+})
+
+// ParseCatalog validates data against the embedded catalog schema, checks
+// every cross-reference, and validates each resolved profile configuration.
+func ParseCatalog(data []byte) (Catalog, error) {
+	schema, err := catalogSchema()
+	if err != nil {
+		return Catalog{}, err
+	}
+	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
+		return Catalog{}, fmt.Errorf("parse catalog: %w", err)
+	}
+	if err := schema.Validate(document); err != nil {
+		return Catalog{}, fmt.Errorf("validate catalog: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var parsed catalogDocument
+	if err := decoder.Decode(&parsed); err != nil {
+		return Catalog{}, fmt.Errorf("decode catalog: %w", err)
+	}
+
+	return parsed.resolve()
+}
+
+func (document catalogDocument) providers() ([]Provider, map[string]bool, map[string]bool, error) {
+	var providers []Provider
+	usedCountries := map[string]bool{}
+	usedProfiles := map[string]bool{}
+	for id, definition := range document.Providers {
+		for _, code := range definition.Countries {
+			if _, found := document.Countries[code]; !found {
+				return nil, nil, nil, fmt.Errorf("%w: provider %s lists unknown country %s", errCatalogReference, id, code)
+			}
+			usedCountries[code] = true
+		}
+		for _, profile := range definition.Profiles {
+			if _, found := document.Profiles[profile]; !found {
+				return nil, nil, nil, fmt.Errorf("%w: provider %s lists unknown profile %s", errCatalogReference, id, profile)
+			}
+			usedProfiles[profile] = true
+		}
+		providers = append(providers, Provider{ID: id, Name: definition.Name, Countries: definition.Countries, Profiles: definition.Profiles})
+	}
+
+	return providers, usedCountries, usedProfiles, nil
+}
+
+func (document catalogDocument) resolve() (Catalog, error) {
+	providers, usedCountries, usedProfiles, err := document.providers()
+	if err != nil {
+		return Catalog{}, err
+	}
+	catalog := Catalog{Providers: providers}
+	for code, definition := range document.Countries {
+		if !usedCountries[code] {
+			return Catalog{}, fmt.Errorf("%w: country %s has no provider", errCatalogReference, code)
+		}
+		catalog.Countries = append(catalog.Countries, Country{Code: code, Name: definition.Name, LocalName: definition.LocalName})
+	}
+	for id, definition := range document.Profiles {
+		if !usedProfiles[id] {
+			return Catalog{}, fmt.Errorf("%w: profile %s has no provider", errCatalogReference, id)
+		}
+		profile := definition.resolve(id)
+		if err := profile.Config.Validate(); err != nil {
+			return Catalog{}, fmt.Errorf("profile %s: %w", id, err)
+		}
+		catalog.Profiles = append(catalog.Profiles, profile)
+	}
+	sort.Slice(catalog.Countries, func(left, right int) bool { return catalog.Countries[left].Name < catalog.Countries[right].Name })
+	sort.Slice(catalog.Providers, func(left, right int) bool { return catalog.Providers[left].Name < catalog.Providers[right].Name })
+	sort.Slice(catalog.Profiles, func(left, right int) bool { return catalog.Profiles[left].Name < catalog.Profiles[right].Name })
+
+	return catalog, nil
+}
+
+var embedded = sync.OnceValue(func() Catalog {
+	catalog, err := ParseCatalog(embeddedCatalog)
+	if err != nil {
+		panic(err)
+	}
+
+	return catalog
+})
+
+// DefaultCatalog returns the catalog compiled into the binary.
+func DefaultCatalog() Catalog {
+	return embedded()
+}
+
+// ProvidersIn lists the providers serving the country code, sorted by name.
+func (catalog Catalog) ProvidersIn(code string) []Provider {
+	var result []Provider
+	for _, provider := range catalog.Providers {
+		if slices.Contains(provider.Countries, code) {
+			result = append(result, provider)
+		}
 	}
 
 	return result
 }
 
+// ProviderByID looks up a provider.
+func (catalog Catalog) ProviderByID(id string) (Provider, bool) {
+	for _, provider := range catalog.Providers {
+		if provider.ID == id {
+			return provider, true
+		}
+	}
+
+	return Provider{}, false
+}
+
+// ProfilesOf lists the profiles a provider offers, in the provider's order.
+func (catalog Catalog) ProfilesOf(providerID string) []Profile {
+	provider, found := catalog.ProviderByID(providerID)
+	if !found {
+		return nil
+	}
+	result := make([]Profile, 0, len(provider.Profiles))
+	for _, id := range provider.Profiles {
+		if profile, found := catalog.Profile(id); found {
+			result = append(result, profile)
+		}
+	}
+
+	return result
+}
+
+// Profile looks up a provider profile by ID.
+func (catalog Catalog) Profile(id string) (Profile, bool) {
+	for _, profile := range catalog.Profiles {
+		if profile.ID == id {
+			return profile, true
+		}
+	}
+
+	return Profile{}, false
+}
+
+// Locate returns the country code and provider ID that lead to the profile,
+// preferring the provider that shares the profile's ID.
+func (catalog Catalog) Locate(profileID string) (string, string, bool) {
+	if candidate, ok := catalog.ProviderByID(profileID); ok && slices.Contains(candidate.Profiles, profileID) {
+		return candidate.Countries[0], candidate.ID, true
+	}
+	for _, candidate := range catalog.Providers {
+		if slices.Contains(candidate.Profiles, profileID) {
+			return candidate.Countries[0], candidate.ID, true
+		}
+	}
+
+	return "", "", false
+}
+
 func (definition profileDefinition) resolve(id string) Profile {
 	base := genericBase()
 	base.Profile = id
-	wan := definition.WAN
-	if wan.Interface == "" {
-		wan.Interface = base.WAN.Interface
+	base.WAN.VLAN = definition.WAN.VLAN
+	base.WAN.DHCP = definition.WAN.DHCP
+	base.WAN.DHCPOptions = definition.WAN.DHCPOptions
+	base.WAN.StaticAddress = definition.WAN.StaticAddress
+	base.WAN.NATDestinations = definition.WAN.NATDestinations
+	if definition.WAN.Interface != "" {
+		base.WAN.Interface = definition.WAN.Interface
 	}
-	if wan.VLANInterface == "" {
-		wan.VLANInterface = base.WAN.VLANInterface
-	}
-	base.WAN = wan
-	base.Proxy.SourceRanges = definition.Sources
+	base.Proxy.SourceRanges = definition.SourceRanges
 
 	return Profile{ID: id, Name: definition.Name, Note: definition.Note, Config: base}
 }
@@ -157,11 +281,10 @@ func (definition profileDefinition) resolve(id string) Profile {
 // Profiles returns a sorted list of all available provider profiles, including
 // the "Custom" profile.
 func Profiles() []Profile {
-	result := make([]Profile, 0, 1+len(profiles))
+	known := embedded().Profiles
+	result := make([]Profile, 0, 1+len(known))
 	result = append(result, Profile{ID: "custom", Name: "Custom", Config: Default()})
-	for _, value := range profiles {
-		result = append(result, value)
-	}
+	result = append(result, known...)
 	sort.Slice(result, func(left, right int) bool { return result[left].Name < result[right].Name })
 
 	return result
@@ -175,9 +298,8 @@ func ProfileByID(id string) (Profile, bool) {
 	if id == "custom" || id == "legacy" {
 		return Profile{ID: id, Name: "Custom"}, true
 	}
-	value, found := profiles[id]
 
-	return value, found
+	return embedded().Profile(id)
 }
 
 // FromProfile returns a configuration based on the specified provider profile ID.
@@ -191,7 +313,7 @@ func FromProfile(id string, current Config) (Config, error) {
 
 		return current, nil
 	}
-	if value, found := profiles[id]; found {
+	if value, found := embedded().Profile(id); found {
 		value.Config.Telemetry = current.Telemetry
 
 		return value.Config, nil
@@ -205,7 +327,7 @@ func FromProfile(id string, current Config) (Config, error) {
 // settings intentionally do not participate in the match.
 func InferLegacyProfile(value Config) (string, bool) {
 	match := ""
-	for id, candidate := range profiles {
+	for _, candidate := range embedded().Profiles {
 		if value.WAN.VLAN == candidate.Config.WAN.VLAN &&
 			value.WAN.DHCP == candidate.Config.WAN.DHCP &&
 			value.WAN.StaticAddress == candidate.Config.WAN.StaticAddress &&
@@ -214,7 +336,7 @@ func InferLegacyProfile(value Config) (string, bool) {
 			if match != "" {
 				return "", false
 			}
-			match = id
+			match = candidate.ID
 		}
 	}
 
