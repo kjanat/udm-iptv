@@ -1,9 +1,7 @@
 # KPN
 
 The KPN profile is based on KPN's technical requirements for customer-provided
-equipment. Unchanged snapshots are kept for
-[fibre](../vendor/kpn/internet-glasvezel-specificaties-2023-01-23.pdf) and
-[VDSL](../vendor/kpn/internet-vdsl-specificaties-2023-01-23.pdf).
+equipment. Snapshots are kept for [fibre] and [VDSL].
 
 The specification describes these IPTV requirements:
 
@@ -18,3 +16,6 @@ The specification describes these IPTV requirements:
 The specification does not publish IPTV destination or multicast-source
 prefixes. Changes to those profile values therefore require operational
 evidence in addition to this document.
+
+[fibre]: ../vendor/kpn/internet-glasvezel-specificaties-2023-01-23.pdf
+[VDSL]: ../vendor/kpn/internet-vdsl-specificaties-2023-01-23.pdf

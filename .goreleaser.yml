@@ -11,7 +11,7 @@ builds:
     goos: [linux]
     goarch: [arm64]
     flags: [-trimpath]
-    ldflags: ['-s -w -X main.version={{ .Version }} -X github.com/kjanat/udm-iptv/internal/telemetry.DSN={{ index .Env "UDM_IPTV_SENTRY_DSN" }}']
+    ldflags: ['-s -w -X main.version={{ .Version }} -X github.com/kjanat/udm-iptv/internal/telemetry.DSN={{ index .Env "SENTRY_DSN" }}']
 
 archives:
   - id: binary

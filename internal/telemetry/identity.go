@@ -32,6 +32,7 @@ func (r *Reporter) networkEnabled() bool {
 		return true
 	}
 	value, err := config.Load(r.configPath)
+
 	return err == nil && value.Telemetry.Enabled && value.Telemetry.NetworkIdentity
 }
 
@@ -39,6 +40,7 @@ func (r *Reporter) networkEnabled() bool {
 // Both HTTPS discovery and DNS share a bounded deadline; no credentials are used.
 func LookupNetwork(parent context.Context) NetworkIdentity {
 	client := &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
 	return lookupNetwork(parent, client, "https://api.ipify.org", net.DefaultResolver.LookupAddr)
 }
 
@@ -70,11 +72,13 @@ func lookupNetwork(parent context.Context, client *http.Client, endpoint string,
 	if names, err := ptr(ctx, result.IP); err == nil && len(names) != 0 {
 		result.PTR = names[0]
 	}
+
 	return cleanIdentity(result)
 }
 
 func publicAddress(address netip.Addr) bool {
 	address = address.Unmap()
+
 	return address.IsGlobalUnicast() && !address.IsPrivate() && !netip.MustParsePrefix("100.64.0.0/10").Contains(address)
 }
 
@@ -90,7 +94,7 @@ func cleanIdentity(value NetworkIdentity) NetworkIdentity {
 	if !dnsName.MatchString(value.PTR) {
 		return result
 	}
-	for _, label := range strings.Split(strings.TrimSuffix(value.PTR, "."), ".") {
+	for label := range strings.SplitSeq(strings.TrimSuffix(value.PTR, "."), ".") {
 		if len(label) == 0 || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
 			return result
 		}
@@ -102,8 +106,10 @@ func cleanIdentity(value NetworkIdentity) NetworkIdentity {
 	for suffix, provider := range map[string]string{"kpn.net": "kpn", "xs4all.nl": "xs4all", "freedom.nl": "freedom", "solcon.nl": "solcon", "tweak.nl": "tweak", "btcentralplus.com": "bt", "bluewin.ch": "swisscom", "init7.net": "init7"} {
 		if name == suffix || strings.HasSuffix(name, "."+suffix) {
 			result.Provider, result.Method, result.Confidence = provider, "ptr-suffix", "low"
+
 			break
 		}
 	}
+
 	return result
 }

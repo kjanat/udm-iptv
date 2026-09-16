@@ -32,6 +32,8 @@ sudo ./udm-iptv-linux-arm64 install
 
 Configuration: `/data/udm-iptv/config.json`. Legacy settings migrate automatically.
 
+Missing system proxies use preserved binaries and libraries offline.
+
 ## Commands
 
 ```sh
@@ -62,6 +64,10 @@ See [telemetry details](docs/telemetry.md) for optional reliability reports.
 ## Providers
 
 [Provider profiles](docs/providers) supply editable defaults. [KPN specifications](docs/providers/kpn.md).
+
+First setup suggests providers through ipify/PTR; confirm your selection.
+
+Saved settings remain unchanged until you accept the review.
 
 ## Development
 

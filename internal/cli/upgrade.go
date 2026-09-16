@@ -1,0 +1,29 @@
+package cli
+
+import (
+	"github.com/kjanat/udm-iptv/internal/installer"
+
+	"github.com/spf13/cobra"
+)
+
+func (application *Application) upgradeCommand() *cobra.Command {
+	options := installer.UpgradeOptions{Repository: "kjanat/udm-iptv"}
+	command := &cobra.Command{
+		Use: "upgrade", Short: "Install the latest udm-iptv release", Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			err := requireRoot()
+			if err != nil {
+				return err
+			}
+
+			return (&installer.Upgrader{Version: application.Version, StateDir: application.StateDir, Out: application.Out, Restart: application.restart}).Upgrade(command.Context(), options)
+		},
+	}
+	flags := command.Flags()
+	flags.StringVar(&options.Repository, "repository", options.Repository, "GitHub repository")
+	flags.StringVar(&options.Version, "version", "latest", "release version or latest")
+	flags.StringVar(&options.TokenFile, "token-file", "", "file containing a GitHub token for private repositories")
+	flags.BoolVar(&options.Force, "force", false, "reinstall even when the selected version is already installed")
+
+	return command
+}

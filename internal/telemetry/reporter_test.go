@@ -45,6 +45,7 @@ func TestBuildEndpoint(t *testing.T) {
 		if err == nil {
 			t.Fatal("unstamped build accepted telemetry")
 		}
+
 		return
 	}
 	if err != nil {
@@ -69,6 +70,7 @@ func (*recordingTransport) Close()                                {}
 func testSettings() config.Telemetry {
 	settings := config.Default().Telemetry
 	settings.Enabled, settings.TraceRate = true, 1
+
 	return settings
 }
 
@@ -109,7 +111,10 @@ func TestDisabledDoesNotInitializeSDK(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	_ = r.Run(context.Background(), "install", func(context.Context) error { called = true; return errors.New("secret") })
+	_ = r.Run(context.Background(), "install", func(context.Context) error {
+		called = true
+		return errors.New("secret")
+	})
 	r.Gauge(context.Background(), "daemon.uptime", 1)
 	r.Close()
 	if !called || transport.configured || len(transport.events) != 0 {
@@ -124,7 +129,7 @@ func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
 		t.Fatal(err)
 	}
 	cause := fmt.Errorf("secret wrapper: %w", errors.Join(errors.New("secret first"), &os.PathError{Op: "open", Path: "/secret/path", Err: os.ErrPermission}))
-	if err := r.Run(context.Background(), "install", func(context.Context) error { return cause }); err != cause {
+	if err := r.Run(context.Background(), "install", func(context.Context) error { return cause }); !errors.Is(err, cause) {
 		t.Fatal("local error changed")
 	}
 	r.Close()
@@ -421,8 +426,10 @@ func TestErrorsAndLogsKeepActiveSpan(t *testing.T) {
 	spans := map[string]*sentry.Span{}
 	_ = r.Run(context.Background(), "install", func(ctx context.Context) error {
 		spans["install"] = sentry.SpanFromContext(ctx)
+
 		return r.Run(ctx, "service.health", func(ctx context.Context) error {
 			spans["service.health"] = sentry.SpanFromContext(ctx)
+
 			return errors.New("private failure")
 		})
 	})
@@ -466,7 +473,7 @@ func TestCancellationAndDeadlineTraceStatus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := r.Run(context.Background(), "install", func(context.Context) error { return test.err }); err != test.err {
+			if err := r.Run(context.Background(), "install", func(context.Context) error { return test.err }); !errors.Is(err, test.err) {
 				t.Fatal("operation result changed")
 			}
 			r.Close()

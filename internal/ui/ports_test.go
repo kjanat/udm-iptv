@@ -56,7 +56,7 @@ func TestWANPortLabels(t *testing.T) {
 }
 
 func TestLANNetworkSelection(t *testing.T) {
-	groups, selected, extra := lanGroups([]string{"br0"}, []Port{
+	groups, selected, _ := lanGroups([]string{"br0"}, []Port{
 		{Name: "eth8", Description: "connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true},
 		{Name: "br0", Addresses: []string{"192.168.1.1/24"}, AddressesKnown: true},
 		{Name: "br4", Addresses: []string{"192.168.4.1/24"}, AddressesKnown: true},
@@ -82,7 +82,7 @@ func TestLANNetworkSelection(t *testing.T) {
 		t.Fatal("selected networks asked for manual names")
 	}
 
-	groups, selected, extra = lanGroups(nil, nil)
+	groups, selected, extra := lanGroups(nil, nil)
 	form = wizardForm(groups...)
 	if !reflect.DeepEqual(*selected, []string{manualPort}) {
 		t.Fatal("manual fallback unavailable")

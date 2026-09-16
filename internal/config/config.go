@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -85,6 +86,7 @@ func Load(path string) (Config, error) {
 	if err := value.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate %s: %w", path, err)
 	}
+
 	return value, nil
 }
 
@@ -108,19 +110,23 @@ func Save(path string, value Config) error {
 	defer func() { _ = os.Remove(name) }()
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
+
 		return err
 	}
 	if _, err := temporary.Write(data); err != nil {
 		_ = temporary.Close()
+
 		return err
 	}
 	if err := temporary.Sync(); err != nil {
 		_ = temporary.Close()
+
 		return err
 	}
 	if err := temporary.Close(); err != nil {
 		return err
 	}
+
 	return os.Rename(name, path)
 }
 
@@ -173,12 +179,15 @@ func (value Config) Validate() error {
 			}
 		}
 	}
+
 	return nil
 }
 
 var interfacePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
 
-func validInterface(name string) bool { return interfacePattern.MatchString(name) }
+func validInterface(name string) bool {
+	return name != "." && name != ".." && interfacePattern.MatchString(name)
+}
 
 // ImportLegacy converts the former shell configuration without executing it.
 func ImportLegacy(path string) (Config, error) {
@@ -187,7 +196,7 @@ func ImportLegacy(path string) (Config, error) {
 		return Config{}, err
 	}
 	values := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -217,6 +226,9 @@ func ImportLegacy(path string) (Config, error) {
 	value.WAN.VLANInterface = fallback(values["IPTV_WAN_VLAN_INTERFACE"], value.WAN.VLANInterface)
 	value.WAN.VLANMAC = values["IPTV_WAN_VLAN_MAC"]
 	value.WAN.DHCP = values["IPTV_WAN_DHCP"] != "false"
+	if values["IPTV_WAN_DHCP"] == "" && value.WAN.VLAN == 0 {
+		value.WAN.DHCP = false
+	}
 	if options, found := values["IPTV_WAN_DHCP_OPTIONS"]; found {
 		value.WAN.DHCPOptions = strings.Fields(options)
 	}
@@ -227,7 +239,7 @@ func ImportLegacy(path string) (Config, error) {
 	}
 	value.WAN.StaticRoutes = strings.Fields(values["IPTV_STATIC_ROUTES"])
 	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], "br0"))
-	value.Proxy.Program = fallback(values["IPTV_IGMPPROXY_PROGRAM"], "improxy")
+	value.Proxy.Program = fallback(values["IPTV_IGMPPROXY_PROGRAM"], "igmpproxy")
 	if version, parseErr := strconv.Atoi(fallback(values["IPTV_IGMPPROXY_IGMP_VERSION"], "3")); parseErr == nil {
 		value.Proxy.IGMPVersion = version
 	}
@@ -245,6 +257,7 @@ func ImportLegacy(path string) (Config, error) {
 		value.WAN.NATDestinations = append([]string(nil), known.WAN.NATDestinations...)
 		value.Proxy.SourceRanges = mergePrefixes(known.Proxy.SourceRanges, legacyLANSources)
 	}
+
 	return value, value.Validate()
 }
 
@@ -252,6 +265,7 @@ func fallback(value, defaultValue string) string {
 	if value != "" {
 		return value
 	}
+
 	return defaultValue
 }
 
@@ -263,6 +277,7 @@ func normalizeLegacyPrefixes(values []string) []string {
 		}
 		result = append(result, value)
 	}
+
 	return result
 }
 
@@ -277,14 +292,10 @@ func mergePrefixes(groups ...[]string) []string {
 			}
 		}
 	}
+
 	return result
 }
 
 func slicesContains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, wanted)
 }

@@ -1,0 +1,5 @@
+[Unit]
+Description=Minimal target for udm-iptv firmware lifecycle tests
+DefaultDependencies=no
+Requires=systemd-journald.service systemd-tmpfiles-setup.service
+After=systemd-journald.service systemd-tmpfiles-setup.service

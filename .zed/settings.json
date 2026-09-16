@@ -15,7 +15,7 @@
 	"lsp": {
 		"gopls": {
 			"initialization_options": {
-				"buildFlags": ["-tags=integration,sentrylive"],
+				"buildFlags": ["-tags=integration,sentrylive,firmware"],
 				"vulncheck": "Imports",
 				"staticcheck": true,
 				"usePlaceholders": true,

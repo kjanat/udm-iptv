@@ -37,15 +37,21 @@ func TestConfigureProfileSwitch(t *testing.T) {
 				} else if cancel {
 					return aborted
 				}
+
 				return nil
 			})
-			if calls != 2 {
+			wantCalls := 3
+			if cancel {
+				wantCalls = 2
+			}
+			if calls != wantCalls {
 				t.Fatalf("forms = %d", calls)
 			}
 			if cancel {
 				if !errors.Is(err, aborted) || !reflect.DeepEqual(value, original) {
 					t.Fatalf("cancel modified input: %v", err)
 				}
+
 				return
 			}
 			if err != nil {
@@ -123,6 +129,9 @@ func TestConfigurationPageFits(t *testing.T) {
 	for range 12 {
 		form.Update(tea.WindowSizeMsg{Width: 180, Height: 45})
 		view := form.View()
+		if strings.Contains(view, "\n\n\n") {
+			t.Fatal("short page padded with blank rows")
+		}
 		if lipgloss.Width(view) > 88 {
 			t.Fatalf("page stretched to %d columns", lipgloss.Width(view))
 		}
@@ -153,6 +162,7 @@ func TestConfigureFailureDoesNotChangeInput(t *testing.T) {
 			if failAt == 1 {
 				return huh.ErrUserAborted
 			}
+
 			return nil
 		})
 		if err == nil || !reflect.DeepEqual(value, original) {

@@ -13,6 +13,7 @@ func TestMaskBits(t *testing.T) {
 		got, err := maskBits(input)
 		if err != nil {
 			t.Errorf("maskBits(%q): %v", input, err)
+
 			continue
 		}
 		if got != want {

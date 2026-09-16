@@ -22,7 +22,8 @@ func TestKernelLeaseRenewal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		if err := original.Close(); err != nil {
+		err := original.Close()
+		if err != nil {
 			t.Error(err)
 		}
 	}()
@@ -30,12 +31,13 @@ func TestKernelLeaseRenewal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		if err := unix.Setns(int(original.Fd()), unix.CLONE_NEWNET); err != nil {
+		err := unix.Setns(int(original.Fd()), unix.CLONE_NEWNET)
+		if err != nil {
 			// Do not let Go reuse a thread still attached to the test namespace.
 			panic(err)
 		}
 	}()
-	if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "iptv-test"}}); err != nil {
+	if err := netlink.LinkAdd(&netlink.Dummy{Name: "iptv-test"}); err != nil {
 		t.Fatal(err)
 	}
 	link, err := netlink.LinkByName("iptv-test")
@@ -68,7 +70,8 @@ func TestKernelLeaseRenewal(t *testing.T) {
 	check(1)
 	lease.Action = "renew"
 	for range 3 {
-		if err := ApplyLease(lease, true); err != nil {
+		err := ApplyLease(lease, true)
+		if err != nil {
 			t.Fatal(err)
 		}
 		check(1)

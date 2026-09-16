@@ -67,7 +67,8 @@ func TestProfilesValidate(t *testing.T) {
 		if profile.ID == "custom" {
 			continue
 		}
-		if err := profile.Config.Validate(); err != nil {
+		err := profile.Config.Validate()
+		if err != nil {
 			t.Errorf("profile %s: %v", profile.ID, err)
 		}
 	}
