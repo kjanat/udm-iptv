@@ -469,8 +469,8 @@ func (frame *Frame) quitPopup() string {
 
 func locate(content, text string) (x, y int) {
 	for y, line := range strings.Split(content, "\n") {
-		if index := strings.Index(line, text); index >= 0 {
-			return lipgloss.Width(line[:index]), y
+		if before, _, ok := strings.Cut(line, text); ok {
+			return lipgloss.Width(before), y
 		}
 	}
 
