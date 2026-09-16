@@ -42,6 +42,7 @@ func New(settings config.Telemetry, version, configPath, stateDir string) (*Repo
 	if err == nil {
 		r.configPath, r.stateDir = configPath, stateDir
 	}
+
 	return r, err
 }
 
@@ -75,6 +76,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 		return nil, err
 	}
 	r.client, r.hub = client, sentry.NewHub(client, sentry.NewScope())
+
 	return r, nil
 }
 
@@ -103,6 +105,7 @@ func (r *Reporter) allow(kind string, maximum int) bool {
 		return false
 	}
 	r.counts[kind]++
+
 	return true
 }
 
@@ -151,7 +154,7 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 	var span *sentry.Span
 	if r.settings.Tracing && operation != "daemon" {
 		span = sentry.StartSpan(ctx, operation, sentry.WithTransactionName(operation))
-		ctx = span.Context()
+		ctx = span.Context() //nolint:contextcheck // Sentry derives this context from the supplied parent.
 	}
 	if r.settings.Logs {
 		sentry.NewLogger(ctx).Info().Emit(operation + " started")
@@ -204,6 +207,7 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 			panic(panicked)
 		}
 	}()
+
 	return run(ctx)
 }
 
@@ -242,6 +246,7 @@ func (r *Reporter) MetricsEnabled() bool {
 		return true
 	}
 	value, err := config.Load(r.configPath)
+
 	return err == nil && value.Telemetry.Enabled && value.Telemetry.Metrics
 }
 
@@ -298,6 +303,7 @@ func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry
 			clean.Exception = append(clean.Exception, value)
 		}
 	}
+
 	return clean
 }
 
@@ -309,6 +315,7 @@ func (r *Reporter) attributes() map[string]attribute.Value {
 	for key, value := range r.metadata {
 		result[key] = attribute.StringValue(value)
 	}
+
 	return result
 }
 
@@ -320,12 +327,14 @@ func (r *Reporter) filterLog(log *sentry.Log) *sentry.Log {
 	for op := range operations {
 		if log.Body == op+" failed" || log.Body == op+" completed" || log.Body == op+" started" || log.Body == op+" cancelled" {
 			valid = true
+
 			break
 		}
 	}
 	if !valid || !r.allow("logs", 30) {
 		return nil
 	}
+
 	return &sentry.Log{Timestamp: log.Timestamp, TraceID: log.TraceID, SpanID: log.SpanID, Level: log.Level, Severity: log.Severity, Body: log.Body, Attributes: r.attributes()}
 }
 
@@ -345,5 +354,6 @@ func (r *Reporter) filterMetric(metric *sentry.Metric) *sentry.Metric {
 	if op, ok := metric.Attributes["operation"].AsInterface().(string); ok && operations[op] {
 		attributes["operation"] = attribute.StringValue(op)
 	}
+
 	return &sentry.Metric{Timestamp: metric.Timestamp, TraceID: metric.TraceID, SpanID: metric.SpanID, Type: metric.Type, Name: metric.Name, Value: metric.Value, Unit: metric.Unit, Attributes: attributes}
 }

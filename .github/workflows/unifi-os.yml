@@ -1,0 +1,66 @@
+name: UniFi OS
+on:
+  schedule: [{ cron: "17 3 * * *" }]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Models to refresh.
+        type: choice
+        default: all
+        options: [all, udm, udmpro, udmse, udmpromax, udmbeast]
+concurrency: { group: unifi-os-publish, cancel-in-progress: false }
+permissions: { contents: read }
+jobs:
+  build:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: $/.github/workflows/build.yml
+
+  catalog:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    outputs: { matrix: "${{ steps.catalog.outputs.matrix }}" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache-dependency-path: go.sum }
+      - name: Discover stable firmware
+        id: catalog
+        env:
+          MODEL: ${{ inputs.model || 'all' }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/unifi-os
+        run: go run ./cmd/firmware catalog --model "${MODEL}" --output "${GITHUB_OUTPUT}"
+
+  images:
+    name: Refresh firmware (${{ matrix.model }})
+    needs: [build, catalog]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions: { contents: read, packages: write }
+    strategy: { fail-fast: false, matrix: "${{ fromJSON(needs.catalog.outputs.matrix) }}" }
+    env:
+      MODEL: ${{ matrix.model }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/unifi-os
+      FIRMWARES: ${{ toJSON(matrix.firmwares) }}
+      SRC: ${{ matrix.from }}
+      DST: ${{ matrix.to }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - parallel:
+          - name: Setup Go
+            uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+            with: { go-version-file: go.mod, cache-dependency-path: go.sum }
+          - name: Download test package
+            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+            with: { name: "${{ needs.build.outputs.artifact }}", path: dist }
+          - name: Install extraction tools
+            run: sudo apt-get update && sudo apt-get install -y squashfs-tools
+      - name: Build missing firmware images
+        env: { CACHE: "${{ runner.temp }}/unifi-os" }
+        run: go run ./cmd/firmware build
+      - name: Test installation, reboot and offline recovery
+        run: go test -tags firmware -v -count=1 -timeout=20m ./tests/firmware
+      - name: Publish and verify image aliases
+        env: { GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}" }
+        run: go run ./cmd/firmware publish

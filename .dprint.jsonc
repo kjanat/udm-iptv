@@ -17,11 +17,25 @@
 		]
 	},
 	"yaml": { "printWidth": 160 },
+	"exec": {
+		"cwd": "${configDir}",
+		"commands": [
+			{
+				"command": "tombi format - --stdin-filename {{file_path}}",
+				"exts": ["toml"],
+				"setupCommand": "node -e \"try { require('child_process').execSync('tombi --version', {stdio:'ignore'}); } catch { require('child_process').execSync('npm i -g tombi', {stdio:'inherit'}); }\"",
+				"cacheKeyFiles": ["tombi.toml"]
+			}
+		]
+	},
 	"plugins": [
 		"https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
 		"npm:@dprint/json@0.23.0",
 		"npm:@dprint/markdown@0.24.0",
 		"npm:dprint-plugin-yaml@0.6.0",
 		"npm:@jakebailey/dprint-plugin-gofumpt@0.0.18",
+		"npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
+		"npm:@dprint/dockerfile@0.6.0",
+		"npm:@dprint/ruff@0.8.7",
 	],
 }

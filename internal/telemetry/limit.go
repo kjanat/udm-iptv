@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,7 +30,7 @@ func allowPersisted(directory, kind string, perMinute int, now time.Time) bool {
 	var minute, day int64
 	var usedMinute, usedDay int
 	n, err := fmt.Fscan(io.LimitReader(file, 128), &minute, &usedMinute, &day, &usedDay)
-	if err != nil && (err != io.EOF || n != 0) {
+	if err != nil && (!errors.Is(err, io.EOF) || n != 0) {
 		return false
 	}
 	currentMinute, currentDay := now.Unix()/60, now.Unix()/86400
@@ -52,5 +53,6 @@ func allowPersisted(directory, kind string, perMinute int, now time.Time) bool {
 		return false
 	}
 	_, err = fmt.Fprintf(file, "%d %d %d %d\n", minute, usedMinute+1, day, usedDay+1)
+
 	return err == nil
 }

@@ -3,11 +3,38 @@ package network
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
+
+func TestLeaseFailuresKeepOperationAndCause(t *testing.T) {
+	want := errors.New("injected failure")
+	for _, stage := range []string{"find DHCP interface", "apply DHCP address", "bring DHCP interface up", "apply DHCP routes", "retire previous DHCP address"} {
+		t.Run(stage, func(t *testing.T) {
+			fixture := &leaseFixture{}
+			ops := fixture.ops()
+			switch stage {
+			case "find DHCP interface":
+				ops.link = func(string) (netlink.Link, error) { return nil, want }
+			case "apply DHCP address":
+				ops.replaceAddress = func(netlink.Link, *netlink.Addr) error { return want }
+			case "bring DHCP interface up":
+				ops.up = func(netlink.Link) error { return want }
+			case "apply DHCP routes":
+				ops.replaceRoute = func(*netlink.Route) error { return want }
+			case "retire previous DHCP address":
+				ops.addresses = func(netlink.Link, int) ([]netlink.Addr, error) { return nil, want }
+			}
+			err := applyLease(testLease(), true, ops)
+			if !errors.Is(err, want) || !strings.Contains(err.Error(), stage) {
+				t.Fatalf("missing cause or operation: %v", err)
+			}
+		})
+	}
+}
 
 type leaseFixture struct {
 	routes        []netlink.Route
@@ -20,7 +47,7 @@ type leaseFixture struct {
 func (f *leaseFixture) ops() leaseOperations {
 	return leaseOperations{
 		link: func(string) (netlink.Link, error) {
-			return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 52}}, nil
+			return &netlink.Dummy{Index: 52}, nil
 		},
 		addresses: func(netlink.Link, int) ([]netlink.Addr, error) { return f.addresses, nil },
 		replaceAddress: func(_ netlink.Link, a *netlink.Addr) error {
@@ -31,6 +58,7 @@ func (f *leaseFixture) ops() leaseOperations {
 				}
 			}
 			f.addresses = append(f.addresses, *a)
+
 			return nil
 		},
 		deleteAddress: func(_ netlink.Link, a *netlink.Addr) error {
@@ -38,17 +66,23 @@ func (f *leaseFixture) ops() leaseOperations {
 			if f.dropSecondary {
 				f.addresses = nil
 				f.routes = nil
+
 				return nil
 			}
 			for i, old := range f.addresses {
 				if sameAddress(old, *a) {
 					f.addresses = append(f.addresses[:i:i], f.addresses[i+1:]...)
+
 					break
 				}
 			}
+
 			return nil
 		},
-		up: func(netlink.Link) error { f.changes = append(f.changes, "up"); return nil },
+		up: func(netlink.Link) error {
+			f.changes = append(f.changes, "up")
+			return nil
+		},
 		routes: func(int, *netlink.Route, uint64) ([]netlink.Route, error) {
 			return append([]netlink.Route(nil), f.routes...), nil
 		},
@@ -60,10 +94,12 @@ func (f *leaseFixture) ops() leaseOperations {
 			for i, old := range f.routes {
 				if leaseRouteKey(old) == leaseRouteKey(*r) {
 					f.routes[i] = *r
+
 					return nil
 				}
 			}
 			f.routes = append(f.routes, *r)
+
 			return nil
 		},
 		deleteRoute: func(r *netlink.Route) error {
@@ -71,9 +107,11 @@ func (f *leaseFixture) ops() leaseOperations {
 			for i, old := range f.routes {
 				if leaseRouteKey(old) == leaseRouteKey(*r) {
 					f.routes = append(f.routes[:i:i], f.routes[i+1:]...)
+
 					break
 				}
 			}
+
 			return nil
 		},
 	}
@@ -99,7 +137,8 @@ func TestInvalidLeaseDoesNotMutateNetwork(t *testing.T) {
 		lease := testLease()
 		change(&lease)
 		fixture := &leaseFixture{}
-		if err := applyLease(lease, true, fixture.ops()); err == nil {
+		err := applyLease(lease, true, fixture.ops())
+		if err == nil {
 			t.Errorf("invalid lease accepted: %+v", lease)
 		}
 		if len(fixture.changes) != 0 {
@@ -112,12 +151,14 @@ func TestUnchangedRenewalDoesNotReplaceOrDeleteRoutes(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	if err := applyLease(lease, true, fixture.ops()); err != nil {
+	err := applyLease(lease, true, fixture.ops())
+	if err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {
 		fixture.changes = nil
-		if err := applyLease(lease, true, fixture.ops()); err != nil {
+		err := applyLease(lease, true, fixture.ops())
+		if err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(fixture.changes, []string{"address", "up"}) {
@@ -155,6 +196,7 @@ func TestChangedLeaseAppliesBeforeRemovingOldState(t *testing.T) {
 			if len(fixture.addresses) != 2 {
 				t.Fatal("failed replacement removed old address")
 			}
+
 			continue
 		}
 		if err != nil {
@@ -204,11 +246,13 @@ func TestDeconfigRemovesLeaseState(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	if err := applyLease(lease, true, fixture.ops()); err != nil {
+	err := applyLease(lease, true, fixture.ops())
+	if err != nil {
 		t.Fatal(err)
 	}
 	lease.Action = "deconfig"
-	if err := applyLease(lease, true, fixture.ops()); err != nil {
+	err = applyLease(lease, true, fixture.ops())
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(fixture.routes) != 0 || len(fixture.addresses) != 0 {
@@ -220,11 +264,13 @@ func TestLeaseSurvivesPrimaryAddressCleanup(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{dropSecondary: true}
 	lease := testLease()
-	if err := applyLease(lease, true, fixture.ops()); err != nil {
+	err := applyLease(lease, true, fixture.ops())
+	if err != nil {
 		t.Fatal(err)
 	}
 	lease.Address = "192.0.2.3"
-	if err := applyLease(lease, true, fixture.ops()); err != nil {
+	err = applyLease(lease, true, fixture.ops())
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(fixture.addresses) != 1 || fixture.addresses[0].IP.String() != lease.Address || len(fixture.routes) != 1 {
@@ -236,12 +282,14 @@ func TestGatewayChangeReplacesRouteWithoutDeletingReplacement(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	if err := applyLease(lease, true, fixture.ops()); err != nil {
+	err := applyLease(lease, true, fixture.ops())
+	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.changes = nil
 	lease.StaticRoutes[1] = "192.0.2.254"
-	if err := applyLease(lease, true, fixture.ops()); err != nil {
+	err = applyLease(lease, true, fixture.ops())
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(fixture.changes, []string{"address", "up", "replace-route"}) {

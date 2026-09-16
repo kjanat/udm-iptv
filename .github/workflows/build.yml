@@ -1,72 +1,44 @@
 name: Build
-on: pull_request
-concurrency: { group: "build-${{ github.event.pull_request.number }}", cancel-in-progress: true }
+on:
+  workflow_call:
+    inputs:
+      release:
+        description: Build tagged release instead of snapshot.
+        type: boolean
+        default: false
+    outputs:
+      artifact:
+        description: Uploaded binaries and Debian package.
+        value: ${{ jobs.build.outputs.artifact }}
 permissions: { contents: read }
-env: { GORELEASER: "v2.18.1" }
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs: { artifact: build-artifacts }
     steps:
       - name: Checkout Sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { fetch-depth: 0, persist-credentials: false }
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version-file: go.mod, cache-dependency-path: go.sum }
-      - name: Test Go
-        run: go test -race ./...
-      - name: Test DHCP renewal in an isolated network namespace
-        run: |
-          go test -c -tags integration -o "${RUNNER_TEMP}/network.test" ./internal/network
-          sudo "${RUNNER_TEMP}/network.test" -test.run '^TestKernelLeaseRenewal$' -test.v
-      - name: Vet Go
-        run: go vet ./...
-      - name: Lint Go
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with: { version: latest }
-      - name: Check Go vulnerabilities
-        run: go tool govulncheck ./...
-      - name: Build release snapshot
+      - name: Build binaries and packages
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SENTRY_DSN: ${{ case(inputs.release == true, vars.SENTRY_DSN, '') }}
         with:
           distribution: goreleaser
-          version: ${{ env.GORELEASER }}
-          args: release --snapshot --clean --skip=publish
-      - parallel:
-          - name: Validate Debian scripts (syntax)
-            working-directory: packaging/deb
-            run: sh -n ./{config,preinstall,postinstall,preremove,postremove}
-          - name: Validate Debian scripts (shellcheck)
-            working-directory: packaging/deb
-            run: shellcheck ./{config,preinstall,postinstall,preremove,postremove}
-          - name: Validate Debian package
-            env: { package: dist/udm-iptv-arm64.deb }
-            run: |
-              test -f "${package}"
-              package_name=$(dpkg-deb --field "${package}" Package)
-              architecture=$(dpkg-deb --field "${package}" Architecture)
-              dependencies=$(dpkg-deb --field "${package}" Depends)
-              test "${package_name}" = udm-iptv
-              test "${architecture}" = arm64
-              grep -Eq '(^|, )improxy(, |$)' <<<"${dependencies}"
-              grep -Eq '(^|, )iptables(, |$)' <<<"${dependencies}"
-              control=$(mktemp -d)
-              dpkg-deb --control "${package}" "${control}"
-              test -x "${control}/config"
-              test -x "${control}/preinst"
-              test -x "${control}/postinst"
-              test -x "${control}/prerm"
-              test -x "${control}/postrm"
-              test -f "${control}/templates"
-              grep -Fq "configure --profile \"\${profile}\" --non-interactive" "${control}/postinst"
-              dpkg-deb --contents "${package}" | grep -E '/data/udm-iptv/bin/udm-iptv$'
-              dpkg-deb --contents "${package}" | grep -E '/usr/share/doc/udm-iptv/copyright$'
+          version: v2.18.1
+          args: release --clean --skip=publish ${{ case(inputs.release == true, '', '--snapshot') }}
+      - name: Materialize binary release asset
+        run: install -m 0755 dist/udm-iptv_linux_arm64_v8.0/udm-iptv dist/udm-iptv-linux-arm64
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-artifacts
           if-no-files-found: error
           path: |
-            dist/**/udm-iptv
+            dist/udm-iptv-linux-arm64
             dist/*.deb
             dist/SHA256SUMS

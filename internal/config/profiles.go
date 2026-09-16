@@ -122,6 +122,7 @@ func buildProfiles() map[string]Profile {
 	for id, definition := range profileDefinitions {
 		result[id] = definition.resolve(id)
 	}
+
 	return result
 }
 
@@ -137,6 +138,7 @@ func (definition profileDefinition) resolve(id string) Profile {
 	}
 	base.WAN = wan
 	base.Proxy.SourceRanges = definition.Sources
+
 	return Profile{ID: id, Name: definition.Name, Note: definition.Note, Config: base}
 }
 
@@ -146,6 +148,7 @@ func Profiles() []Profile {
 		result = append(result, value)
 	}
 	sort.Slice(result, func(left, right int) bool { return result[left].Name < result[right].Name })
+
 	return result
 }
 
@@ -154,18 +157,22 @@ func ProfileByID(id string) (Profile, bool) {
 		return Profile{ID: id, Name: "Custom"}, true
 	}
 	value, found := profiles[id]
+
 	return value, found
 }
 
 func FromProfile(id string, current Config) (Config, error) {
 	if id == "custom" || id == "legacy" {
 		current.Profile = id
+
 		return current, nil
 	}
 	if value, found := profiles[id]; found {
 		value.Config.Telemetry = current.Telemetry
+
 		return value.Config, nil
 	}
+
 	return Config{}, fmt.Errorf("unknown provider profile %q", id)
 }
 
@@ -186,5 +193,6 @@ func InferLegacyProfile(value Config) (string, bool) {
 			match = id
 		}
 	}
+
 	return match, match != ""
 }

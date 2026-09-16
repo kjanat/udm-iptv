@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,7 @@ func (port Port) label() string {
 	if port.Description != "" {
 		label += " — " + port.Description
 	}
+
 	return label
 }
 
@@ -48,14 +50,15 @@ func wanGroups(current *string, ports []Port) ([]*huh.Group, *string) {
 		selected = manualPort
 	}
 	options = append(options, huh.NewOption("Enter another interface manually…", manualPort))
+
 	return []*huh.Group{
 		huh.NewGroup(huh.NewSelect[string]().Key("wan-port").
 			Title("Which connection goes to your provider?").
 			Description("Usually Internet route. Connected means link detected, not provider verified.").
-			Options(options...).Height(8).Value(&selected)).Title("Internet port"),
+			Options(options...).Height(min(8, len(options)+4)).Value(&selected)).Title("Internet port"),
 		huh.NewGroup(huh.NewInput().Key("wan-interface").Title("Interface name").
 			Description("Enter the interface name from UniFi or ip link.").
-			Placeholder("eth8").Value(current)).WithHideFunc(func() bool { return selected != manualPort }),
+			Placeholder("eth8").Value(current).Validate(validateInterface)).WithHideFunc(func() bool { return selected != manualPort }),
 	}, &selected
 }
 
@@ -67,6 +70,7 @@ func (port Port) lanLabel() string {
 	if len(port.Addresses) > 0 {
 		address = strings.Join(port.Addresses, ", ")
 	}
+
 	return port.Name + " · " + lanKind(port.Name) + " · " + address
 }
 
@@ -82,6 +86,7 @@ func lanKind(name string) string {
 			return "VLAN " + rest
 		}
 	}
+
 	return "LAN"
 }
 
@@ -112,16 +117,18 @@ func lanGroups(current []string, ports []Port) ([]*huh.Group, *[]string, *string
 	}
 	options = append(options, huh.NewOption("Enter another interface manually…", manualPort))
 	extra := ""
+
 	return []*huh.Group{
 		huh.NewGroup(huh.NewMultiSelect[string]().Key("lan").
 			Title("Which networks should receive IPTV?").
 			Description("br0 is LAN. Other brN are VLANs.").
-			Options(options...).Height(8).
+			Options(options...).Height(min(8, len(options)+4)).
 			Value(&selected).
 			Validate(func(values []string) error {
 				if len(resolveLAN(values, extra)) == 0 && !containsString(values, manualPort) {
 					return errors.New("select at least one network")
 				}
+
 				return nil
 			})).Title("TV networks"),
 		huh.NewGroup(huh.NewInput().Key("lan-extra").Title("Additional interface names").
@@ -131,6 +138,13 @@ func lanGroups(current []string, ports []Port) ([]*huh.Group, *[]string, *string
 				if len(resolveLAN(selected, value)) == 0 {
 					return errors.New("enter at least one interface name")
 				}
+				for _, name := range resolveLAN(selected, value) {
+					err := validateInterface(name)
+					if err != nil {
+						return err
+					}
+				}
+
 				return nil
 			})).WithHideFunc(func() bool { return !containsString(selected, manualPort) }),
 	}, &selected, &extra
@@ -149,17 +163,13 @@ func resolveLAN(selected []string, extra string) []string {
 	for _, name := range selected {
 		add(name)
 	}
-	for _, name := range strings.Fields(extra) {
+	for name := range strings.FieldsSeq(extra) {
 		add(name)
 	}
+
 	return result
 }
 
 func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, wanted)
 }

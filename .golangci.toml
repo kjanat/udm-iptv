@@ -1,22 +1,24 @@
 #:schema https://golangci-lint.run/jsonschema/golangci.jsonschema.json
+
 version = "2"
 
 [run]
-timeout = "5m"
-relative-path-mode = "gomod"
+timeout               = "5m"
+relative-path-mode    = "gomod"
 modules-download-mode = "readonly"
 # Analyze tagged tests without executing privileged tests or sending telemetry.
-build-tags = ["integration", "sentrylive"]
-tests = true
+build-tags            = ["integration", "sentrylive", "firmware"]
+tests                 = true
 
 [linters]
-default = "standard"
-enable = [
+default = "all"
+enable  = [
   "bidichk",
   "bodyclose",
   "contextcheck",
   "copyloopvar",
   "durationcheck",
+  "err113",
   "errorlint",
   "fatcontext",
   "gocheckcompilerdirectives",
@@ -24,23 +26,57 @@ enable = [
   "nilerr",
   "nilnesserr",
   "noctx",
+  "errcheck",
   "nolintlint",
+]
+disable = [
+  "exhaustruct",
+  "gomodguard",
+  "wsl",
+  "wsl_v5",
 ]
 
 [linters.settings.staticcheck]
 checks = ["all"]
 
+[linters.settings.depguard.rules.main]
+list-mode = "strict"
+allow     = [
+  "$gostd",
+  "charm.land/",
+  "github.com/coreos/",
+  "github.com/getsentry/",
+  "github.com/godbus/",
+  "github.com/google/",
+  "github.com/kjanat/",
+  "github.com/moby/",
+  "github.com/opencontainers/",
+  "github.com/spf13/",
+  "github.com/vishvananda/",
+  "golang.org/x/",
+]
+
+# [[linters.settings.depguard.rules.main.deny]]
+# pkg  = "math/rand$"
+# desc = "use math/rand/v2"
+# [[linters.settings.depguard.rules.main.deny]]
+# pkg  = "github.com/sirupsen/logrus"
+# desc = "not allowed"
+# [[linters.settings.depguard.rules.main.deny]]
+# pkg  = "github.com/pkg/errors"
+# desc = "Should be replaced by standard lib errors package"
+
 [linters.settings.nolintlint]
 require-explanation = true
-require-specific = true
-allow-unused = false
+require-specific    = true
+allow-unused        = false
 
 [linters.exclusions]
-generated = "strict"
+generated   = "strict"
 warn-unused = true
 
 [issues]
 # Report the full backlog, including repeated findings.
 max-issues-per-linter = 0
-max-same-issues = 0
-fix = false
+max-same-issues       = 0
+fix                   = false

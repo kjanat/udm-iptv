@@ -21,6 +21,7 @@ func Target(value config.Config) string {
 	if value.WAN.VLAN > 0 {
 		return value.WAN.VLANInterface
 	}
+
 	return value.WAN.Interface
 }
 
@@ -30,6 +31,7 @@ func EnsureLink(value config.Config) (netlink.Link, error) {
 		if err != nil {
 			return nil, fmt.Errorf("find WAN interface %s: %w", value.WAN.Interface, err)
 		}
+
 		return link, netlink.LinkSetUp(link)
 	}
 	parent, err := netlink.LinkByName(value.WAN.Interface)
@@ -41,12 +43,12 @@ func EnsureLink(value config.Config) (netlink.Link, error) {
 		if _, ok := existing.(*netlink.Vlan); !ok {
 			return nil, fmt.Errorf("interface %s already exists and is not a VLAN", value.WAN.VLANInterface)
 		}
-		if err := netlink.LinkDel(existing); err != nil {
+		err := netlink.LinkDel(existing)
+		if err != nil {
 			return nil, fmt.Errorf("replace managed VLAN interface %s: %w", value.WAN.VLANInterface, err)
 		}
 	} else {
-		var notFound netlink.LinkNotFoundError
-		if !errors.As(lookupErr, &notFound) {
+		if _, ok := errors.AsType[netlink.LinkNotFoundError](lookupErr); !ok {
 			return nil, fmt.Errorf("inspect VLAN interface %s: %w", value.WAN.VLANInterface, lookupErr)
 		}
 	}
@@ -59,12 +61,15 @@ func EnsureLink(value config.Config) (netlink.Link, error) {
 	}
 	if err := applyMAC(vlan, value.WAN.VLANMAC); err != nil {
 		_ = netlink.LinkDel(vlan)
+
 		return nil, err
 	}
 	if err := netlink.LinkSetUp(vlan); err != nil {
 		_ = netlink.LinkDel(vlan)
+
 		return nil, err
 	}
+
 	return vlan, nil
 }
 
@@ -76,6 +81,7 @@ func applyMAC(link netlink.Link, address string) error {
 	if err != nil {
 		return fmt.Errorf("parse VLAN MAC: %w", err)
 	}
+
 	return netlink.LinkSetHardwareAddr(link, mac)
 }
 
@@ -86,10 +92,12 @@ func EnsureNAT(value config.Config) error {
 	}
 	for _, destination := range value.WAN.NATDestinations {
 		rule := []string{"-d", destination, "-o", Target(value), "-j", "MASQUERADE", "-m", "comment", "--comment", "udm-iptv"}
-		if err := table.AppendUnique("nat", "POSTROUTING", rule...); err != nil {
+		err := table.AppendUnique("nat", "POSTROUTING", rule...)
+		if err != nil {
 			return fmt.Errorf("add NAT rule for %s: %w", destination, err)
 		}
 	}
+
 	return nil
 }
 
@@ -107,6 +115,7 @@ func RemoveNAT(value config.Config) error {
 			joined = errors.Join(joined, table.Delete("nat", "POSTROUTING", rule...))
 		}
 	}
+
 	return joined
 }
 
@@ -130,13 +139,16 @@ func ApplyStatic(value config.Config, link netlink.Link) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
 func ResetLease(link netlink.Link) error {
-	if err := flushDHCPRoutes(link.Attrs().Index); err != nil {
+	err := flushDHCPRoutes(link.Attrs().Index)
+	if err != nil {
 		return err
 	}
+
 	return flushAddresses(link)
 }
 
@@ -168,6 +180,7 @@ func LeaseFromEnvironment(action string) (Lease, error) {
 	if lease.Interface == "" {
 		return Lease{}, errors.New("udhcpc did not provide an interface")
 	}
+
 	return lease, nil
 }
 
@@ -197,57 +210,77 @@ func applyLease(lease Lease, allowDefaultRoute bool, ops leaseOperations) error 
 	}
 	link, err := ops.link(lease.Interface)
 	if err != nil {
-		return err
+		return fmt.Errorf("find DHCP interface: %w", err)
 	}
 	if lease.Action == "deconfig" {
-		if err := reconcileLeaseRoutes(link.Attrs().Index, nil, ops); err != nil {
-			return err
-		}
-		_, err := removeOldLeaseAddresses(link, nil, ops)
-		return err
+		return clearLease(link, ops)
 	}
-	prefixLength, err := maskBits(lease.Mask)
+	address, prefixLength, err := leaseAddress(lease)
 	if err != nil {
 		return err
+	}
+	// Validate every route before changing the working lease.
+	routes, err := leaseRoutes(lease, link.Attrs().Index, prefixLength, allowDefaultRoute)
+	if err != nil {
+		return fmt.Errorf("validate DHCP routes: %w", err)
+	}
+	return installLease(link, address, routes, ops)
+}
+
+func clearLease(link netlink.Link, ops leaseOperations) error {
+	if err := reconcileLeaseRoutes(link.Attrs().Index, nil, ops); err != nil {
+		return fmt.Errorf("clear DHCP routes: %w", err)
+	}
+	if _, err := removeOldLeaseAddresses(link, nil, ops); err != nil {
+		return fmt.Errorf("clear DHCP addresses: %w", err)
+	}
+	return nil
+}
+
+func leaseAddress(lease Lease) (*netlink.Addr, int, error) {
+	prefixLength, err := maskBits(lease.Mask)
+	if err != nil {
+		return nil, 0, fmt.Errorf("parse DHCP subnet mask: %w", err)
 	}
 	address, err := netlink.ParseAddr(fmt.Sprintf("%s/%d", lease.Address, prefixLength))
 	if err != nil {
-		return err
+		return nil, 0, fmt.Errorf("parse DHCP address: %w", err)
 	}
 	if address.IP.To4() == nil {
-		return errors.New("DHCP lease address must be IPv4")
+		return nil, 0, errors.New("DHCP lease address must be IPv4")
 	}
 	if lease.Broadcast != "" {
 		address.Broadcast = net.ParseIP(lease.Broadcast).To4()
 		if address.Broadcast == nil {
-			return errors.New("DHCP broadcast address must be IPv4")
+			return nil, 0, errors.New("DHCP broadcast address must be IPv4")
 		}
 	}
-	// Validate the entire route option before changing any working state.
-	routes, err := leaseRoutes(lease, link.Attrs().Index, prefixLength, allowDefaultRoute)
-	if err != nil {
-		return err
-	}
+	return address, prefixLength, nil
+}
+
+func installLease(link netlink.Link, address *netlink.Addr, routes []netlink.Route, ops leaseOperations) error {
 	if err := ops.replaceAddress(link, address); err != nil {
-		return err
+		return fmt.Errorf("apply DHCP address: %w", err)
 	}
 	if err := ops.up(link); err != nil {
-		return err
+		return fmt.Errorf("bring DHCP interface up: %w", err)
 	}
 	if err := reconcileLeaseRoutes(link.Attrs().Index, routes, ops); err != nil {
-		return err
+		return fmt.Errorf("apply DHCP routes: %w", err)
 	}
 	removed, err := removeOldLeaseAddresses(link, address, ops)
 	if err != nil {
-		return err
+		return fmt.Errorf("retire previous DHCP address: %w", err)
 	}
-	if removed {
-		// Linux can remove secondary addresses and connected routes when their
-		// primary address is deleted. Reassert the new lease after that cleanup.
-		if err := ops.replaceAddress(link, address); err != nil {
-			return err
-		}
-		return reconcileLeaseRoutes(link.Attrs().Index, routes, ops)
+	if !removed {
+		return nil
+	}
+	// Removing a primary address can remove secondary addresses and routes.
+	if err := ops.replaceAddress(link, address); err != nil {
+		return fmt.Errorf("restore DHCP address after cleanup: %w", err)
+	}
+	if err := reconcileLeaseRoutes(link.Attrs().Index, routes, ops); err != nil {
+		return fmt.Errorf("restore DHCP routes after cleanup: %w", err)
 	}
 	return nil
 }
@@ -266,6 +299,7 @@ func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute boo
 		if err == nil {
 			routes = append(routes, route)
 		}
+
 		return err
 	}
 	if len(lease.StaticRoutes) > 0 {
@@ -274,28 +308,34 @@ func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute boo
 		}
 		for index := 0; index < len(lease.StaticRoutes); index += 2 {
 			if prefixLength == 32 && lease.StaticRoutes[index+1] != "0.0.0.0" {
-				if err := add(lease.StaticRoutes[index+1]+"/32", "0.0.0.0", metric); err != nil {
+				err := add(lease.StaticRoutes[index+1]+"/32", "0.0.0.0", metric)
+				if err != nil {
 					return nil, err
 				}
 			}
-			if err := add(lease.StaticRoutes[index], lease.StaticRoutes[index+1], metric+index/2); err != nil {
+			err := add(lease.StaticRoutes[index], lease.StaticRoutes[index+1], metric+index/2)
+			if err != nil {
 				return nil, err
 			}
 		}
+
 		return routes, nil
 	}
 	if allowDefaultRoute {
 		for index, gateway := range lease.Routers {
 			if prefixLength == 32 {
-				if err := add(gateway+"/32", "0.0.0.0", metric); err != nil {
+				err := add(gateway+"/32", "0.0.0.0", metric)
+				if err != nil {
 					return nil, err
 				}
 			}
-			if err := add("0.0.0.0/0", gateway, metric+index); err != nil {
+			err := add("0.0.0.0/0", gateway, metric+index)
+			if err != nil {
 				return nil, err
 			}
 		}
 	}
+
 	return routes, nil
 }
 
@@ -305,6 +345,7 @@ func sameAddress(left, right netlink.Addr) bool {
 	}
 	leftBits, leftSize := left.Mask.Size()
 	rightBits, rightSize := right.Mask.Size()
+
 	return leftBits == rightBits && leftSize == rightSize
 }
 
@@ -315,11 +356,13 @@ func flushDHCPRoutes(linkIndex int) error {
 	}
 	for _, route := range routes {
 		if int(route.Protocol) == routeProtocolDHCP {
-			if err := netlink.RouteDel(&route); err != nil {
+			err := netlink.RouteDel(&route)
+			if err != nil {
 				return err
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -329,10 +372,12 @@ func flushAddresses(link netlink.Link) error {
 		return err
 	}
 	for _, address := range addresses {
-		if err := netlink.AddrDel(link, &address); err != nil {
+		err := netlink.AddrDel(link, &address)
+		if err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -360,6 +405,7 @@ func dhcpRoute(linkIndex int, destination, gateway string, metric int) (netlink.
 		}
 		route.Scope = netlink.SCOPE_UNIVERSE
 	}
+
 	return route, nil
 }
 
@@ -375,6 +421,7 @@ func maskBits(mask string) (int, error) {
 	if bits != 32 || ones < 0 {
 		return 0, fmt.Errorf("invalid subnet mask %q", mask)
 	}
+
 	return ones, nil
 }
 
@@ -384,5 +431,6 @@ func first(values ...string) string {
 			return value
 		}
 	}
+
 	return ""
 }

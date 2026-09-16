@@ -23,14 +23,15 @@ type Plan struct {
 type Action string
 
 const (
-	Preflight    Action = "Check installation prerequisites"
-	SaveConfig   Action = "Save configuration"
-	RemoveLegacy Action = "Remove legacy Debian package if installed"
-	CopyBinary   Action = "Install persistent executable"
-	WriteFiles   Action = "Write service, links, tmpfiles rule and shell completion"
-	Activate     Action = "Reload systemd, enable and restart service"
-	CheckHealth  Action = "Wait for stable proxy readiness"
-	Cleanup      Action = "Remove obsolete legacy recovery files after health verification"
+	Preflight       Action = "Check installation prerequisites"
+	PreserveRuntime Action = "Preserve the proxy and shared libraries offline"
+	SaveConfig      Action = "Save configuration"
+	RemoveLegacy    Action = "Remove legacy Debian package if installed"
+	CopyBinary      Action = "Install persistent executable"
+	WriteFiles      Action = "Write service, links, tmpfiles rule and shell completion"
+	Activate        Action = "Reload systemd, enable and restart service"
+	CheckHealth     Action = "Wait for stable proxy readiness"
+	Cleanup         Action = "Remove obsolete legacy recovery files after health verification"
 )
 
 // Backend provides the host-specific implementation of each installation action.
@@ -39,7 +40,8 @@ type Backend interface {
 }
 
 func (p Plan) Validate() error {
-	if err := p.Config.Validate(); err != nil {
+	err := p.Config.Validate()
+	if err != nil {
 		return err
 	}
 	for _, path := range []string{p.ConfigPath, p.StateDir, p.Executable} {
@@ -47,14 +49,16 @@ func (p Plan) Validate() error {
 			return fmt.Errorf("installation path must be absolute: %q", path)
 		}
 	}
+
 	return nil
 }
 
 func (p Plan) Actions() []Action {
-	actions := []Action{Preflight}
+	actions := []Action{Preflight, PreserveRuntime}
 	if p.SaveConfig {
 		actions = append(actions, SaveConfig)
 	}
+
 	return append(actions, RemoveLegacy, CopyBinary, WriteFiles, Activate, CheckHealth, Cleanup)
 }
 
@@ -64,7 +68,7 @@ func (p Plan) Preview(out io.Writer) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(out, "Dry run: no files will be saved, no package removed, no service started, and no telemetry sent."); err != nil {
+	if _, err := fmt.Fprintln(out, "Dry run: no changes, services or telemetry."); err != nil {
 		return err
 	}
 	for _, action := range p.Actions() {
@@ -72,22 +76,27 @@ func (p Plan) Preview(out io.Writer) error {
 			return err
 		}
 	}
-	_, err := fmt.Fprintln(out, "Preview complete. System prerequisites and service health have not been tested.")
+	_, err := fmt.Fprintln(out, "Preview complete. Prerequisites and service health remain untested.")
+
 	return err
 }
 
 // Execute stops at the first failure. Cleanup is reached only after health passes.
 func (p Plan) Execute(ctx context.Context, backend Backend) error {
-	if err := p.Validate(); err != nil {
+	err := p.Validate()
+	if err != nil {
 		return err
 	}
 	for _, action := range p.Actions() {
-		if err := ctx.Err(); err != nil {
+		err := ctx.Err()
+		if err != nil {
 			return err
 		}
-		if err := backend.Apply(ctx, action, p); err != nil {
+		err = backend.Apply(ctx, action, p)
+		if err != nil {
 			return fmt.Errorf("%s: %w", action, err)
 		}
 	}
+
 	return nil
 }

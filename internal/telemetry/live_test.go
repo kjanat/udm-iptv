@@ -65,6 +65,7 @@ func TestLiveSentryDelivery(t *testing.T) {
 
 type verificationTransport struct {
 	*sentry.HTTPTransport
+
 	mu         sync.Mutex
 	deliveries []struct {
 		kind   string
@@ -109,5 +110,6 @@ func (transport *verificationTransport) RoundTrip(request *http.Request) (*http.
 		status int
 	}{item.Type, status})
 	transport.mu.Unlock()
+
 	return response, err
 }
