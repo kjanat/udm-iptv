@@ -10,9 +10,10 @@ import (
 	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
-	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 const routeProtocolDHCP = 16

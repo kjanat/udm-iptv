@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/getsentry/sentry-go"
+
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 

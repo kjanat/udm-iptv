@@ -8,14 +8,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/kjanat/udm-iptv/internal/device"
+	systemd "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/spf13/cobra"
 
+	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/device"
 	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/service"
-
-	systemd "github.com/coreos/go-systemd/v22/dbus"
-	"github.com/kjanat/udm-iptv/internal/config"
-	"github.com/spf13/cobra"
 )
 
 func (application *Application) installCommand() *cobra.Command {

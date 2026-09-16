@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/spf13/cobra"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 func TestPreviewIsIndependentOfHost(t *testing.T) {

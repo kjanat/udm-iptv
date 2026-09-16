@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kjanat/udm-iptv/internal/service"
+	"github.com/spf13/cobra"
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/network"
-	"github.com/spf13/cobra"
+	"github.com/kjanat/udm-iptv/internal/service"
 )
 
 func (application *Application) daemonCommand() *cobra.Command {

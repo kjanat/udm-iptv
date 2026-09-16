@@ -10,8 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/vishvananda/netlink"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 var (

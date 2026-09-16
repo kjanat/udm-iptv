@@ -8,13 +8,13 @@ import (
 	"io"
 	"strings"
 
-	"github.com/kjanat/udm-iptv/internal/device"
-
 	"charm.land/huh/v2"
+	"github.com/spf13/cobra"
+
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/device"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 	"github.com/kjanat/udm-iptv/internal/ui"
-	"github.com/spf13/cobra"
 )
 
 func (application *Application) formRunner() ui.RunForm {

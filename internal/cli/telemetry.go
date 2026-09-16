@@ -4,9 +4,10 @@ import (
 	"context"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
-	"github.com/spf13/cobra"
 )
 
 func (application *Application) reportSavedConfiguration(command *cobra.Command) {

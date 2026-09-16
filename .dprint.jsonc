@@ -30,7 +30,7 @@
 	},
 	"plugins": [
 		"https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
-		"npm:@dprint/json@0.23.0",
+		"npm:@dprint/json@0.24.0",
 		"npm:@dprint/markdown@0.24.0",
 		"npm:dprint-plugin-yaml@0.6.0",
 		"npm:@jakebailey/dprint-plugin-gofumpt@0.0.18",

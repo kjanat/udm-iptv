@@ -7,8 +7,9 @@ import (
 	"testing"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/vishvananda/netlink"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 func TestProxyConfigurationKeepsNATOutOfImproxy(t *testing.T) {

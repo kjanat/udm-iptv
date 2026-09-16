@@ -10,12 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kjanat/udm-iptv/internal/atomicfile"
-	"github.com/kjanat/udm-iptv/internal/service"
-
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/runtimebundle"
+	"github.com/kjanat/udm-iptv/internal/service"
 )
 
 // SystemBackend applies plans using the host filesystem and systemd.
