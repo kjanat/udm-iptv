@@ -42,9 +42,9 @@ func runWizard(session *ui.Session) ui.RunForm {
 }
 
 func (application *Application) configureForm(ctx context.Context, value *config.Config) error {
-	profiles := config.Profiles()
-	for i := range profiles {
-		profiles[i].Config = device.WithInterfaces(profiles[i].Config)
+	catalog := config.DefaultCatalog()
+	for i := range catalog.Profiles {
+		catalog.Profiles[i].Config = device.WithInterfaces(catalog.Profiles[i].Config)
 	}
 
 	session := application.wizardSession("").Observe(func(event, question string) {
@@ -52,7 +52,7 @@ func (application *Application) configureForm(ctx context.Context, value *config
 	})
 	defer session.Close()
 
-	return ui.ConfigureSuggested(ctx, value, profiles, runWizard(session), application.providerSuggestion, detectedPorts()...)
+	return ui.ConfigureSuggested(ctx, value, catalog, runWizard(session), application.providerSuggestion, detectedPorts()...)
 }
 
 // Suggestions never replace saved/imported settings or explicit --profile values.
@@ -71,7 +71,7 @@ func (application *Application) suggestProvider(ctx context.Context, value confi
 	if err != nil {
 		return err
 	}
-	application.providerSuggestion = suggestedProfile(identity)
+	application.providerSuggestion = suggestedProvider(identity)
 	if application.providerSuggestion == "" {
 		return writeString(application.Err, "Provider unknown. Choose manually.\n")
 	}
@@ -79,16 +79,12 @@ func (application *Application) suggestProvider(ctx context.Context, value confi
 	return writef(application.Err, "Suggested: %s (PTR hint, unverified). Confirm your TV provider.\n", application.providerSuggestion)
 }
 
-func suggestedProfile(identity telemetry.NetworkIdentity) string {
+func suggestedProvider(identity telemetry.NetworkIdentity) string {
 	if identity.Method != "ptr-suffix" || identity.Confidence != "low" || identity.Status != "ip-and-ptr" {
 		return ""
 	}
-	id := identity.Provider
-	if id == "xs4all" || id == "freedom" {
-		id = "kpn"
-	}
-	if _, ok := config.ProfileByID(id); ok && id != "custom" {
-		return id
+	if _, ok := config.DefaultCatalog().ProviderByID(identity.Provider); ok {
+		return identity.Provider
 	}
 
 	return ""
@@ -101,7 +97,7 @@ func (application *Application) previewCommand() *cobra.Command {
 		session := application.wizardSession(previewHeader)
 		defer session.Close()
 
-		return ui.Configure(ctx, value, config.Profiles(), runWizard(session),
+		return ui.Configure(ctx, value, config.DefaultCatalog(), runWizard(session),
 			ui.Port{Name: "eth8", Description: "example: connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true},
 			ui.Port{Name: "eth9", Description: "example: disconnected", AddressesKnown: true},
 			ui.Port{Name: "br0", Description: "example: LAN", Addresses: []string{"192.168.1.1/24"}, AddressesKnown: true})

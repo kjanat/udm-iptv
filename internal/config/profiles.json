@@ -1,0 +1,148 @@
+{
+	"$schema": "./profiles.schema.json",
+	"schemaVersion": 1,
+	"countries": {
+		"BR": { "name": "Brazil", "localName": "Brasil" },
+		"CH": { "name": "Switzerland", "localName": "Schweiz" },
+		"DE": { "name": "Germany", "localName": "Deutschland" },
+		"GB": { "name": "United Kingdom", "localName": "United Kingdom" },
+		"LU": { "name": "Luxembourg", "localName": "Lëtzebuerg" },
+		"NL": { "name": "Netherlands", "localName": "Nederland" },
+		"NO": { "name": "Norway", "localName": "Norge" },
+		"PT": { "name": "Portugal", "localName": "Portugal" }
+	},
+	"providers": {
+		"bt": { "name": "BT", "countries": ["GB"], "profiles": ["bt"] },
+		"freedom": { "name": "Freedom Internet", "countries": ["NL"], "profiles": ["kpn"] },
+		"init7": { "name": "Init7", "countries": ["CH"], "profiles": ["init7"] },
+		"kpn": { "name": "KPN", "countries": ["NL"], "profiles": ["kpn"] },
+		"magentatv": { "name": "Telekom MagentaTV", "countries": ["DE"], "profiles": ["magentatv"] },
+		"meo": { "name": "MEO", "countries": ["PT"], "profiles": ["meo"] },
+		"posttv": { "name": "POST Luxembourg", "countries": ["LU"], "profiles": ["posttv"] },
+		"solcon": { "name": "Solcon", "countries": ["NL"], "profiles": ["solcon"] },
+		"swisscom": { "name": "Swisscom", "countries": ["CH"], "profiles": ["swisscom"] },
+		"telenor": { "name": "Telenor", "countries": ["NO"], "profiles": ["telenor"] },
+		"tweak": { "name": "Tweak", "countries": ["NL"], "profiles": ["tweak"] },
+		"vivo": { "name": "Vivo", "countries": ["BR"], "profiles": ["vivo", "vivogvt"] },
+		"xs4all": { "name": "XS4ALL", "countries": ["NL"], "profiles": ["kpn"] }
+	},
+	"profiles": {
+		"bt": {
+			"name": "BT IPTV",
+			"wan": {
+				"vlan": 0,
+				"dhcp": false,
+				"staticAddress": "10.20.30.1/24",
+				"natDestinations": ["109.159.247.0/24"]
+			},
+			"sourceRanges": ["224.0.0.0/4", "109.159.247.0/24"]
+		},
+		"init7": {
+			"name": "Init7 TV7",
+			"wan": {
+				"vlan": 0,
+				"dhcp": false,
+				"natDestinations": ["77.109.128.0/19"]
+			},
+			"sourceRanges": ["224.0.0.0/8", "239.77.0.0/16", "77.109.128.0/19", "233.50.230.0/24"]
+		},
+		"kpn": {
+			"name": "KPN network",
+			"wan": {
+				"vlan": 4,
+				"dhcp": true,
+				"dhcpOptions": ["-O", "staticroutes", "-V", "IPTV_RG"],
+				"natDestinations": ["213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"]
+			},
+			"sourceRanges": ["213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"]
+		},
+		"magentatv": {
+			"name": "MagentaTV",
+			"wan": {
+				"interface": "ppp0",
+				"vlan": 0,
+				"dhcp": false,
+				"natDestinations": ["87.141.0.0/16", "193.158.0.0/15"]
+			},
+			"sourceRanges": ["224.0.0.0/4", "87.141.0.0/16", "193.158.0.0/15"]
+		},
+		"meo": {
+			"name": "MEO IPTV",
+			"wan": {
+				"vlan": 0,
+				"dhcp": false,
+				"natDestinations": ["10.159.0.0/16", "10.173.0.0/16", "194.65.46.0/23", "213.13.16.0/20"]
+			},
+			"sourceRanges": ["10.159.0.0/16", "10.173.0.0/16", "194.65.46.0/23", "213.13.16.0/20", "224.0.0.0/4"]
+		},
+		"posttv": {
+			"name": "PostTV",
+			"wan": {
+				"interface": "eth8.35",
+				"vlan": 0,
+				"dhcp": false,
+				"staticAddress": "10.10.10.10/32",
+				"natDestinations": ["172.19.9.0/24"]
+			},
+			"sourceRanges": ["172.19.9.0/24"]
+		},
+		"solcon": {
+			"name": "Solcon IPTV",
+			"wan": {
+				"vlan": 4,
+				"dhcp": true,
+				"dhcpOptions": ["-O", "staticroutes", "-V", "IPTV_RG"],
+				"natDestinations": ["10.0.0.0/8", "10.252.0.0/16", "10.253.0.0/16", "217.166.0.0/16"]
+			},
+			"sourceRanges": ["10.0.0.0/8", "10.252.0.0/16", "10.253.0.0/16", "217.166.0.0/16"]
+		},
+		"swisscom": {
+			"name": "Swisscom TV",
+			"wan": {
+				"vlan": 0,
+				"dhcp": false,
+				"natDestinations": ["195.186.0.0/16", "213.3.72.0/24"]
+			},
+			"sourceRanges": ["195.186.0.0/16", "213.3.72.0/24", "224.0.0.0/4"]
+		},
+		"telenor": {
+			"name": "Telenor T-We",
+			"wan": {
+				"vlan": 0,
+				"dhcp": false,
+				"natDestinations": ["93.91.111.0/24", "148.122.7.125/32"]
+			},
+			"sourceRanges": ["224.0.0.0/4", "93.91.111.0/24", "148.122.7.125/32"]
+		},
+		"tweak": {
+			"name": "Tweak IPTV",
+			"wan": {
+				"vlan": 4,
+				"dhcp": true,
+				"dhcpOptions": ["-O", "staticroutes"],
+				"natDestinations": ["0.0.0.0/0"]
+			},
+			"sourceRanges": ["0.0.0.0/0"]
+		},
+		"vivo": {
+			"name": "São Paulo network (VLAN 20, DHCP)",
+			"note": "IPTV DNS servers: 177.16.30.67 and 177.16.30.7.",
+			"wan": {
+				"vlan": 20,
+				"dhcp": true,
+				"natDestinations": ["172.28.0.0/14", "201.0.52.0/23", "200.161.71.0/24", "177.16.0.0/16"]
+			},
+			"sourceRanges": ["172.28.0.0/14", "201.0.52.0/23", "200.161.71.0/24", "177.16.0.0/16"]
+		},
+		"vivogvt": {
+			"name": "GVT network (VLAN 4000, static)",
+			"wan": {
+				"vlan": 4000,
+				"dhcp": false,
+				"staticAddress": "10.0.0.1/32",
+				"natDestinations": ["0.0.0.0/0"]
+			},
+			"sourceRanges": ["0.0.0.0/0"]
+		}
+	}
+}

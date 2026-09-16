@@ -39,71 +39,183 @@ func newFormValues(value config.Config) formValues {
 
 // Configure edits a private draft and only updates value after successful validation.
 // Profiles must already contain any detected interface defaults.
-func Configure(ctx context.Context, value *config.Config, profiles []config.Profile, run RunForm, ports ...Port) error {
-	return ConfigureSuggested(ctx, value, profiles, run, "", ports...)
+func Configure(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, ports ...Port) error {
+	return ConfigureSuggested(ctx, value, catalog, run, "", ports...)
+}
+
+// selection is the country → provider → profile path the wizard walks.
+// An empty country means custom settings without a provider profile.
+type selection struct {
+	country, provider, profile string
+}
+
+func startingSelection(catalog config.Catalog, current, suggestion string) selection {
+	if provider, found := catalog.ProviderByID(suggestion); found {
+		return selection{country: provider.Countries[0], provider: provider.ID, profile: provider.Profiles[0]}
+	}
+	if country, provider, found := catalog.Locate(current); found {
+		return selection{country: country, provider: provider, profile: current}
+	}
+
+	return selection{}
+}
+
+func countryPage(catalog config.Catalog, chosen *string) page {
+	options := make([]huh.Option[string], 0, len(catalog.Countries)+1)
+	for _, country := range catalog.Countries {
+		label := country.Name
+		if country.LocalName != country.Name {
+			label += " · " + country.LocalName
+		}
+		options = append(options, huh.NewOption(label, country.Code))
+	}
+	options = append(options, huh.NewOption("Other country or provider · custom settings", ""))
+
+	return newPage(huh.NewSelect[string]().Key("country").
+		Title("Where do you live?").
+		Description("Pick your country to see the TV providers known to work there.").
+		Options(options...).Height(len(options) + selectChrome).Value(chosen))
+}
+
+func providerPage(providers []config.Provider, suggestion string, chosen *string) page {
+	options := make([]huh.Option[string], 0, len(providers))
+	for _, provider := range providers {
+		label := provider.Name
+		if provider.ID == suggestion {
+			label += " · PTR suggestion"
+		}
+		options = append(options, huh.NewOption(label, provider.ID))
+	}
+
+	return newPage(huh.NewSelect[string]().Key("provider").
+		Title("Who is your TV provider?").
+		Description("The company you pay for TV.").
+		Options(options...).Height(len(options) + selectChrome).Value(chosen))
+}
+
+func profilePage(profiles []config.Profile, chosen *string) page {
+	options := make([]huh.Option[string], 0, len(profiles))
+	for _, profile := range profiles {
+		options = append(options, huh.NewOption(profile.Name, profile.ID))
+	}
+
+	return newPage(huh.NewSelect[string]().Key("profile").
+		Title("Which network are you on?").
+		Description("Loads matching defaults. You can change them next.").
+		Options(options...).Height(len(options) + selectChrome).Value(chosen))
+}
+
+func ensureChoice(chosen *string, ids []string) {
+	if !slices.Contains(ids, *chosen) {
+		*chosen = ids[0]
+	}
+}
+
+// questions counts the selection questions the current path will ask.
+func (chosen selection) questions(catalog config.Catalog) int {
+	count := 1
+	if chosen.country == "" {
+		return count
+	}
+	if len(catalog.ProvidersIn(chosen.country)) > 1 {
+		count++
+	}
+	if len(catalog.ProfilesOf(chosen.provider)) > 1 {
+		count++
+	}
+
+	return count
+}
+
+// chooseProfile runs the country, provider and profile questions, skipping any
+// question with a single answer. It returns the number of questions asked.
+func chooseProfile(ctx context.Context, catalog config.Catalog, run RunForm, chosen *selection, suggestion string, remaining int) (int, error) {
+	asked := 0
+	after := func() int { return chosen.questions(catalog) - asked - 1 + remaining + 1 }
+	err := run(ctx, wizardForm(countryPage(catalog, &chosen.country)).steps(asked, after()))
+	if err != nil {
+		return asked, err
+	}
+	asked++
+	if chosen.country == "" {
+		chosen.provider, chosen.profile = "", "custom"
+
+		return asked, nil
+	}
+	providers := catalog.ProvidersIn(chosen.country)
+	ensureChoice(&chosen.provider, providerIDs(providers))
+	if len(providers) > 1 {
+		err = run(ctx, wizardForm(providerPage(providers, suggestion, &chosen.provider)).steps(asked, after()))
+		if err != nil {
+			return asked, err
+		}
+		asked++
+	}
+	profiles := catalog.ProfilesOf(chosen.provider)
+	ensureChoice(&chosen.profile, profileIDs(profiles))
+	if len(profiles) > 1 {
+		err = run(ctx, wizardForm(profilePage(profiles, &chosen.profile)).steps(asked, after()))
+		if err != nil {
+			return asked, err
+		}
+		asked++
+	}
+
+	return asked, nil
+}
+
+func providerIDs(providers []config.Provider) []string {
+	result := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		result = append(result, provider.ID)
+	}
+
+	return result
+}
+
+func profileIDs(profiles []config.Profile) []string {
+	result := make([]string, 0, len(profiles))
+	for _, profile := range profiles {
+		result = append(result, profile.ID)
+	}
+
+	return result
 }
 
 // ConfigureSuggested highlights evidence without treating it as an applied choice.
-// The caller supplies a profile ID only for a new, unconfigured installation.
-func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []config.Profile, run RunForm, suggestion string, ports ...Port) error {
+// The caller supplies a provider ID only for a new, unconfigured installation.
+func ConfigureSuggested(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, ports ...Port) error {
 	original := value
 	draft := clone(*value)
 	value = &draft
-	profileID := value.Profile
-	if profileID == "" || profileID == "legacy" {
-		profileID = "custom"
-	}
-	profileOptions := make([]huh.Option[string], 0, len(profiles))
-	for _, profile := range profiles {
-		label := profile.Name
-		if suggestion == profile.ID {
-			profileID = suggestion
-			label += " · PTR suggestion"
-		}
-		profileOptions = append(profileOptions, huh.NewOption(label, profile.ID))
-	}
-	selector := huh.NewSelect[string]().Key("profile").
-		Title("Who is your TV provider?").
-		Description("Loads matching defaults. You can change them next.").
-		Options(profileOptions...).Height(len(profileOptions) + selectChrome).Value(&profileID)
+	chosen := startingSelection(catalog, value.Profile, suggestion)
 	fields := newFormValues(*value)
 	estimate := configurationPages(value, ports, "", &fields)
-	err := run(ctx, wizardForm(newPage(selector)).steps(0, wizardForm(estimate...).visiblePages()+1))
+	asked, err := chooseProfile(ctx, catalog, run, &chosen, suggestion, wizardForm(estimate...).visibleFields())
 	if err != nil {
 		return err
 	}
-	if profileID != value.Profile {
-		found := false
-		for _, profile := range profiles {
-			if profile.ID != profileID {
-				continue
+	if chosen.profile != value.Profile {
+		if chosen.profile == "custom" {
+			value.Profile = "custom"
+		} else {
+			profile, found := catalog.Profile(chosen.profile)
+			if !found {
+				return fmt.Errorf("unknown provider profile %q", chosen.profile)
 			}
-			found = true
-			if profileID != "custom" {
-				selected := clone(profile.Config)
-				selected.Telemetry = value.Telemetry
-				*value = selected
-			}
-			value.Profile = profileID
-
-			break
-		}
-		if !found {
-			return fmt.Errorf("unknown provider profile %q", profileID)
+			selected := clone(profile.Config)
+			selected.Telemetry = value.Telemetry
+			*value = selected
 		}
 	}
 
 	note := ""
-	for _, profile := range profiles {
-		if profile.ID == profileID {
-			note = profile.Note
-
-			break
-		}
+	if profile, found := catalog.Profile(value.Profile); found {
+		note = profile.Note
 	}
 	fields = newFormValues(*value)
 	groups, selectedPort, selectedLAN, lanExtra := configurationGroups(value, ports, note, &fields)
-	settings := wizardForm(groups...).steps(1, 1)
+	settings := wizardForm(groups...).steps(asked, 1)
 	err = run(ctx, settings)
 	if err != nil {
 		return err
@@ -125,7 +237,7 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []co
 		huh.NewConfirm().Key("accept").Title("Use these settings?").
 			Description(reviewSummary(*value)).
 			Affirmative("Continue").Negative("Cancel").Value(&accepted),
-	)).steps(1+settings.visiblePages(), 0))
+	)).steps(asked+settings.visiblePages(), 0))
 	if err != nil {
 		return err
 	}

@@ -68,7 +68,7 @@ func (application *Application) telemetryCommand() *cobra.Command {
 			return writeString(application.Out, "Feedback submitted to the reporting queue; delivery is best effort.\n")
 		},
 	}
-	feedback.Flags().StringVar(&provider, "provider", "", "confirm your provider: profile ID, xs4all or freedom")
+	feedback.Flags().StringVar(&provider, "provider", "", "confirm your provider by provider or profile ID")
 	command.AddCommand(feedback)
 
 	return command

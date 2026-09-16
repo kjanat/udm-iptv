@@ -6,7 +6,9 @@ type helpEntry struct {
 
 // Plain-language help per field key, shown by Frame on F1.
 var fieldHelp = map[string]helpEntry{
-	"profile":        {"TV provider", "Pick the company you pay for TV. This fills in the settings that are known to work for that provider. You can still change every setting on the next pages. Choose Custom if your provider is not listed."},
+	"country":        {"Country", "Pick the country where your TV subscription is. The next question only shows providers known to work there. Choose Other if your country or provider is not listed; you then fill in every setting yourself."},
+	"provider":       {"TV provider", "Pick the company you pay for TV. This fills in the settings that are known to work for that provider. You can still change every setting on the next pages."},
+	"profile":        {"Network", "Some providers run more than one TV network, each with its own VLAN and addresses. Pick the one that matches your region or the network you were connected on. Your provider's welcome letter or app usually names it."},
 	"wan-port":       {"Internet port", "The physical port on the router where the cable from your modem or fibre box plugs in. IPTV travels over the same cable as your internet, so this is where the TV traffic arrives. Connected only means a cable is plugged in and a link was detected."},
 	"wan-interface":  {"Interface name", "The router's own name for a port, such as eth8. You can find it in the UniFi interface or by running ip link on the router. Only needed when the port you want is not in the list."},
 	"vlan":           {"IPTV VLAN ID", "Many providers send TV over a separate numbered lane on the same cable, called a VLAN. The number is given by your provider. KPN uses 4 for example. Enter 0 if your provider sends TV without a VLAN."},

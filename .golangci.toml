@@ -73,6 +73,7 @@ allow     = [
   "github.com/kjanat/",
   "github.com/moby/",
   "github.com/opencontainers/",
+  "github.com/santhosh-tekuri/jsonschema/",
   "github.com/spf13/",
   "github.com/vishvananda/",
   "golang.org/x/",
@@ -103,12 +104,6 @@ require-specific    = true
 [linters.exclusions]  # tombi: format.rules.table-keys-order = "ascending"
 generated   = "strict"
 warn-unused = true
-
-[[linters.exclusions.rules]]
-# Streams a download and a squashfs extraction too large to buffer as []byte for atomicfile.Write;
-# both are build-pipeline work files, not daemon/installer state.
-linters = ["forbidigo"]
-path    = "internal/firmware/images\\.go"
 
 [formatters]  # tombi: format.rules.table-keys-order = "ascending"
 enable = ["gci", "goimports"]

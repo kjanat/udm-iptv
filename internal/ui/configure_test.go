@@ -23,29 +23,39 @@ func TestConfigureProfileSwitch(t *testing.T) {
 			original := clone(value)
 			selected, _ := config.FromProfile("tweak", value)
 			selected.WAN.Interface = "example9"
-			profiles := []config.Profile{
-				{ID: "kpn", Name: "KPN", Config: value},
-				{ID: "tweak", Name: "Tweak", Config: selected},
+			catalog := config.Catalog{
+				Countries: []config.Country{{Code: "NL", Name: "Netherlands", LocalName: "Nederland"}},
+				Providers: []config.Provider{
+					{ID: "kpn", Name: "KPN", Countries: []string{"NL"}, Profiles: []string{"kpn"}},
+					{ID: "tweak", Name: "Tweak", Countries: []string{"NL"}, Profiles: []string{"tweak"}},
+				},
+				Profiles: []config.Profile{
+					{ID: "kpn", Name: "KPN", Config: value},
+					{ID: "tweak", Name: "Tweak", Config: selected},
+				},
 			}
 			calls := 0
 			aborted := errors.New("cancelled")
-			err := Configure(context.Background(), &value, profiles, func(_ context.Context, wizard *Wizard) error {
+			err := Configure(context.Background(), &value, catalog, func(_ context.Context, wizard *Wizard) error {
 				form := wizard.Form
 				calls++
-				if calls == 1 {
+				if calls == 2 {
 					field := form.GetFocusedField()
+					if field.GetKey() != "provider" {
+						t.Fatalf("second form asks %q", field.GetKey())
+					}
 					field.Focus()
 					_, _ = field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 					_, _ = field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				} else if cancel {
+				} else if cancel && calls > 2 {
 					return aborted
 				}
 
 				return nil
 			})
-			wantCalls := 3
+			wantCalls := 4
 			if cancel {
-				wantCalls = 2
+				wantCalls = 3
 			}
 			if calls != wantCalls {
 				t.Fatalf("forms = %d", calls)
@@ -187,7 +197,7 @@ func TestConfigureFailureDoesNotChangeInput(t *testing.T) {
 		value.WAN.VLAN = 5000
 		original := clone(value)
 		calls := 0
-		err := Configure(context.Background(), &value, config.Profiles(), func(_ context.Context, _ *Wizard) error {
+		err := Configure(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, _ *Wizard) error {
 			calls++
 			if failAt == 1 {
 				return huh.ErrUserAborted
@@ -235,7 +245,7 @@ func TestEveryQuestionHasHelp(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, []Port{{Name: "eth8"}}, "", &fields)
-	keys := []string{"profile", "accept"}
+	keys := []string{"country", "provider", "profile", "accept"}
 	for _, p := range groups {
 		keys = append(keys, p.keys...)
 	}
@@ -436,10 +446,10 @@ func boxTop(content string) int {
 	return 0
 }
 
-func TestProviderListShowsEveryProvider(t *testing.T) {
+func TestCountryListShowsEveryCountry(t *testing.T) {
 	value := config.Default()
 	calls := 0
-	err := Configure(context.Background(), &value, config.Profiles(), func(_ context.Context, wizard *Wizard) error {
+	err := Configure(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {
 		calls++
 		if calls > 1 {
 			return huh.ErrUserAborted
@@ -448,9 +458,9 @@ func TestProviderListShowsEveryProvider(t *testing.T) {
 		frame.Init()
 		frame.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 		view := frame.View().Content
-		for _, profile := range config.Profiles() {
-			if !strings.Contains(view, profile.Name) {
-				t.Errorf("provider %q scrolled out of view", profile.Name)
+		for _, country := range config.DefaultCatalog().Countries {
+			if !strings.Contains(view, country.Name) {
+				t.Errorf("country %q scrolled out of view", country.Name)
 			}
 		}
 

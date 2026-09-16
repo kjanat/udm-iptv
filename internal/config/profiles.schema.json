@@ -1,0 +1,218 @@
+{
+  "$id": "https://raw.githubusercontent.com/kjanat/udm-iptv/refs/heads/go/internal/config/profiles.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cidr": {
+      "type": "string",
+      "pattern": "^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/(3[0-2]|[12]?[0-9])$"
+    },
+    "cidrList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/cidr"
+      }
+    },
+    "country": {
+      "type": "object",
+      "required": [
+        "localName",
+        "name"
+      ],
+      "properties": {
+        "localName": {
+          "$ref": "#/$defs/label"
+        },
+        "name": {
+          "$ref": "#/$defs/label"
+        }
+      },
+      "additionalProperties": false
+    },
+    "countryCode": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]{1,23}$",
+      "not": {
+        "enum": [
+          "custom",
+          "legacy"
+        ]
+      }
+    },
+    "interface": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,14}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^\\S(.*\\S)?$"
+    },
+    "profile": {
+      "type": "object",
+      "required": [
+        "name",
+        "sourceRanges",
+        "wan"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/label"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "sourceRanges": {
+          "$ref": "#/$defs/cidrList"
+        },
+        "wan": {
+          "$ref": "#/$defs/wan"
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "countries",
+        "name",
+        "profiles"
+      ],
+      "properties": {
+        "countries": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/countryCode"
+          }
+        },
+        "name": {
+          "$ref": "#/$defs/label"
+        },
+        "profiles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "wan": {
+      "type": "object",
+      "required": [
+        "dhcp",
+        "natDestinations",
+        "vlan"
+      ],
+      "properties": {
+        "dhcp": {
+          "type": "boolean"
+        },
+        "dhcpOptions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^(-[A-Za-z]|[A-Za-z0-9_]+)$"
+          }
+        },
+        "interface": {
+          "$ref": "#/$defs/interface"
+        },
+        "natDestinations": {
+          "$ref": "#/$defs/cidrList"
+        },
+        "staticAddress": {
+          "$ref": "#/$defs/cidr"
+        },
+        "vlan": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4094
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "dhcp": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "staticAddress"
+          ]
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "dhcpOptions"
+          ]
+        }
+      }
+    }
+  },
+  "title": "udm-iptv provider catalog",
+  "type": "object",
+  "required": [
+    "countries",
+    "profiles",
+    "providers",
+    "schemaVersion"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "countries": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/country"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/countryCode"
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/profile"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "providers": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/provider"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "schemaVersion": {
+      "const": 1
+    }
+  },
+  "additionalProperties": false
+}
