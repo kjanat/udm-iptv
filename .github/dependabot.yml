@@ -5,7 +5,7 @@ version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
-    schedule: &Weekly { interval: weekly }
+    schedule: { interval: weekly }
   - package-ecosystem: github-actions
     directory: /
-    schedule: *Weekly
+    schedule: { interval: weekly }
