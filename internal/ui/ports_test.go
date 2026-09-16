@@ -15,7 +15,7 @@ func TestWANPortSelection(t *testing.T) {
 		{Name: "eth8", Description: "connected, Internet route"},
 		{Name: "eth9", Description: "disconnected"},
 	})
-	form := wizardForm(groups...)
+	form := wizardForm(groups...).Form
 	field := form.GetFocusedField()
 	field.Focus()
 	field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
@@ -28,7 +28,7 @@ func TestWANPortSelection(t *testing.T) {
 	}
 
 	groups, selected = wanGroups(&current, nil)
-	form = wizardForm(groups...)
+	form = wizardForm(groups...).Form
 	field = form.GetFocusedField()
 	field.Focus()
 	field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
@@ -44,7 +44,7 @@ func TestWANPortSelection(t *testing.T) {
 func TestWANPortLabels(t *testing.T) {
 	current := "eth8"
 	groups, _ := wanGroups(&current, []Port{{Name: "eth8", Description: "example: connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true}})
-	form := wizardForm(groups...)
+	form := wizardForm(groups...).Form
 	form.Init()
 	form.Update(tea.WindowSizeMsg{Width: 100, Height: 35})
 	view := form.View()
@@ -62,7 +62,7 @@ func TestLANNetworkSelection(t *testing.T) {
 		{Name: "br4", Addresses: []string{"192.168.4.1/24"}, AddressesKnown: true},
 		{Name: "eth0.10", Addresses: []string{"10.0.10.1/24"}, AddressesKnown: true},
 	})
-	form := wizardForm(groups...)
+	form := wizardForm(groups...).Form
 	form.Init()
 	form.Update(tea.WindowSizeMsg{Width: 100, Height: 35})
 	view := form.View()
@@ -83,7 +83,7 @@ func TestLANNetworkSelection(t *testing.T) {
 	}
 
 	groups, selected, extra := lanGroups(nil, nil)
-	form = wizardForm(groups...)
+	form = wizardForm(groups...).Form
 	if !reflect.DeepEqual(*selected, []string{manualPort}) {
 		t.Fatal("manual fallback unavailable")
 	}

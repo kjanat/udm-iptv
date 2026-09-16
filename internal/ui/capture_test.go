@@ -29,7 +29,10 @@ func TestCaptureModelRecognizesFailure(t *testing.T) {
 	}
 	model := NewCaptureModel(path, time.Time{}, 0)
 	updated, _ := model.Update(captureTick(time.Now()))
-	result := updated.(captureModel)
+	result, ok := updated.(captureModel)
+	if !ok {
+		t.Fatalf("Update() returned %T, want captureModel", updated)
+	}
 	if !result.failed {
 		t.Fatal("failed capture was not recognized")
 	}
@@ -44,7 +47,10 @@ func TestCaptureModelRecognizesTimeout(t *testing.T) {
 	}
 	model := NewCaptureModel(path, time.Time{}, 0)
 	updated, _ := model.Update(captureTick(time.Now()))
-	result := updated.(captureModel)
+	result, ok := updated.(captureModel)
+	if !ok {
+		t.Fatalf("Update() returned %T, want captureModel", updated)
+	}
 	if !result.failed {
 		t.Fatal("timed-out capture was not recognized")
 	}

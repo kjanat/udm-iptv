@@ -24,8 +24,8 @@ type recordingTransport struct {
 	configured bool
 }
 
-func newTestReporter(settings config.Telemetry, version string, transport sentry.Transport) (*Reporter, error) {
-	return newReporter(settings, version, transport, "https://public@example.invalid/1")
+func newTestReporter(settings config.Telemetry, transport sentry.Transport) (*Reporter, error) {
+	return newReporter(settings, "test", transport, "https://public@example.invalid/1")
 }
 
 func TestMissingBuildEndpointDoesNotUseEnvironment(t *testing.T) {
@@ -78,7 +78,7 @@ func testSettings() config.Telemetry {
 func TestSDKConfigurationPreservesPrivacyAndSampling(t *testing.T) {
 	settings := testSettings()
 	settings.TraceRate = 0.2
-	r, err := newTestReporter(settings, "test", &recordingTransport{})
+	r, err := newTestReporter(settings, &recordingTransport{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestDisabledDoesNotInitializeSDK(t *testing.T) {
 	transport := &recordingTransport{}
 	settings := config.Default().Telemetry
 	settings.Enabled = false
-	r, err := newTestReporter(settings, "test", transport)
+	r, err := newTestReporter(settings, transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestDisabledDoesNotInitializeSDK(t *testing.T) {
 
 func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
 	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
 
 func TestAllProductsAndPrivacy(t *testing.T) {
 	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestAllProductsAndPrivacy(t *testing.T) {
 }
 
 func TestFiltersDiscardUnknownData(t *testing.T) {
-	r, err := newTestReporter(testSettings(), "test", &recordingTransport{})
+	r, err := newTestReporter(testSettings(), &recordingTransport{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +254,26 @@ func TestFiltersDiscardUnknownData(t *testing.T) {
 	if r.filterLog(&sentry.Log{Body: "password=secret"}) != nil {
 		t.Fatal("raw log accepted")
 	}
+	wizard := r.filterMetric(&sentry.Metric{Name: "wizard.event", Attributes: map[string]attribute.Value{
+		"event": attribute.StringValue("help"), "question": attribute.StringValue("vlan"), "answer": attribute.StringValue("4"),
+	}})
+	if wizard == nil || wizard.Attributes["event"].AsInterface() != "help" || wizard.Attributes["question"].AsInterface() != "vlan" {
+		t.Fatalf("wizard metric lost its allowed attributes: %v", wizard)
+	}
+	if _, leaked := wizard.Attributes["answer"]; leaked {
+		t.Fatal("wizard metric forwarded an answer")
+	}
+	odd := r.filterMetric(&sentry.Metric{Name: "wizard.event", Attributes: map[string]attribute.Value{
+		"event": attribute.StringValue("typed"), "question": attribute.StringValue("10.0.0.1/24"),
+	}})
+	if odd == nil {
+		t.Fatal("wizard metric dropped instead of stripped")
+	}
+	for _, name := range []string{"event", "question"} {
+		if _, kept := odd.Attributes[name]; kept {
+			t.Fatalf("wizard metric kept unlisted %s", name)
+		}
+	}
 	if r.filterMetric(&sentry.Metric{Name: "secret.address"}) != nil {
 		t.Fatal("unknown metric accepted")
 	}
@@ -274,7 +294,7 @@ func TestProductSwitches(t *testing.T) {
 				settings.Tracing = true
 			}
 			transport := &recordingTransport{}
-			r, err := newTestReporter(settings, "test", transport)
+			r, err := newTestReporter(settings, transport)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -315,7 +335,7 @@ func TestPersistentLimitsAndRevokedConsent(t *testing.T) {
 	if err := config.Save(path, value); err != nil {
 		t.Fatal(err)
 	}
-	r, err := newTestReporter(value.Telemetry, "test", &recordingTransport{})
+	r, err := newTestReporter(value.Telemetry, &recordingTransport{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +358,7 @@ func TestPersistentLimitsAndRevokedConsent(t *testing.T) {
 
 func TestNestedTracesPreserveChildTimings(t *testing.T) {
 	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +386,7 @@ func TestNestedTracesPreserveChildTimings(t *testing.T) {
 
 func TestPanicIsReportedWithoutSwallowingOrLeakingValue(t *testing.T) {
 	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +425,7 @@ func TestZeroTraceRateSendsNoTraces(t *testing.T) {
 	settings := testSettings()
 	settings.TraceRate = 0
 	transport := &recordingTransport{}
-	r, err := newTestReporter(settings, "test", transport)
+	r, err := newTestReporter(settings, transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +440,7 @@ func TestZeroTraceRateSendsNoTraces(t *testing.T) {
 
 func TestErrorsAndLogsKeepActiveSpan(t *testing.T) {
 	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +490,7 @@ func TestCancellationAndDeadlineTraceStatus(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			transport := &recordingTransport{}
-			r, err := newTestReporter(testSettings(), "test", transport)
+			r, err := newTestReporter(testSettings(), transport)
 			if err != nil {
 				t.Fatal(err)
 			}

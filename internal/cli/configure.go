@@ -11,6 +11,28 @@ import (
 	"github.com/kjanat/udm-iptv/internal/installer"
 )
 
+// loadOrImportConfig loads the saved configuration, falls back to importing a
+// legacy config file, and otherwise reports fresh so the caller can suggest a
+// provider profile.
+func loadOrImportConfig(path string) (config.Config, bool, error) {
+	current, err := config.Load(path)
+	if err == nil {
+		return current, false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return config.Config{}, false, err
+	}
+	legacy, found, err := config.ImportFirstLegacy([]string{"/etc/udm-iptv.conf"})
+	if err != nil {
+		return config.Config{}, false, err
+	}
+	if found {
+		return legacy, false, nil
+	}
+
+	return device.Defaults(), true, nil
+}
+
 func (application *Application) configureCommand() *cobra.Command {
 	var nonInteractive bool
 	var profile, wanInterface, iptvInterface, vlanMAC, staticAddress, proxy string
@@ -24,24 +46,10 @@ func (application *Application) configureCommand() *cobra.Command {
 		Short:   "Configure IPTV",
 		Args:    cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			value := device.Defaults()
-			fresh := false
 			application.providerSuggestion = ""
-			if current, err := config.Load(application.ConfigPath); err == nil {
-				value = current
-			} else {
-				if !errors.Is(err, os.ErrNotExist) {
-					return err
-				}
-				legacy, found, legacyErr := config.ImportFirstLegacy([]string{"/etc/udm-iptv.conf"})
-				if legacyErr != nil {
-					return legacyErr
-				}
-				if found {
-					value = legacy
-				} else {
-					fresh = true
-				}
+			value, fresh, err := loadOrImportConfig(application.ConfigPath)
+			if err != nil {
+				return err
 			}
 			flags := command.Flags()
 			if flags.Changed("profile") {
@@ -133,7 +141,7 @@ func (application *Application) configureCommand() *cobra.Command {
 					return err
 				}
 			}
-			err := value.Validate()
+			err = value.Validate()
 			if err != nil {
 				return err
 			}

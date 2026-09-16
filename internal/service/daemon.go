@@ -55,27 +55,10 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	}
 	defer func() { _ = network.RemoveNAT(value) }()
 	var dhcp *managedProcess
-	var staticFailure <-chan error
 	defer func() { result = errors.Join(result, dhcp.stop()) }()
-	if value.WAN.DHCP {
-		_, _ = sdnotify.SdNotify(false, "STATUS=Waiting for the IPTV DHCP lease")
-		err := network.ResetLease(link)
-		if err != nil {
-			return fmt.Errorf("reset previous DHCP lease: %w", err)
-		}
-		dhcp, err = application.startDHCP(ctx, value)
-		if err != nil {
-			return err
-		}
-	} else {
-		staticFailure, err = startStaticReconciler(ctx, value, link)
-		if err != nil {
-			return err
-		}
-		err := network.ApplyStatic(value, link)
-		if err != nil {
-			return err
-		}
+	dhcp, staticFailure, err := application.startConnection(ctx, value, link)
+	if err != nil {
+		return err
 	}
 	if err := network.EnsureNAT(value); err != nil {
 		return err
@@ -180,11 +163,32 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	}
 }
 
+// startConnection brings up either the DHCP client or the static IPTV
+// address, returning whichever failure channel applies to the chosen mode.
+func (application *Daemon) startConnection(ctx context.Context, value config.Config, link netlink.Link) (*managedProcess, <-chan error, error) {
+	if value.WAN.DHCP {
+		_, _ = sdnotify.SdNotify(false, "STATUS=Waiting for the IPTV DHCP lease")
+		if err := network.ResetLease(link); err != nil {
+			return nil, nil, fmt.Errorf("reset previous DHCP lease: %w", err)
+		}
+		dhcp, err := application.startDHCP(ctx, value)
+
+		return dhcp, nil, err
+	}
+	var staticFailure <-chan error
+	if value.WAN.StaticAddress != "" {
+		var err error
+		staticFailure, err = startStaticReconciler(ctx, value, link)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return nil, staticFailure, network.ApplyStatic(value, link)
+}
+
 func startStaticReconciler(ctx context.Context, value config.Config, link netlink.Link) (<-chan error, error) {
 	failures := make(chan error, 1)
-	if value.WAN.StaticAddress == "" {
-		return nil, nil
-	}
 	updates := make(chan netlink.AddrUpdate, 4)
 	options := netlink.AddrSubscribeOptions{ErrorCallback: func(err error) {
 		select {

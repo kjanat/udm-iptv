@@ -266,10 +266,14 @@ func (h *firmwareHarness) waitBoot(name string) {
 
 type routerStatus struct {
 	Service struct {
-		LoadState, ActiveState, SubState, UnitFileState, Proxy string
-		Restarts                                               uint64
-		ProxyPID                                               int
-	}
+		LoadState     string `json:"loadState"`
+		ActiveState   string `json:"activeState"`
+		SubState      string `json:"subState"`
+		UnitFileState string `json:"unitFileState"`
+		Proxy         string `json:"proxy"`
+		Restarts      uint64 `json:"restarts"`
+		ProxyPID      int    `json:"proxyPID"`
+	} `json:"service"`
 }
 
 func (h *firmwareHarness) status(name string) routerStatus {
@@ -356,7 +360,9 @@ exit 1`, "capture", textPath)
 		}
 	}
 	lines := strings.Split(strings.TrimSpace(h.inside(name, "cat", jsonPath)), "\n")
-	var last struct{ Type string }
+	var last struct {
+		Type string `json:"type"`
+	}
 	for _, line := range lines {
 		err := json.Unmarshal([]byte(line), &last)
 		if err != nil {

@@ -17,7 +17,8 @@ func TestSuggestedProviderIsDraftUntilReview(t *testing.T) {
 		value := config.Default()
 		original := clone(value)
 		calls := 0
-		err := ConfigureSuggested(context.Background(), &value, config.Profiles(), func(_ context.Context, form *huh.Form) error {
+		err := ConfigureSuggested(context.Background(), &value, config.Profiles(), func(_ context.Context, wizard *Wizard) error {
+			form := wizard.Form
 			calls++
 			if calls == 1 && form.GetFocusedField().GetValue() != "tweak" {
 				t.Fatal("suggestion not preselected")
@@ -45,7 +46,8 @@ func TestReviewDeclinePreservesConfiguration(t *testing.T) {
 	value := config.Default()
 	original := clone(value)
 	calls := 0
-	err := Configure(context.Background(), &value, config.Profiles(), func(_ context.Context, form *huh.Form) error {
+	err := Configure(context.Background(), &value, config.Profiles(), func(_ context.Context, wizard *Wizard) error {
+		form := wizard.Form
 		calls++
 		if calls == 3 {
 			field := form.GetFocusedField()
@@ -64,13 +66,18 @@ func TestProviderSuggestionCanBeOverridden(t *testing.T) {
 	value := config.Default()
 	chosen := ""
 	calls := 0
-	err := ConfigureSuggested(t.Context(), &value, config.Profiles(), func(_ context.Context, form *huh.Form) error {
+	err := ConfigureSuggested(t.Context(), &value, config.Profiles(), func(_ context.Context, wizard *Wizard) error {
+		form := wizard.Form
 		calls++
 		if calls == 1 {
 			field := form.GetFocusedField()
 			field.Focus()
 			_, _ = field.Update(tea.KeyPressMsg{Code: tea.KeyUp})
-			chosen = field.GetValue().(string)
+			value, ok := field.GetValue().(string)
+			if !ok {
+				t.Fatalf("GetValue() returned %T, want string", field.GetValue())
+			}
+			chosen = value
 		}
 
 		return nil
@@ -81,7 +88,7 @@ func TestProviderSuggestionCanBeOverridden(t *testing.T) {
 }
 
 func TestInlineInputValidation(t *testing.T) {
-	for _, value := range []string{"213.75.0.0/16", "", "0.0.0.0/0 148.122.7.125/32"} {
+	for _, value := range []string{"213.75.0.0/16", "", "0.0.0.0/0 148.122.7.125/32", "213.75.0.0/16, 217.166.0.0/16", "213.75.0.0/16;217.166.0.0/16"} {
 		err := validatePrefixes(value)
 		if err != nil {
 			t.Fatal(err)
@@ -91,6 +98,9 @@ func TestInlineInputValidation(t *testing.T) {
 		if validatePrefixes(value) == nil {
 			t.Fatalf("accepted %q", value)
 		}
+	}
+	if got := splitList(" 1.0.0.0/8,2.0.0.0/8 ;\t3.0.0.0/8, "); !reflect.DeepEqual(got, []string{"1.0.0.0/8", "2.0.0.0/8", "3.0.0.0/8"}) {
+		t.Fatalf("splitList = %v", got)
 	}
 	if validateInterface("eth8") != nil || validateInterface("../bad") == nil {
 		t.Fatal("bad interface validation")

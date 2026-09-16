@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -28,6 +29,23 @@ func (application *Application) installCommand() *cobra.Command {
 		executable: os.Executable, requireRoot: requireRoot,
 		backend: application.installBackend(),
 	})
+}
+
+// promptForInstall suggests a provider profile for a fresh install, warns
+// about a dry run, then prompts for the remaining configuration.
+func promptForInstall(ctx context.Context, deps installDependencies, out io.Writer, value *config.Config, fresh, dryRun bool) error {
+	if fresh && !dryRun && deps.suggest != nil {
+		if err := deps.suggest(ctx, *value); err != nil {
+			return err
+		}
+	}
+	if dryRun {
+		if err := writeString(out, "Preview: nothing will be saved or applied.\n"); err != nil {
+			return err
+		}
+	}
+
+	return deps.prompt(ctx, value)
 }
 
 // Read-only discovery, interactive input and host mutation are separate seams.
@@ -76,20 +94,7 @@ func (application *Application) installCommandWith(deps installDependencies) *co
 				save = true
 			}
 			if !nonInteractive && (save || dryRun) {
-				if fresh && !dryRun && deps.suggest != nil {
-					err := deps.suggest(command.Context(), value)
-					if err != nil {
-						return err
-					}
-				}
-				if dryRun {
-					err := writeString(application.Out, "Preview: nothing will be saved or applied.\n")
-					if err != nil {
-						return err
-					}
-				}
-				err := deps.prompt(command.Context(), &value)
-				if err != nil {
+				if err := promptForInstall(command.Context(), deps, application.Out, &value, fresh, dryRun); err != nil {
 					return err
 				}
 				save = true

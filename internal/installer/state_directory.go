@@ -104,22 +104,7 @@ func removeStateFiles(root *os.Root, configPath string, keepConfig bool) error {
 			return fmt.Errorf("remove installation file %s: %w", name, err)
 		}
 	}
-	// Recovery copies have unique names; remove no unrelated bin entries.
-	bin, err := root.Open("bin")
-	if err == nil {
-		entries, readErr := bin.ReadDir(-1)
-		err = errors.Join(readErr, bin.Close())
-		if err != nil {
-			return err
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() && (entry.Name() == ".udm-iptv.previous" || strings.HasPrefix(entry.Name(), ".udm-iptv.previous-")) {
-				if err := root.Remove("bin/" + entry.Name()); err != nil {
-					return err
-				}
-			}
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if err := removeRecoveryCopies(root); err != nil {
 		return err
 	}
 	for _, name := range directories {
@@ -128,6 +113,32 @@ func removeStateFiles(root *os.Root, configPath string, keepConfig bool) error {
 		}
 	}
 	return removeEmpty(root, "bin")
+}
+
+// Recovery copies have unique names; remove no unrelated bin entries.
+func removeRecoveryCopies(root *os.Root) error {
+	bin, err := root.Open("bin")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+
+		return err
+	}
+	entries, readErr := bin.ReadDir(-1)
+	if err := errors.Join(readErr, bin.Close()); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || (entry.Name() != ".udm-iptv.previous" && !strings.HasPrefix(entry.Name(), ".udm-iptv.previous-")) {
+			continue
+		}
+		if err := root.Remove("bin/" + entry.Name()); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func removeEmpty(root *os.Root, name string) error {

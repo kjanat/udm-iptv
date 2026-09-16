@@ -10,15 +10,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 
 	"github.com/kjanat/udm-iptv/internal/config"
 )
-
-// RunForm supplies terminal input, output and execution to the wizard.
-type RunForm func(context.Context, *huh.Form) error
 
 type formValues struct {
 	vlan, dhcpOptions, nat, sources string
@@ -49,7 +46,7 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []co
 	if profileID == "" || profileID == "legacy" {
 		profileID = "custom"
 	}
-	profileOptions := make([]huh.Option[string], 0)
+	profileOptions := make([]huh.Option[string], 0, len(profiles))
 	for _, profile := range profiles {
 		label := profile.Name
 		if suggestion == profile.ID {
@@ -62,7 +59,9 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []co
 		Title("Who is your TV provider?").
 		Description("Loads matching defaults. You can change them next.").
 		Options(profileOptions...).Height(min(12, len(profileOptions)+4)).Value(&profileID)
-	err := run(ctx, wizardForm(huh.NewGroup(selector)))
+	fields := newFormValues(*value)
+	estimate := configurationPages(value, ports, "", &fields)
+	err := run(ctx, wizardForm(newPage(selector)).steps(0, wizardForm(estimate...).visiblePages()+1))
 	if err != nil {
 		return err
 	}
@@ -95,9 +94,10 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []co
 			break
 		}
 	}
-	fields := newFormValues(*value)
+	fields = newFormValues(*value)
 	groups, selectedPort, selectedLAN, lanExtra := configurationGroups(value, ports, note, &fields)
-	err = run(ctx, wizardForm(groups...))
+	settings := wizardForm(groups...).steps(1, 1)
+	err = run(ctx, settings)
 	if err != nil {
 		return err
 	}
@@ -105,20 +105,20 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []co
 		value.WAN.Interface = *selectedPort
 	}
 	value.WAN.VLAN, _ = strconv.Atoi(fields.vlan)
-	value.WAN.NATDestinations = strings.Fields(fields.nat)
+	value.WAN.NATDestinations = splitList(fields.nat)
 	value.WAN.DHCPOptions = strings.Fields(fields.dhcpOptions)
-	value.Proxy.SourceRanges = strings.Fields(fields.sources)
+	value.Proxy.SourceRanges = splitList(fields.sources)
 	value.LAN.Interfaces = resolveLAN(*selectedLAN, *lanExtra)
 	err = value.Validate()
 	if err != nil {
 		return err
 	}
 	accepted := true
-	err = run(ctx, wizardForm(huh.NewGroup(
+	err = run(ctx, wizardForm(newPage(
 		huh.NewConfirm().Key("accept").Title("Use these settings?").
 			Description(reviewSummary(*value)).
 			Affirmative("Continue").Negative("Cancel").Value(&accepted),
-	)))
+	)).steps(1+settings.visiblePages(), 0))
 	if err != nil {
 		return err
 	}
@@ -130,10 +130,16 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []co
 	return nil
 }
 
-func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues) ([]*huh.Group, *string, *[]string, *string) {
+func configurationPages(value *config.Config, ports []Port, note string, fields *formValues) []page {
+	groups, _, _, _ := configurationGroups(value, ports, note, fields) //nolint:dogsled //nolint:nolintlint
+
+	return groups
+}
+
+func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues) ([]page, *string, *[]string, *string) {
 	groups, selectedPort := wanGroups(&value.WAN.Interface, ports)
 	lanPages, selectedLAN, lanExtra := lanGroups(value.LAN.Interfaces, ports)
-	connection := huh.NewGroup(
+	connection := newPage(
 		huh.NewInput().Key("vlan").Title("IPTV VLAN ID").
 			Description("Use 0 when IPTV is untagged.").
 			Placeholder("4").Value(&fields.vlan).
@@ -148,13 +154,13 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 		huh.NewConfirm().Key("dhcp").Title("Use DHCP for the IPTV address?").
 			Description("Most providers assign this automatically.").
 			Affirmative("Yes").Negative("No").Value(&value.WAN.DHCP),
-	).Title("IPTV connection")
+	).title("IPTV connection")
 	if note != "" {
-		connection = connection.Description(note)
+		connection = connection.description(note)
 	}
 	groups = append(groups,
 		connection,
-		huh.NewGroup(
+		newPage(
 			huh.NewInput().Key("vlan-interface").Title("VLAN interface name").
 				Description("Virtual name, not a physical port.").
 				Placeholder("iptv").Value(&value.WAN.VLANInterface).Validate(validateInterface),
@@ -171,18 +177,18 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 
 					return nil
 				}),
-		).Title("VLAN interface").WithHideFunc(func() bool { return fields.vlan == "0" }),
-		huh.NewGroup(
+		).title("VLAN interface").hide(func() bool { return fields.vlan == "0" }),
+		newPage(
 			huh.NewInput().Key("dhcp-options").Title("DHCP client options").
 				Description("Arguments passed to udhcpc.").
 				Value(&fields.dhcpOptions),
 			huh.NewConfirm().Key("default-route").Title("Allow a DHCP default-route fallback?").
 				Description("Usually No. Enabling can create a second default route.").
 				Affirmative("Yes").Negative("No").Value(&value.WAN.AllowDefaultRoute),
-		).Title("DHCP options").WithHideFunc(func() bool { return !value.WAN.DHCP }),
-		huh.NewGroup(
+		).title("DHCP options").hide(func() bool { return !value.WAN.DHCP }),
+		newPage(
 			huh.NewInput().Key("static-address").Title("Static IPTV address").
-				Description("IPv4 CIDR, for example 10.0.0.2/24.").
+				Description("Address for the IPTV connection with its prefix length, for example 10.0.0.2/24.").
 				Placeholder("10.0.0.2/24").Value(&value.WAN.StaticAddress).
 				Validate(func(value string) error {
 					if value == "" {
@@ -195,16 +201,16 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 
 					return nil
 				}),
-		).Title("Static address").WithHideFunc(func() bool { return value.WAN.DHCP }),
+		).title("Static address").hide(func() bool { return value.WAN.DHCP }),
 	)
 	groups = append(groups, lanPages...)
 	groups = append(groups,
-		huh.NewGroup(
+		newPage(
 			huh.NewInput().Key("nat").Title("IPTV unicast destinations").
-				Description("Unicast destinations your TVs need to reach.").
+				Description("Networks your TVs talk to for the guide, video on demand and other services. Write each one as an address and prefix length such as 213.75.0.0/16, separated by spaces or commas.").
 				Value(&fields.nat).Validate(validatePrefixes),
-		).Title("IPTV destinations"),
-		huh.NewGroup(
+		).title("IPTV destinations"),
+		newPage(
 			huh.NewSelect[string]().Key("proxy").Title("Multicast proxy").
 				Description("Recommended on current UniFi OS.").
 				Options(
@@ -223,56 +229,23 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 			huh.NewConfirm().Key("debug").Title("Enable proxy debug logs?").
 				Description("Temporary. Leave off during normal use.").
 				Affirmative("Yes").Negative("No").Value(&value.Proxy.Debug),
-		).Title("Multicast"),
-		huh.NewGroup(
+		).title("Multicast"),
+		newPage(
 			huh.NewInput().Key("proxy-sources").Title("Allowed multicast sources").
-				Description("Allowlist for igmpproxy multicast sources.").
+				Description("Networks igmpproxy accepts multicast video from. Write each one as an address and prefix length such as 213.75.0.0/16, separated by spaces or commas. 0.0.0.0/0 accepts every source.").
 				Value(&fields.sources).
 				Validate(func(value string) error {
-					if len(strings.Fields(value)) == 0 {
+					if len(splitList(value)) == 0 {
 						return errors.New("igmpproxy needs at least one source prefix")
 					}
 
 					return validatePrefixes(value)
 				}),
-		).Title("Multicast sources").WithHideFunc(func() bool { return value.Proxy.Program != "igmpproxy" }),
-		huh.NewGroup(telemetryConsent(&value.Telemetry)),
+		).title("Multicast sources").hide(func() bool { return value.Proxy.Program != "igmpproxy" }),
+		newPage(telemetryConsent(&value.Telemetry)),
 	)
 
 	return groups, selectedPort, selectedLAN, lanExtra
-}
-
-func wizardForm(groups ...*huh.Group) *huh.Form {
-	form := huh.NewForm(groups...).WithWidth(88).WithLayout(compactLayout{})
-
-	return form.WithProgramOptions(tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
-		if size, ok := msg.(tea.WindowSizeMsg); ok && size.Width > 0 {
-			form.WithWidth(min(88, size.Width))
-		}
-
-		return msg
-	}))
-}
-
-// Keep Huh's viewport/scrolling behavior, without padding short pages to match
-// the longest page. Blank content lines retain a single visual separator.
-type compactLayout struct{}
-
-func (compactLayout) GroupWidth(_ *huh.Form, _ *huh.Group, width int) int { return width }
-
-func (compactLayout) View(form *huh.Form) string {
-	lines := strings.Split(huh.LayoutDefault.View(form), "\n")
-	result := make([]string, 0, len(lines))
-	blank := false
-	for _, line := range lines {
-		empty := strings.TrimSpace(line) == ""
-		if !empty || !blank {
-			result = append(result, line)
-		}
-		blank = empty
-	}
-
-	return strings.Join(result, "\n")
 }
 
 func reviewSummary(value config.Config) string {
@@ -303,8 +276,14 @@ func validateInterface(name string) error {
 	return value.Validate()
 }
 
+func splitList(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ',' || r == ';'
+	})
+}
+
 func validatePrefixes(value string) error {
-	for item := range strings.FieldsSeq(value) {
+	for _, item := range splitList(value) {
 		prefix, err := netip.ParsePrefix(item)
 		if err != nil || !prefix.Addr().Is4() {
 			return errors.New("use IPv4 prefixes, for example 213.75.0.0/16")

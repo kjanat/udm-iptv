@@ -286,6 +286,26 @@ func installLease(link netlink.Link, address *netlink.Addr, routes []netlink.Rou
 	return nil
 }
 
+// addStaticRoutes adds the RFC3442 classless static routes, preferring a
+// host route over the on-link gateway before adding the route itself.
+func addStaticRoutes(add func(destination, gateway string, priority int) error, staticRoutes []string, prefixLength, metric int) error {
+	if len(staticRoutes)%2 != 0 {
+		return errors.New("invalid RFC3442 classless route option")
+	}
+	for index := 0; index < len(staticRoutes); index += 2 {
+		if prefixLength == 32 && staticRoutes[index+1] != "0.0.0.0" {
+			if err := add(staticRoutes[index+1]+"/32", "0.0.0.0", metric); err != nil {
+				return err
+			}
+		}
+		if err := add(staticRoutes[index], staticRoutes[index+1], metric+index/2); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute bool) ([]netlink.Route, error) {
 	metric := lease.Metric
 	if metric < 0 {
@@ -304,20 +324,8 @@ func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute boo
 		return err
 	}
 	if len(lease.StaticRoutes) > 0 {
-		if len(lease.StaticRoutes)%2 != 0 {
-			return nil, errors.New("invalid RFC3442 classless route option")
-		}
-		for index := 0; index < len(lease.StaticRoutes); index += 2 {
-			if prefixLength == 32 && lease.StaticRoutes[index+1] != "0.0.0.0" {
-				err := add(lease.StaticRoutes[index+1]+"/32", "0.0.0.0", metric)
-				if err != nil {
-					return nil, err
-				}
-			}
-			err := add(lease.StaticRoutes[index], lease.StaticRoutes[index+1], metric+index/2)
-			if err != nil {
-				return nil, err
-			}
+		if err := addStaticRoutes(add, lease.StaticRoutes, prefixLength, metric); err != nil {
+			return nil, err
 		}
 
 		return routes, nil

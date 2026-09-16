@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"io"
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -60,14 +61,16 @@ func fixture(nested bool) []byte {
 	if nested {
 		payload = partition
 	}
-	record := make([]byte, 0x38)
+	record := make([]byte, 0x38, 0x38+len(payload)+8)
 	copy(record, "FILE../../bad")
 	binary.BigEndian.PutUint32(record[48:], uint32(len(payload)))
-	record = append(record, payload...)
+	record = append(record[:0x38:0x38], payload...)
 	checksum := crc32.ChecksumIEEE(record)
-	record = append(record, make([]byte, 8)...)
+	record = append(slices.Clip(record), make([]byte, 8)...)
 	binary.BigEndian.PutUint32(record[len(record)-8:], checksum)
-	result := append(header, record...)
+	result := make([]byte, 0, len(header)+len(record)+len(partition))
+	result = append(result, header...)
+	result = append(result, record...)
 	if !nested {
 		result = append(result, partition...)
 	}

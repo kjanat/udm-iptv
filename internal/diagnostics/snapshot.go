@@ -89,28 +89,9 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion,
 		QuickLeave: value.Proxy.QuickLeave, Debug: value.Proxy.Debug, ProxySourceRanges: sanitizePrefixes(value.Proxy.SourceRanges),
 	}}
-	result.Network.Target = network.Target(value)
+	result.Network = inspectLink(network.Target(value))
 	result.Downstream = inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces)
 	result.Switches, result.NativeProxy, result.Playback = "not checked", "not checked", "not checked"
-	if link, linkErr := netlink.LinkByName(result.Network.Target); linkErr == nil {
-		result.Network.LinkState = link.Attrs().OperState.String()
-		if addresses, addressErr := netlink.AddrList(link, netlink.FAMILY_V4); addressErr == nil {
-			result.Network.AddressCount = len(addresses)
-		}
-		if routes, routeErr := netlink.RouteList(link, netlink.FAMILY_V4); routeErr == nil {
-			for _, route := range routes {
-				destination := "default"
-				if route.Dst != nil {
-					destination = route.Dst.String()
-				}
-				if destination == "default" || destination == "0.0.0.0/0" {
-					result.Network.DefaultRoute = true
-				}
-				result.Network.Routes = append(result.Network.Routes, sanitize(destination))
-			}
-			sort.Strings(result.Network.Routes)
-		}
-	}
 	if state, stateErr := service.ReadRuntimeState(); stateErr == nil {
 		result.Service.Proxy = state.Proxy
 		result.Service.ProxyPID = state.ProxyPID
@@ -149,6 +130,35 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	}
 
 	return result, nil
+}
+
+func inspectLink(target string) networkStatus {
+	result := networkStatus{Target: target}
+	link, err := netlink.LinkByName(target)
+	if err != nil {
+		return result
+	}
+	result.LinkState = link.Attrs().OperState.String()
+	if addresses, err := netlink.AddrList(link, netlink.FAMILY_V4); err == nil {
+		result.AddressCount = len(addresses)
+	}
+	routes, err := netlink.RouteList(link, netlink.FAMILY_V4)
+	if err != nil {
+		return result
+	}
+	for _, route := range routes {
+		destination := "default"
+		if route.Dst != nil {
+			destination = route.Dst.String()
+		}
+		if destination == "default" || destination == "0.0.0.0/0" {
+			result.DefaultRoute = true
+		}
+		result.Routes = append(result.Routes, sanitize(destination))
+	}
+	sort.Strings(result.Routes)
+
+	return result
 }
 
 func RenderSnapshot(value Snapshot) string {

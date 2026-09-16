@@ -69,8 +69,7 @@ func (application *Application) root() *cobra.Command {
 		child.GroupID = "manage"
 		command.AddCommand(child)
 	}
-	observability := []*cobra.Command{application.statusCommand(), application.diagnoseCommand()}
-	observability = append(observability, application.telemetryCommand())
+	observability := []*cobra.Command{application.statusCommand(), application.diagnoseCommand(), application.telemetryCommand()}
 	for _, child := range observability {
 		child.GroupID = "observe"
 		command.AddCommand(child)

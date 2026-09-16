@@ -17,19 +17,22 @@ import (
 	"github.com/kjanat/udm-iptv/internal/ui"
 )
 
-func (application *Application) formRunner() ui.RunForm {
-	return func(ctx context.Context, form *huh.Form) error {
-		input := application.In
-		if input == nil {
-			input = strings.NewReader("")
-		}
-		output := application.Err
-		if output == nil {
-			output = io.Discard
-		}
-		// Huh's accessible runner currently discards field errors and ignores
-		// cancellation contexts. Keep the context-aware terminal runner explicit.
-		err := form.WithInput(input).WithOutput(output).WithAccessible(false).RunWithContext(ctx)
+func (application *Application) wizardSession(header string) *ui.Session {
+	input := application.In
+	if input == nil {
+		input = strings.NewReader("")
+	}
+	output := application.Err
+	if output == nil {
+		output = io.Discard
+	}
+
+	return ui.NewSession(header, input, output)
+}
+
+func runWizard(session *ui.Session) ui.RunForm {
+	return func(ctx context.Context, wizard *ui.Wizard) error {
+		err := session.Run(ctx, wizard)
 		if errors.Is(err, huh.ErrUserAborted) {
 			return errors.Join(context.Canceled, err)
 		}
@@ -44,7 +47,12 @@ func (application *Application) configureForm(ctx context.Context, value *config
 		profiles[i].Config = device.WithInterfaces(profiles[i].Config)
 	}
 
-	return ui.ConfigureSuggested(ctx, value, profiles, application.formRunner(), application.providerSuggestion, detectedPorts()...)
+	session := application.wizardSession("").Observe(func(event, question string) {
+		application.monitor.WizardEvent(ctx, event, question)
+	})
+	defer session.Close()
+
+	return ui.ConfigureSuggested(ctx, value, profiles, runWizard(session), application.providerSuggestion, detectedPorts()...)
 }
 
 // Suggestions never replace saved/imported settings or explicit --profile values.
@@ -86,9 +94,14 @@ func suggestedProfile(identity telemetry.NetworkIdentity) string {
 	return ""
 }
 
+const previewHeader = "Preview · Example data. Nothing is applied or sent."
+
 func (application *Application) previewCommand() *cobra.Command {
 	return application.previewCommandWith(func(ctx context.Context, value *config.Config) error {
-		return ui.Configure(ctx, value, config.Profiles(), application.formRunner(),
+		session := application.wizardSession(previewHeader)
+		defer session.Close()
+
+		return ui.Configure(ctx, value, config.Profiles(), runWizard(session),
 			ui.Port{Name: "eth8", Description: "example: connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true},
 			ui.Port{Name: "eth9", Description: "example: disconnected", AddressesKnown: true},
 			ui.Port{Name: "br0", Description: "example: LAN", Addresses: []string{"192.168.1.1/24"}, AddressesKnown: true})
@@ -96,7 +109,7 @@ func (application *Application) previewCommand() *cobra.Command {
 }
 
 func detectedPorts() []ui.Port {
-	var ports []ui.Port
+	ports := make([]ui.Port, 0, len(device.Ports()))
 	for _, port := range device.Ports() {
 		ports = append(ports, ui.Port(port))
 	}
@@ -114,9 +127,6 @@ func (application *Application) previewCommandWith(prompt func(context.Context, 
 		RunE: func(command *cobra.Command, _ []string) error {
 			value, err := config.FromProfile(profile, config.Default())
 			if err != nil {
-				return err
-			}
-			if err := writeString(application.Out, "Preview · Example data. Nothing is applied or sent.\n"); err != nil {
 				return err
 			}
 			if err := prompt(command.Context(), &value); err != nil {

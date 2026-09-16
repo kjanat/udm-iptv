@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,7 +42,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 				return writeString(application.Out, diagnostics.RenderSnapshot(value))
 			}
 
-			return application.startCapture(command.Context(), options)
+			return application.startCapture(options)
 		},
 	}
 	flags := command.Flags()
@@ -91,7 +90,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 	return command
 }
 
-func (application *Application) startCapture(ctx context.Context, options diagnostics.Options) error {
+func (application *Application) startCapture(options diagnostics.Options) error {
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	directory := filepath.Join(application.StateDir, "diagnostics")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
