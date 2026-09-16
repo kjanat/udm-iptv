@@ -40,6 +40,9 @@ type Backend interface {
 }
 
 func (p Plan) Validate() error {
+	if err := validateStatePath(p.StateDir); err != nil {
+		return err
+	}
 	err := p.Config.Validate()
 	if err != nil {
 		return err
