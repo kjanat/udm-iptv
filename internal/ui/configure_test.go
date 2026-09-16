@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,7 +29,8 @@ func TestConfigureProfileSwitch(t *testing.T) {
 			}
 			calls := 0
 			aborted := errors.New("cancelled")
-			err := Configure(context.Background(), &value, profiles, func(_ context.Context, form *huh.Form) error {
+			err := Configure(context.Background(), &value, profiles, func(_ context.Context, wizard *Wizard) error {
+				form := wizard.Form
 				calls++
 				if calls == 1 {
 					field := form.GetFocusedField()
@@ -96,8 +98,8 @@ func TestConfigurationPagesFollowAnswers(t *testing.T) {
 				test.edit(&value)
 			}
 			fields := newFormValues(value)
-			groups, _, _, _ := configurationGroups(&value, nil, "", &fields)
-			form := wizardForm(groups...)
+			groups := configurationPages(&value, nil, "", &fields)
+			form := wizardForm(groups...).Form
 			var keys []string
 			for range 20 {
 				if form.State == huh.StateCompleted {
@@ -120,34 +122,61 @@ func TestConfigurationPagesFollowAnswers(t *testing.T) {
 func TestConfigurationPageFits(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _, _ := configurationGroups(&value, []Port{
+	groups := configurationPages(&value, []Port{
 		{Name: "eth8", Description: "connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true},
 		{Name: "br0", Description: "example: LAN", Addresses: []string{"192.168.1.1/24"}, AddressesKnown: true},
 		{Name: "br4", Addresses: []string{"192.168.4.1/24"}, AddressesKnown: true},
 	}, "IPTV DNS servers: 177.16.30.67 and 177.16.30.7.", &fields)
-	form := wizardForm(groups...)
-	form.Init()
+	frame := NewFrame(wizardForm(groups...), "Preview · Example data.")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 180, Height: 45})
+	boxRows := 0
 	for range 12 {
-		form.Update(tea.WindowSizeMsg{Width: 180, Height: 45})
-		view := form.View()
-		if strings.Contains(view, "\n\n\n") {
-			t.Fatal("short page padded with blank rows")
+		if frame.wizard.Form.State == huh.StateCompleted {
+			return
 		}
-		if lipgloss.Width(view) > 88 {
-			t.Fatalf("page stretched to %d columns", lipgloss.Width(view))
+		view := frame.View()
+		if !view.AltScreen {
+			t.Fatal("wizard left the alternate screen")
 		}
-		if height := lipgloss.Height(view); height > 24 {
-			t.Fatalf("page is %d rows", height)
+		lines := strings.Split(view.Content, "\n")
+		if len(lines) != 45 || lipgloss.Width(view.Content) != 180 {
+			t.Fatalf("page is %dx%d, terminal is 180x45", lipgloss.Width(view.Content), len(lines))
+		}
+		top, bottom, left := -1, -1, -1
+		for i, line := range lines {
+			switch {
+			case strings.Contains(line, "╭"):
+				top, left = i, len(line)-len(strings.TrimLeft(line, " "))
+			case strings.Contains(line, "╰"):
+				bottom = i
+			}
+		}
+		if top < 0 || bottom < 0 {
+			t.Fatal("page has no box")
+		}
+		if above, below := top-2, 44-bottom; above < 3 || below < 3 || above-below > 2 || below-above > 2 {
+			t.Fatalf("box is not vertically centered: %d rows above the header, %d below", above, below)
+		}
+		right := 180 - lipgloss.Width(strings.TrimRight(lines[top], " "))
+		if left < 20 || right < 20 || left-right > 2 || right-left > 2 {
+			t.Fatalf("box is not horizontally centered: %d left, %d right", left, right)
+		}
+		if boxRows == 0 {
+			boxRows = bottom - top
+		}
+		if bottom-top != boxRows {
+			t.Fatalf("box height changed between pages: %d rows, then %d", boxRows, bottom-top)
+		}
+		if !strings.Contains(lines[top-2], "Preview · Example data.") {
+			t.Fatalf("header missing above the box: %q", lines[top-2])
 		}
 		for _, jammed := range []string{"quickleave?Off", "logs?Temporary", "address?Most"} {
-			if strings.Contains(view, jammed) {
+			if strings.Contains(view.Content, jammed) {
 				t.Fatalf("confirm title ate its description: %q", jammed)
 			}
 		}
-		if form.State == huh.StateCompleted {
-			return
-		}
-		form.NextGroup()
+		frame.wizard.Form.NextGroup()
 	}
 	t.Fatal("form did not finish")
 }
@@ -158,7 +187,7 @@ func TestConfigureFailureDoesNotChangeInput(t *testing.T) {
 		value.WAN.VLAN = 5000
 		original := clone(value)
 		calls := 0
-		err := Configure(context.Background(), &value, config.Profiles(), func(_ context.Context, _ *huh.Form) error {
+		err := Configure(context.Background(), &value, config.Profiles(), func(_ context.Context, _ *Wizard) error {
 			calls++
 			if failAt == 1 {
 				return huh.ErrUserAborted
@@ -169,5 +198,169 @@ func TestConfigureFailureDoesNotChangeInput(t *testing.T) {
 		if err == nil || !reflect.DeepEqual(value, original) {
 			t.Fatal("failure must leave input untouched")
 		}
+	}
+}
+
+func TestFrameKeepsBoxHeightAcrossForms(t *testing.T) {
+	settings := config.Default()
+	fields := newFormValues(settings)
+	groups := configurationPages(&settings, nil, "", &fields)
+	frame := NewFrame(wizardForm(newPage(telemetryConsent(&settings.Telemetry))), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	first := lipgloss.Height(frame.View().Content)
+	frame.Update(setWizardMsg{wizard: wizardForm(groups...)})
+	tall := boxRows(frame.View().Content)
+	frame.Update(setWizardMsg{wizard: wizardForm(newPage(telemetryConsent(&settings.Telemetry)))})
+	if first != 40 || boxRows(frame.View().Content) != tall {
+		t.Fatalf("box shrank after a tall form: %d, then %d", tall, boxRows(frame.View().Content))
+	}
+}
+
+func boxRows(content string) int {
+	top, bottom := -1, -1
+	for i, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "╭") {
+			top = i
+		}
+		if strings.Contains(line, "╰") {
+			bottom = i
+		}
+	}
+
+	return bottom - top
+}
+
+func TestEveryQuestionHasHelp(t *testing.T) {
+	value := config.Default()
+	fields := newFormValues(value)
+	groups := configurationPages(&value, []Port{{Name: "eth8"}}, "", &fields)
+	keys := []string{"profile", "accept"}
+	for _, p := range groups {
+		keys = append(keys, p.keys...)
+	}
+	for _, key := range keys {
+		entry, ok := fieldHelp[key]
+		if !ok || entry.title == "" || len(strings.Fields(entry.text)) < 15 {
+			t.Errorf("question %q has no plain-language help", key)
+		}
+	}
+	for key := range fieldHelp {
+		if !slices.Contains(keys, key) {
+			t.Errorf("help for unknown question %q", key)
+		}
+	}
+}
+
+func TestHelpOverlayExplainsFocusedQuestion(t *testing.T) {
+	value := config.Default()
+	fields := newFormValues(value)
+	groups := configurationPages(&value, nil, "", &fields)
+	frame := NewFrame(wizardForm(groups...).steps(1, 1), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	for focusedKey(frame.wizard.Form) != "vlan" {
+		frame.wizard.Form.NextGroup()
+	}
+	frame.wizard.Form.GetFocusedField().Focus()
+	if view := frame.View().Content; !strings.Contains(view, "Question 3 of") || !strings.Contains(view, "F1") {
+		t.Fatalf("progress line missing question counter or help hint")
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+	view := frame.View().Content
+	if !strings.Contains(view, "IPTV VLAN ID") || !strings.Contains(view, "separate numbered lane") {
+		t.Fatal("help overlay does not explain the VLAN question")
+	}
+	frame.Update(tea.KeyPressMsg{Text: "9", Code: '9'})
+	if fields.vlan != "4" {
+		t.Fatal("keypress that closed the help reached the field")
+	}
+	if strings.Contains(frame.View().Content, "separate numbered lane") {
+		t.Fatal("help overlay did not close")
+	}
+}
+
+func TestEnterOnManualNetworkEntryTicksIt(t *testing.T) {
+	value := config.Default()
+	fields := newFormValues(value)
+	groups, selectedPort, selectedLAN, _ := configurationGroups(&value, []Port{{Name: "br0", AddressesKnown: true}}, "", &fields)
+	*selectedPort = "eth8"
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	for focusedKey(frame.wizard.Form) != "lan" {
+		frame.wizard.Form.NextGroup()
+	}
+	frame.wizard.Form.GetFocusedField().Focus()
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if containsString(*selectedLAN, manualPort) {
+		t.Fatal("manual entry ticked before enter")
+	}
+	_, cmd := frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !containsString(*selectedLAN, manualPort) || !containsString(*selectedLAN, "br0") || cmd == nil {
+		t.Fatalf("enter on the manual row: selected=%v cmd=%v", *selectedLAN, cmd != nil)
+	}
+	_, cmd = frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !containsString(*selectedLAN, manualPort) || cmd == nil {
+		t.Fatalf("second enter changed the tick: %v", *selectedLAN)
+	}
+}
+
+func TestCtrlCAsksBeforeLeaving(t *testing.T) {
+	value := config.Default()
+	fields := newFormValues(value)
+	groups := configurationPages(&value, nil, "", &fields)
+	var events []string
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.observer = func(event, question string) { events = append(events, event+":"+question) }
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+	frame.Update(ctrlC)
+	if view := frame.View().Content; !strings.Contains(view, "Leave the wizard?") || frame.wizard.Form.State != huh.StateNormal {
+		t.Fatal("first ctrl+c did not prompt")
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if strings.Contains(frame.View().Content, "Leave the wizard?") || frame.wizard.Form.State != huh.StateNormal {
+		t.Fatal("another key did not dismiss the prompt")
+	}
+	frame.Update(ctrlC)
+	frame.Update(ctrlC)
+	if frame.wizard.Form.State != huh.StateAborted {
+		t.Fatal("second ctrl+c did not leave")
+	}
+	want := []string{"quit.prompt:wan-port", "quit.prompt:wan-port", "abort:wan-port"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestVLANFieldAcceptsDigitsOnly(t *testing.T) {
+	value := config.Default()
+	fields := newFormValues(value)
+	groups := configurationPages(&value, nil, "", &fields)
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	for focusedKey(frame.wizard.Form) != "vlan" {
+		frame.wizard.Form.NextGroup()
+	}
+	frame.wizard.Form.GetFocusedField().Focus()
+	for _, msg := range []tea.KeyPressMsg{{Text: "s", Code: 's'}, {Text: "-", Code: '-'}, {Text: " ", Code: tea.KeySpace}} {
+		frame.Update(msg)
+		if fields.vlan != "4" {
+			t.Fatalf("non-digit %q reached the VLAN field: %q", msg.Text, fields.vlan)
+		}
+	}
+	frame.Update(tea.KeyPressMsg{Text: "0", Code: '0'})
+	if fields.vlan != "40" {
+		t.Fatalf("digit dropped on the VLAN field: %q", fields.vlan)
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if fields.vlan != "4" {
+		t.Fatalf("backspace dropped on the VLAN field: %q", fields.vlan)
+	}
+	if _, cmd := frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil {
+		t.Fatal("enter dropped on the VLAN field")
 	}
 }

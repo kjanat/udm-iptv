@@ -172,11 +172,12 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 		}
 		if r.settings.Logs {
 			logger := sentry.NewLogger(ctx)
-			if errors.Is(err, context.Canceled) {
+			switch {
+			case errors.Is(err, context.Canceled):
 				logger.Info().Emit(operation + " cancelled")
-			} else if err != nil {
+			case err != nil:
 				logger.Error().Emit(operation + " failed")
-			} else {
+			default:
 				logger.Info().Emit(operation + " completed")
 			}
 		}
@@ -239,6 +240,32 @@ func (r *Reporter) Gauge(ctx context.Context, name string, value float64) {
 	sentry.NewMeter(sentry.SetHubOnContext(ctx, r.hub)).Gauge(name, value)
 }
 
+// WizardEvent counts a configuration wizard interaction: the help overlay,
+// the quit prompt, or an abort, keyed by the question that had focus.
+func (r *Reporter) WizardEvent(ctx context.Context, event, question string) {
+	if r == nil || r.client == nil || !r.settings.Metrics {
+		return
+	}
+	meter := sentry.NewMeter(sentry.SetHubOnContext(ctx, r.hub))
+	meter.SetAttributes(attribute.String("event", event), attribute.String("question", question))
+	meter.Count("wizard.event", 1)
+}
+
+var wizardEvents = map[string]bool{"help": true, "quit.prompt": true, "abort": true}
+
+func isQuestionKey(value string) bool {
+	if value == "" || len(value) > 24 {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (r *Reporter) MetricsEnabled() bool {
 	if r == nil || r.client == nil || !r.settings.Metrics {
 		return false
@@ -281,31 +308,45 @@ func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry
 		clean.Contexts = map[string]sentry.Context{"trace": context}
 	}
 	if trace {
-		for _, span := range event.Spans {
-			if span != nil && operations[span.Op] {
-				clean.Spans = append(clean.Spans, &sentry.Span{TraceID: span.TraceID, SpanID: span.SpanID, ParentSpanID: span.ParentSpanID, Op: span.Op, Name: span.Op, Status: span.Status, StartTime: span.StartTime, EndTime: span.EndTime})
-			}
-		}
+		clean.Spans = cleanSpans(event.Spans)
 	} else {
-		for _, exception := range event.Exception {
-			value := sentry.Exception{Type: exception.Type, Value: event.Transaction + " failed"}
-			if mechanism := exception.Mechanism; mechanism != nil {
-				value.Mechanism = &sentry.Mechanism{Type: "generic", Handled: mechanism.Handled, ParentID: mechanism.ParentID, ExceptionID: mechanism.ExceptionID, IsExceptionGroup: mechanism.IsExceptionGroup}
-				if mechanism.Type == "chained" {
-					value.Mechanism.Type = "chained"
-				}
-			}
-			if exception.Stacktrace != nil {
-				value.Stacktrace = &sentry.Stacktrace{}
-				for _, frame := range exception.Stacktrace.Frames {
-					value.Stacktrace.Frames = append(value.Stacktrace.Frames, sentry.Frame{Function: frame.Function, Module: frame.Module, Filename: filepath.Base(frame.Filename), Lineno: frame.Lineno, InApp: frame.InApp})
-				}
-			}
-			clean.Exception = append(clean.Exception, value)
-		}
+		clean.Exception = cleanExceptions(event.Exception, event.Transaction)
 	}
 
 	return clean
+}
+
+func cleanSpans(spans []*sentry.Span) []*sentry.Span {
+	var result []*sentry.Span
+	for _, span := range spans {
+		if span != nil && operations[span.Op] {
+			result = append(result, &sentry.Span{TraceID: span.TraceID, SpanID: span.SpanID, ParentSpanID: span.ParentSpanID, Op: span.Op, Name: span.Op, Status: span.Status, StartTime: span.StartTime, EndTime: span.EndTime})
+		}
+	}
+
+	return result
+}
+
+func cleanExceptions(exceptions []sentry.Exception, transaction string) []sentry.Exception {
+	result := make([]sentry.Exception, 0, len(exceptions))
+	for _, exception := range exceptions {
+		value := sentry.Exception{Type: exception.Type, Value: transaction + " failed"}
+		if mechanism := exception.Mechanism; mechanism != nil {
+			value.Mechanism = &sentry.Mechanism{Type: "generic", Handled: mechanism.Handled, ParentID: mechanism.ParentID, ExceptionID: mechanism.ExceptionID, IsExceptionGroup: mechanism.IsExceptionGroup}
+			if mechanism.Type == "chained" {
+				value.Mechanism.Type = "chained"
+			}
+		}
+		if exception.Stacktrace != nil {
+			value.Stacktrace = &sentry.Stacktrace{}
+			for _, frame := range exception.Stacktrace.Frames {
+				value.Stacktrace.Frames = append(value.Stacktrace.Frames, sentry.Frame{Function: frame.Function, Module: frame.Module, Filename: filepath.Base(frame.Filename), Lineno: frame.Lineno, InApp: frame.InApp})
+			}
+		}
+		result = append(result, value)
+	}
+
+	return result
 }
 
 func (r *Reporter) attributes() map[string]attribute.Value {
@@ -344,7 +385,7 @@ func (r *Reporter) filterMetric(metric *sentry.Metric) *sentry.Metric {
 		return nil
 	}
 	switch metric.Name {
-	case "operation.completed", "operation.failed", "operation.duration", "daemon.uptime", "daemon.restarts", "multicast.routes", "multicast.packets":
+	case "operation.completed", "operation.failed", "operation.duration", "daemon.uptime", "daemon.restarts", "multicast.routes", "multicast.packets", "wizard.event":
 	default:
 		return nil
 	}
@@ -354,6 +395,12 @@ func (r *Reporter) filterMetric(metric *sentry.Metric) *sentry.Metric {
 	attributes := r.attributes()
 	if op, ok := metric.Attributes["operation"].AsInterface().(string); ok && operations[op] {
 		attributes["operation"] = attribute.StringValue(op)
+	}
+	if event, ok := metric.Attributes["event"].AsInterface().(string); ok && wizardEvents[event] {
+		attributes["event"] = attribute.StringValue(event)
+	}
+	if question, ok := metric.Attributes["question"].AsInterface().(string); ok && isQuestionKey(question) {
+		attributes["question"] = attribute.StringValue(question)
 	}
 
 	return &sentry.Metric{Timestamp: metric.Timestamp, TraceID: metric.TraceID, SpanID: metric.SpanID, Type: metric.Type, Name: metric.Name, Value: metric.Value, Unit: metric.Unit, Attributes: attributes}

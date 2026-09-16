@@ -20,7 +20,7 @@ import (
 func researchReporter(t *testing.T) (*Reporter, *recordingTransport) {
 	t.Helper()
 	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), "test", transport)
+	r, err := newTestReporter(testSettings(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestResearchSeparateProcessAndLiveRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := reportAt(t, transport, 0)
-	other, err := newTestReporter(testSettings(), "test", &recordingTransport{})
+	other, err := newTestReporter(testSettings(), &recordingTransport{})
 	if err != nil {
 		t.Fatal(err)
 	}

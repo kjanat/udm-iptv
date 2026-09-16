@@ -13,6 +13,7 @@ import (
 
 type boundedJournal struct {
 	bytes.Buffer
+
 	limit int
 }
 

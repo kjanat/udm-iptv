@@ -138,6 +138,7 @@ type transportFunc func(*http.Request) (*http.Response, error)
 
 type failedCloseBody struct {
 	io.Reader
+
 	err error
 }
 

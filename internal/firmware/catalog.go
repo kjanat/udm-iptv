@@ -109,7 +109,7 @@ func ValidatePair(model string, releases []Release) error {
 	return nil
 }
 
-func Discover(ctx context.Context, client *http.Client, endpoint, image, model string, cutoff time.Time) (matrix Matrix, result error) {
+func Discover(ctx context.Context, client *http.Client, endpoint, image, model string, cutoff time.Time) (Matrix, error) {
 	address, err := url.Parse(endpoint)
 	if err != nil {
 		return Matrix{}, err
@@ -128,11 +128,15 @@ func Discover(ctx context.Context, client *http.Client, endpoint, image, model s
 	if err != nil {
 		return Matrix{}, err
 	}
-	defer func() {
-		if err := response.Body.Close(); err != nil {
-			result = errors.Join(result, fmt.Errorf("close firmware catalog response: %w", err))
-		}
-	}()
+	matrix, result := discoverFromResponse(response, image, model, cutoff)
+	if closeErr := response.Body.Close(); closeErr != nil {
+		result = errors.Join(result, fmt.Errorf("close firmware catalog response: %w", closeErr))
+	}
+
+	return matrix, result
+}
+
+func discoverFromResponse(response *http.Response, image, model string, cutoff time.Time) (Matrix, error) {
 	if response.StatusCode != http.StatusOK {
 		return Matrix{}, fmt.Errorf("firmware catalog: HTTP %d", response.StatusCode)
 	}

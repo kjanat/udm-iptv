@@ -15,11 +15,11 @@ import (
 func TestImprovementPromptCopy(t *testing.T) {
 	settings := config.Default().Telemetry
 	original := settings
-	form := wizardForm(huh.NewGroup(telemetryConsent(&settings)))
+	form := wizardForm(newPage(telemetryConsent(&settings))).Form
 	form.Init()
 	form.Update(tea.WindowSizeMsg{Width: 180, Height: 45})
 	view := form.View()
-	if lipgloss.Width(view) > 88 {
+	if lipgloss.Width(view) > frameContentWidth {
 		t.Fatalf("form stretched to %d columns", lipgloss.Width(view))
 	}
 	if !strings.Contains(view, "Help improve udm-iptv?") {

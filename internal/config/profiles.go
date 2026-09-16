@@ -143,7 +143,8 @@ func (definition profileDefinition) resolve(id string) Profile {
 }
 
 func Profiles() []Profile {
-	result := []Profile{{ID: "custom", Name: "Custom", Config: Default()}}
+	result := make([]Profile, 0, 1+len(profiles))
+	result = append(result, Profile{ID: "custom", Name: "Custom", Config: Default()})
 	for _, value := range profiles {
 		result = append(result, value)
 	}

@@ -43,30 +43,43 @@ func (application *Daemon) startTelemetryMetrics(parent context.Context) func() 
 						application.Monitor.Gauge(ctx, "multicast.packets", float64(packets))
 					}
 				}
-				sampleContext, stop := context.WithTimeout(ctx, 2*time.Second)
-				if connection, err := systemd.NewSystemConnectionContext(sampleContext); err == nil {
-					if properties, err := connection.GetAllPropertiesContext(sampleContext, "udm-iptv.service"); err == nil {
-						if restarts, ok := properties["NRestarts"]; ok {
-							application.Monitor.Gauge(ctx, "daemon.restarts", float64(ParseCounter(restarts)))
-						}
-						if time.Since(lastObservation) >= time.Hour {
-							err := application.Monitor.RecordObservation(telemetry.Observation{
-								UptimeSeconds: uint64(time.Since(started).Seconds()),
-								Restarts:      ParseCounter(properties["NRestarts"]), Active: properties["ActiveState"] == "active",
-							})
-							if err == nil {
-								lastObservation = time.Now()
-							}
-						}
-					}
-					connection.Close()
-				}
-				stop()
+				lastObservation = application.sampleSystemd(ctx, started, lastObservation)
 			}
 		}
 	}()
 
 	return func() { cancel(); <-done }
+}
+
+// sampleSystemd reports the restart count and, once an hour, records a
+// telemetry observation. It returns the observation time to carry forward.
+func (application *Daemon) sampleSystemd(ctx context.Context, started, lastObservation time.Time) time.Time {
+	sampleContext, stop := context.WithTimeout(ctx, 2*time.Second)
+	defer stop()
+	connection, err := systemd.NewSystemConnectionContext(sampleContext)
+	if err != nil {
+		return lastObservation
+	}
+	defer connection.Close()
+	properties, err := connection.GetAllPropertiesContext(sampleContext, "udm-iptv.service")
+	if err != nil {
+		return lastObservation
+	}
+	if restarts, ok := properties["NRestarts"]; ok {
+		application.Monitor.Gauge(ctx, "daemon.restarts", float64(ParseCounter(restarts)))
+	}
+	if time.Since(lastObservation) < time.Hour {
+		return lastObservation
+	}
+	err = application.Monitor.RecordObservation(telemetry.Observation{
+		UptimeSeconds: uint64(time.Since(started).Seconds()),
+		Restarts:      ParseCounter(properties["NRestarts"]), Active: properties["ActiveState"] == "active",
+	})
+	if err != nil {
+		return lastObservation
+	}
+
+	return time.Now()
 }
 
 func multicastCounters(reader io.Reader) (int, uint64, error) {

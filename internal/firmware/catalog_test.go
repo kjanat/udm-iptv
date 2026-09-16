@@ -19,11 +19,12 @@ func pairFor(model string) []Release {
 }
 
 func TestCatalogAndPublishedPairs(t *testing.T) {
-	var entries []catalogRelease
-	var tags []string
+	versions := []string{"5.1.8", "5.1.9", "5.1.9", "5.1.10", "6.0.0-beta", "latest"}
+	entries := make([]catalogRelease, 0, len(versions)*len(models))
+	tags := make([]string, 0, len(versions)*len(models))
 	cutoff := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
 	for _, model := range models {
-		for _, version := range []string{"5.1.8", "5.1.9", "5.1.9", "5.1.10", "6.0.0-beta", "latest"} {
+		for _, version := range versions {
 			entry := catalogRelease{Platform: model.Board, Version: "v" + version + "+1", Created: cutoff, SHA256: strings.Repeat("a", 64)}
 			entry.Links.Data.Href = "https://fw-download.ubnt.com/firmware.bin"
 			entries = append(entries, entry)

@@ -76,22 +76,17 @@ func observeServiceHealth(ctx context.Context, startup, stable, interval time.Du
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if readyAt.IsZero() {
-			if err == nil {
-				initial, readyAt = current, time.Now()
-			} else if !time.Now().Before(deadline) {
-				return fmt.Errorf("service did not become ready within %s: %w", startup, err)
-			}
-		} else {
-			if err != nil {
-				return fmt.Errorf("service did not remain healthy: %w", err)
-			}
-			if current != initial {
-				return errors.New("service or proxy restarted during the health check")
-			}
-			if time.Since(readyAt) >= stable {
-				return nil
-			}
+		switch {
+		case !readyAt.IsZero() && err != nil:
+			return fmt.Errorf("service did not remain healthy: %w", err)
+		case !readyAt.IsZero() && current != initial:
+			return errors.New("service or proxy restarted during the health check")
+		case !readyAt.IsZero() && time.Since(readyAt) >= stable:
+			return nil
+		case readyAt.IsZero() && err == nil:
+			initial, readyAt = current, time.Now()
+		case readyAt.IsZero() && !time.Now().Before(deadline):
+			return fmt.Errorf("service did not become ready within %s: %w", startup, err)
 		}
 		wait := interval
 		if !readyAt.IsZero() {

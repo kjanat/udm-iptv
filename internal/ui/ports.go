@@ -35,7 +35,7 @@ func (port Port) label() string {
 
 const manualPort = "__manual__"
 
-func wanGroups(current *string, ports []Port) ([]*huh.Group, *string) {
+func wanGroups(current *string, ports []Port) ([]page, *string) {
 	selected := *current
 	options := make([]huh.Option[string], 0, len(ports)+2)
 	found := false
@@ -51,14 +51,14 @@ func wanGroups(current *string, ports []Port) ([]*huh.Group, *string) {
 	}
 	options = append(options, huh.NewOption("Enter another interface manually…", manualPort))
 
-	return []*huh.Group{
-		huh.NewGroup(huh.NewSelect[string]().Key("wan-port").
+	return []page{
+		newPage(huh.NewSelect[string]().Key("wan-port").
 			Title("Which connection goes to your provider?").
 			Description("Usually Internet route. Connected means link detected, not provider verified.").
-			Options(options...).Height(min(8, len(options)+4)).Value(&selected)).Title("Internet port"),
-		huh.NewGroup(huh.NewInput().Key("wan-interface").Title("Interface name").
+			Options(options...).Height(min(8, len(options)+4)).Value(&selected)).title("Internet port"),
+		newPage(huh.NewInput().Key("wan-interface").Title("Interface name").
 			Description("Enter the interface name from UniFi or ip link.").
-			Placeholder("eth8").Value(current).Validate(validateInterface)).WithHideFunc(func() bool { return selected != manualPort }),
+			Placeholder("eth8").Value(current).Validate(validateInterface)).hide(func() bool { return selected != manualPort }),
 	}, &selected
 }
 
@@ -94,7 +94,7 @@ func isDownstreamName(name string) bool {
 	return strings.HasPrefix(name, "br") || strings.HasPrefix(name, "eth0.")
 }
 
-func lanGroups(current []string, ports []Port) ([]*huh.Group, *[]string, *string) {
+func lanGroups(current []string, ports []Port) ([]page, *[]string, *string) {
 	selected := append([]string{}, current...)
 	seen := map[string]bool{}
 	options := make([]huh.Option[string], 0, len(ports)+len(current)+1)
@@ -118,10 +118,10 @@ func lanGroups(current []string, ports []Port) ([]*huh.Group, *[]string, *string
 	options = append(options, huh.NewOption("Enter another interface manually…", manualPort))
 	extra := ""
 
-	return []*huh.Group{
-		huh.NewGroup(huh.NewMultiSelect[string]().Key("lan").
+	return []page{
+		newPage(huh.NewMultiSelect[string]().Key("lan").
 			Title("Which networks should receive IPTV?").
-			Description("br0 is LAN. Other brN are VLANs.").
+			Description("Press space to tick or untick a network, Enter when done. br0 is LAN. Other brN are VLANs.").
 			Options(options...).Height(min(8, len(options)+4)).
 			Value(&selected).
 			Validate(func(values []string) error {
@@ -130,9 +130,9 @@ func lanGroups(current []string, ports []Port) ([]*huh.Group, *[]string, *string
 				}
 
 				return nil
-			})).Title("TV networks"),
-		huh.NewGroup(huh.NewInput().Key("lan-extra").Title("Additional interface names").
-			Description("Space-separated, for example br4.").
+			})).title("TV networks"),
+		newPage(huh.NewInput().Key("lan-extra").Title("Additional interface names").
+			Description("Separate with spaces or commas, for example br4.").
 			Placeholder("br4").Value(&extra).
 			Validate(func(value string) error {
 				if len(resolveLAN(selected, value)) == 0 {
@@ -146,7 +146,7 @@ func lanGroups(current []string, ports []Port) ([]*huh.Group, *[]string, *string
 				}
 
 				return nil
-			})).WithHideFunc(func() bool { return !containsString(selected, manualPort) }),
+			})).hide(func() bool { return !containsString(selected, manualPort) }),
 	}, &selected, &extra
 }
 
@@ -163,7 +163,7 @@ func resolveLAN(selected []string, extra string) []string {
 	for _, name := range selected {
 		add(name)
 	}
-	for name := range strings.FieldsSeq(extra) {
+	for _, name := range splitList(extra) {
 		add(name)
 	}
 

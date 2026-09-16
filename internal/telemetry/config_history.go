@@ -184,7 +184,7 @@ func (r *Reporter) RecordConfiguration(ctx context.Context, value config.Config,
 		changed := []string{}
 		if fingerprint != state.Fingerprint {
 			oldFields, newFields := reflect.ValueOf(state.Settings), reflect.ValueOf(current)
-			for i := 0; i < oldFields.NumField(); i++ {
+			for i := range oldFields.NumField() {
 				if !reflect.DeepEqual(oldFields.Field(i).Interface(), newFields.Field(i).Interface()) {
 					changed = append(changed, oldFields.Type().Field(i).Tag.Get("json"))
 				}
@@ -376,7 +376,8 @@ func withResearchState(directory string, update func(*researchState) error) erro
 	state := researchState{}
 	path := filepath.Join(directory, "telemetry-research.json")
 	fd, err = unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err == nil {
+	switch {
+	case err == nil:
 		file := os.NewFile(uintptr(fd), "research-state")
 		data, readErr := io.ReadAll(io.LimitReader(file, 65537))
 		_ = file.Close()
@@ -393,9 +394,9 @@ func withResearchState(directory string, update func(*researchState) error) erro
 		if err != nil || len(id) != 16 {
 			return errors.New("invalid telemetry identity")
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	case !errors.Is(err, os.ErrNotExist):
 		return err
-	} else {
+	default:
 		id := make([]byte, 16)
 		if _, err := rand.Read(id); err != nil {
 			return err
