@@ -13,10 +13,12 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
+// Defaults returns config.Default with WAN and LAN interfaces detected for this board.
 func Defaults() config.Config {
 	return WithInterfaces(config.Default())
 }
 
+// WithInterfaces replaces value's WAN and LAN interfaces with ones detected for this board.
 func WithInterfaces(value config.Config) config.Config {
 	board := Board()
 	value = withBoardInterface(value, board)
@@ -113,6 +115,7 @@ func defaultRouteInterface(reader io.Reader) string {
 	return selected
 }
 
+// Board returns this device's short board name, or "" when undetectable.
 func Board() string {
 	for _, source := range []struct {
 		path string

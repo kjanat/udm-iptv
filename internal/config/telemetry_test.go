@@ -1,9 +1,10 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 func TestTelemetryDefaultsAndExistingChoice(t *testing.T) {
@@ -31,7 +32,7 @@ func TestTelemetryDefaultsAndExistingChoice(t *testing.T) {
 
 func TestLegacyTelemetryRemainsDisabled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.conf")
-	if err := os.WriteFile(path, []byte("IPTV_WAN_INTERFACE=eth8\n"), 0600); err != nil {
+	if err := atomicfile.Write(path, []byte("IPTV_WAN_INTERFACE=eth8\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	value, err := ImportLegacy(path)

@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// sysfsValueLimit bounds a sysfs attribute read; these files hold one short token.
+const sysfsValueLimit = 64
+
 type downstreamStatus struct {
 	Interface string `json:"interface"`
 	Link      string `json:"link"`
@@ -25,7 +28,7 @@ func inspectDownstream(system fs.FS, interfaces []string) []downstreamStatus {
 			return "not checked"
 		}
 		defer closeIgnoringError(file)
-		data, err := io.ReadAll(io.LimitReader(file, 64))
+		data, err := io.ReadAll(io.LimitReader(file, sysfsValueLimit))
 		if err == nil {
 			if value, ok := choices[strings.TrimSpace(string(data))]; ok {
 				return value

@@ -13,10 +13,13 @@ import (
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
+// firmwareVersionLimit bounds the read from /usr/lib/version, a one-line file.
+const firmwareVersionLimit = 64
+
 func setTelemetryMetadata(reporter *telemetry.Reporter, value config.Config) {
 	firmware := ""
 	if file, err := os.Open("/usr/lib/version"); err == nil {
-		data, _ := io.ReadAll(io.LimitReader(file, 64))
+		data, _ := io.ReadAll(io.LimitReader(file, firmwareVersionLimit))
 		_ = file.Close()
 		firmware = strings.TrimSpace(string(data))
 	}

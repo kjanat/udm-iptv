@@ -12,6 +12,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/kjanat/udm-iptv/internal/filemode"
+)
+
+const (
+	// maxDependencies bounds the ELF dependency walk against a dependency cycle.
+	maxDependencies = 128
+	// interpPathLimit bounds the PT_INTERP segment read; loader paths are short.
+	interpPathLimit = 4096
 )
 
 // Preserve snapshots trusted system files without executing the proxy or ldd.
@@ -25,7 +34,7 @@ func Preserve(stateDir, program, source string) error {
 		return err
 	}
 	root := filepath.Join(stateDir, "runtime")
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, filemode.PrivateDir); err != nil {
 		return err
 	}
 	stage, err := os.MkdirTemp(root, ".bundle-")
@@ -41,7 +50,7 @@ func Preserve(stateDir, program, source string) error {
 	sort.Strings(names)
 	var total int64
 	for _, name := range names {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(stage, name)), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(stage, name)), filemode.PrivateDir); err != nil {
 			return err
 		}
 		input, err := os.Open(files[name])
@@ -56,7 +65,7 @@ func Preserve(stateDir, program, source string) error {
 		}
 		total += info.Size()
 		_, _ = fmt.Fprintf(hash, "%s\x00%d\x00", name, info.Size())
-		output, err := os.OpenFile(filepath.Join(stage, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+		output, err := os.OpenFile(filepath.Join(stage, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, filemode.PrivateExecutable)
 		if err != nil {
 			_ = input.Close()
 
@@ -128,7 +137,7 @@ func dependencies(source string) (map[string]string, error) {
 			continue
 		}
 		seen[current] = true
-		if len(seen) > 128 {
+		if len(seen) > maxDependencies {
 			return nil, errors.New("too many runtime dependencies")
 		}
 		file, err := elf.Open(current)
@@ -145,7 +154,7 @@ func dependencies(source string) (map[string]string, error) {
 			if segment.Type != elf.PT_INTERP {
 				continue
 			}
-			data, err := io.ReadAll(io.LimitReader(segment.Open(), 4096))
+			data, err := io.ReadAll(io.LimitReader(segment.Open(), interpPathLimit))
 			if err != nil {
 				_ = file.Close()
 

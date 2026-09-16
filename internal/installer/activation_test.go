@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 func TestUpgradeFailureBoundaries(t *testing.T) {
@@ -130,7 +132,7 @@ func TestRollbackSurvivesCancellation(t *testing.T) {
 
 func TestBackupExecutablePreservesExistingRecoveryCopies(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "udm-iptv")
-	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
+	if err := atomicfile.Write(target, []byte("old binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	first, err := backupExecutable(target)
@@ -172,7 +174,7 @@ func TestActivationWithFilesystem(t *testing.T) {
 			directory := t.TempDir()
 			source, target := filepath.Join(directory, "download"), filepath.Join(directory, "udm-iptv")
 			for name, content := range map[string]string{source: "new", target: "old"} {
-				if err := os.WriteFile(name, []byte(content), 0o755); err != nil {
+				if err := atomicfile.Write(name, []byte(content), 0o755); err != nil {
 					t.Fatal(err)
 				}
 			}

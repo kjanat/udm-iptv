@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+const (
+	normalSampleInterval  = 15 * time.Second
+	summarySampleInterval = 2 * time.Minute
+	debugSampleInterval   = 5 * time.Second
+	finalizeReserve       = 2 * time.Second
+	// finalizeReserveDivisor caps the reserve at half a short capture, so a
+	// 1s capture still gets a final snapshot instead of the full reserve.
+	finalizeReserveDivisor = 2
+	// journalLineLimit bounds how many trailing journal lines a capture attaches.
+	journalLineLimit = 10_000
+)
+
+// Options defines the configuration options for a diagnostic capture.
 type Options struct {
 	Capture    time.Duration
 	Format     string
@@ -20,6 +33,8 @@ type Options struct {
 	FollowFile string
 }
 
+// Event represents a single diagnostic event, which can be a snapshot,
+// log entry, or status message.
 type Event struct {
 	Time     time.Time `json:"time"`
 	Type     string    `json:"type"`
@@ -28,6 +43,8 @@ type Event struct {
 	Log      string    `json:"log,omitempty"`
 }
 
+// Capture performs a diagnostic capture based on the provided options.
+// It collects snapshots, logs, and status messages within the specified duration.
 func (application *Collector) Capture(ctx context.Context, options Options) (resultErr error) {
 	signalContext, stop := signalContext(ctx)
 	defer stop()
@@ -82,16 +99,16 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	if err := write(Event{Time: initial.Timestamp, Type: "initial", Snapshot: &initial}); err != nil {
 		return err
 	}
-	interval := 15 * time.Second
+	interval := normalSampleInterval
 	switch options.Verbosity {
 	case "summary":
-		interval = 2 * time.Minute
+		interval = summarySampleInterval
 	case "debug":
-		interval = 5 * time.Second
+		interval = debugSampleInterval
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	reserve := min(2*time.Second, options.Capture/2)
+	reserve := min(finalizeReserve, options.Capture/finalizeReserveDivisor)
 	finalize := time.NewTimer(time.Until(endsAt.Add(-reserve)))
 	defer finalize.Stop()
 	loop := true
@@ -140,7 +157,7 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	default:
 	}
 	sanitizer.refresh()
-	for _, line := range journalLines(ctx, cursor, 10_000) {
+	for _, line := range journalLines(ctx, cursor, journalLineLimit) {
 		if ctx.Err() != nil {
 			break
 		}

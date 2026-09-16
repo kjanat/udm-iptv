@@ -12,6 +12,10 @@
 		}
 	],
 	"prettier": { "allowed": false },
+	"file_types": {
+		"Shell Script": ["packaging/deb/pre*", "packaging/deb/post*", "**/packaging/deb/config"],
+		"Plain Text": ["packaging/deb/copyright"]
+	},
 	"lsp": {
 		"gopls": {
 			"initialization_options": {

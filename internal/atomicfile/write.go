@@ -5,15 +5,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
+// Copy atomically replaces target with source's content, mode preserved as executable.
 func Copy(source, target string) error {
 	input, err := os.Open(source)
 	if err != nil {
 		return err
 	}
 	defer closeIgnoringError(input)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), filemode.SharedDir); err != nil {
 		return err
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(target), ".udm-iptv-*")
@@ -27,7 +30,7 @@ func Copy(source, target string) error {
 
 		return err
 	}
-	if err := temporary.Chmod(0o755); err != nil {
+	if err := temporary.Chmod(filemode.Executable); err != nil {
 		closeIgnoringError(temporary)
 
 		return err
@@ -44,8 +47,9 @@ func Copy(source, target string) error {
 	return os.Rename(name, target)
 }
 
+// Write atomically replaces path with data, creating parent directories as needed.
 func Write(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), filemode.SharedDir); err != nil {
 		return fmt.Errorf("create parent directory for %s: %w", path, err)
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".udm-iptv-*")

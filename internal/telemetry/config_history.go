@@ -20,6 +20,14 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/filemode"
+)
+
+const (
+	// researchIdentitySize is the byte length of a random installation ID.
+	researchIdentitySize = 16
+	// researchStateLimit bounds the persisted research state file.
+	researchStateLimit = 65536
 )
 
 // SettingsSnapshot deliberately excludes interface names, addresses, MACs,
@@ -235,6 +243,7 @@ func reportFromState(state researchState, kind string) researchReport {
 	}
 }
 
+// RecordObservation reports uptime and restart counts, at most once an hour.
 func (r *Reporter) RecordObservation(observation Observation) error {
 	if !r.researchEnabled() {
 		return nil
@@ -257,6 +266,7 @@ func (r *Reporter) RecordObservation(observation Observation) error {
 	return nil
 }
 
+// Feedback records the user's answer to the confirmed-provider prompt.
 func (r *Reporter) Feedback(answer, provider string) error {
 	if answer != "working" && answer != "problems" && answer != "not-using" {
 		return errors.New("choose working, problems or not-using")
@@ -300,7 +310,7 @@ func (r *Reporter) sendResearch(report researchReport) bool {
 
 func (r *Reporter) filterResearch(event *sentry.Event) *sentry.Event {
 	report, ok := event.Contexts["research"]["report"].(researchReport)
-	if !ok || !r.researchEnabled() || !r.allow("presets", 5) {
+	if !ok || !r.researchEnabled() || !r.allow("presets", presetsPerMinute) {
 		return nil
 	}
 	if !r.networkEnabled() {
@@ -330,11 +340,11 @@ func (r *Reporter) installationID() string {
 	file := os.NewFile(uintptr(fd), "research-state")
 	defer func() { _ = file.Close() }()
 	var state researchState
-	if err := json.NewDecoder(io.LimitReader(file, 65536)).Decode(&state); err != nil {
+	if err := json.NewDecoder(io.LimitReader(file, researchStateLimit)).Decode(&state); err != nil {
 		return ""
 	}
 	id, err := hex.DecodeString(state.ID)
-	if err != nil || len(id) != 16 {
+	if err != nil || len(id) != researchIdentitySize {
 		return ""
 	}
 
@@ -344,7 +354,7 @@ func (r *Reporter) installationID() string {
 // ResetIdentity starts a new local history. It cannot delete already sent events.
 func ResetIdentity(directory string) error {
 	return withResearchState(directory, func(state *researchState) error {
-		id := make([]byte, 16)
+		id := make([]byte, researchIdentitySize)
 		if _, err := rand.Read(id); err != nil {
 			return err
 		}
@@ -360,10 +370,10 @@ func withResearchState(directory string, update func(*researchState) error) erro
 	if directory == "" {
 		return errors.New("telemetry state directory is missing")
 	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	if err := os.MkdirAll(directory, filemode.PrivateDir); err != nil {
 		return err
 	}
-	fd, err := unix.Open(filepath.Join(directory, "telemetry-research.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	fd, err := unix.Open(filepath.Join(directory, "telemetry-research.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, filemode.PrivateFile)
 	if err != nil {
 		return err
 	}
@@ -379,25 +389,25 @@ func withResearchState(directory string, update func(*researchState) error) erro
 	switch {
 	case err == nil:
 		file := os.NewFile(uintptr(fd), "research-state")
-		data, readErr := io.ReadAll(io.LimitReader(file, 65537))
+		data, readErr := io.ReadAll(io.LimitReader(file, researchStateLimit+1))
 		_ = file.Close()
 		if readErr != nil {
 			return readErr
 		}
-		if len(data) > 65536 {
+		if len(data) > researchStateLimit {
 			return errors.New("telemetry state exceeds size limit")
 		}
 		if err := json.Unmarshal(data, &state); err != nil {
 			return err
 		}
 		id, err := hex.DecodeString(state.ID)
-		if err != nil || len(id) != 16 {
+		if err != nil || len(id) != researchIdentitySize {
 			return errors.New("invalid telemetry identity")
 		}
 	case !errors.Is(err, os.ErrNotExist):
 		return err
 	default:
-		id := make([]byte, 16)
+		id := make([]byte, researchIdentitySize)
 		if _, err := rand.Read(id); err != nil {
 			return err
 		}

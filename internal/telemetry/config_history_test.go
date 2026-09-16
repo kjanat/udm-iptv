@@ -14,6 +14,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
@@ -228,7 +229,7 @@ func TestResearchResetAndFeedback(t *testing.T) {
 func TestResearchRejectsSymlinks(t *testing.T) {
 	r, transport := researchReporter(t)
 	target := filepath.Join(t.TempDir(), "target")
-	if err := os.WriteFile(target, []byte("untouched"), 0o600); err != nil {
+	if err := atomicfile.Write(target, []byte("untouched"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, filepath.Join(r.stateDir, "telemetry-research.json")); err != nil {

@@ -16,8 +16,17 @@ import (
 	"time"
 
 	"github.com/google/go-github/v80/github"
+
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
+const (
+	upgradeClientTimeout = 30 * time.Second
+	// releaseAssetLimit bounds a downloaded GitHub release asset.
+	releaseAssetLimit = 128 << 20
+)
+
+// UpgradeOptions selects the release to install and how to authenticate GitHub.
 type UpgradeOptions struct {
 	Repository string
 	Version    string
@@ -25,6 +34,7 @@ type UpgradeOptions struct {
 	Force      bool
 }
 
+// Upgrade downloads, verifies and activates a GitHub release, rolling back on failure.
 func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions) error {
 	if err := validateStatePath(application.StateDir); err != nil {
 		return err
@@ -44,7 +54,7 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 		}
 		token = strings.TrimSpace(string(data))
 	}
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{Timeout: upgradeClientTimeout}
 	if token != "" {
 		httpClient.Transport = &bearerTransport{token: token, base: http.DefaultTransport}
 	}
@@ -82,10 +92,10 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 	if err := writef(application.Out, "Downloading udm-iptv %s...\n", version); err != nil {
 		return err
 	}
-	if err := download(ctx, httpClient, assetURL, binaryPath, 0o755); err != nil {
+	if err := download(ctx, httpClient, assetURL, binaryPath, filemode.Executable); err != nil {
 		return err
 	}
-	if err := download(ctx, httpClient, checksumURL, checksumPath, 0o600); err != nil {
+	if err := download(ctx, httpClient, checksumURL, checksumPath, filemode.PrivateFile); err != nil {
 		return err
 	}
 	if err := verifyChecksum(binaryPath, checksumPath, assetName); err != nil {
@@ -156,7 +166,7 @@ func download(ctx context.Context, client *http.Client, url, target string, mode
 
 		return err
 	}
-	if _, err := io.Copy(temporary, io.LimitReader(response.Body, 128<<20)); err != nil {
+	if _, err := io.Copy(temporary, io.LimitReader(response.Body, releaseAssetLimit)); err != nil {
 		closeIgnoringError(temporary)
 
 		return err

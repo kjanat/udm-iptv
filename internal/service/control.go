@@ -9,12 +9,14 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
+// NoSuchUnit reports whether err is systemd's "unit not found" D-Bus error.
 func NoSuchUnit(err error) bool {
 	var dbusError *dbus.Error
 
 	return errors.As(err, &dbusError) && dbusError.Name == "org.freedesktop.systemd1.NoSuchUnit"
 }
 
+// Stop stops unit and waits for systemd to report the job finished.
 func Stop(ctx context.Context, connection *systemd.Conn, unit string) error {
 	result := make(chan string, 1)
 	if _, err := connection.StopUnitContext(ctx, unit, "replace", result); err != nil {
@@ -32,6 +34,7 @@ func Stop(ctx context.Context, connection *systemd.Conn, unit string) error {
 	}
 }
 
+// Restart restarts unit and waits for systemd to report the job finished.
 func Restart(ctx context.Context, connection *systemd.Conn, unit string) error {
 	result := make(chan string, 1)
 	if _, err := connection.RestartUnitContext(ctx, unit, "replace", result); err != nil {

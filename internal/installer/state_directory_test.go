@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 func TestPurgeRemovesOwnedStateOnly(t *testing.T) {
@@ -29,7 +31,7 @@ func TestPurgeRemovesOwnedStateOnly(t *testing.T) {
 		}
 	}
 	external := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(external, []byte("external configuration"), 0o600); err != nil {
+	if err := atomicfile.Write(external, []byte("external configuration"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := removeStateFiles(root, external, false); err != nil {
@@ -128,7 +130,7 @@ func TestStateCleanupCannotFollowExternalSymlinks(t *testing.T) {
 		t.Run(entry, func(t *testing.T) {
 			directory, outside := t.TempDir(), t.TempDir()
 			sentinel := filepath.Join(outside, "udm-iptv")
-			if err := os.WriteFile(sentinel, []byte("unrelated"), 0o600); err != nil {
+			if err := atomicfile.Write(sentinel, []byte("unrelated"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(outside, filepath.Join(directory, entry)); err != nil {

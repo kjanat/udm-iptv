@@ -7,6 +7,7 @@ import (
 	"syscall"
 )
 
+// ReadRuntimeState reads the running proxy's state written by the daemon.
 func ReadRuntimeState() (RuntimeState, error) {
 	data, err := os.ReadFile(runtimeStatePath)
 	if err != nil {
@@ -29,6 +30,8 @@ func processExists(pid int) bool {
 	return err == nil && process.Signal(syscall.Signal(0)) == nil
 }
 
+// ParseCounter converts a systemd D-Bus property to a non-negative counter,
+// returning 0 for negative or unrecognized values.
 func ParseCounter(value any) uint64 {
 	switch typed := value.(type) {
 	case uint64:

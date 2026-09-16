@@ -14,6 +14,16 @@ import (
 
 type captureTick time.Time
 
+const (
+	defaultViewportWidth  = 80
+	defaultViewportHeight = 20
+	captureTickInterval   = 500 * time.Millisecond
+	minViewportWidth      = 20
+	minViewportHeight     = 3
+	// chromeHeight is the frame rows the viewport must leave for surrounding chrome.
+	chromeHeight = 5
+)
+
 type captureModel struct {
 	capturePath string
 	completion  time.Time
@@ -24,8 +34,9 @@ type captureModel struct {
 	failed      bool
 }
 
-func NewCaptureModel(capturePath string, completion time.Time, pid int) captureModel {
-	view := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
+// NewCaptureModel builds a Bubble Tea model that follows a diagnostics capture in progress.
+func NewCaptureModel(capturePath string, completion time.Time, pid int) tea.Model {
+	view := viewport.New(viewport.WithWidth(defaultViewportWidth), viewport.WithHeight(defaultViewportHeight))
 	view.SoftWrap = true
 	view.FillHeight = true
 	progress := spinner.New(
@@ -41,7 +52,7 @@ func (model captureModel) Init() tea.Cmd {
 }
 
 func captureTickCommand() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(value time.Time) tea.Msg { return captureTick(value) })
+	return tea.Tick(captureTickInterval, func(value time.Time) tea.Msg { return captureTick(value) })
 }
 
 func (model captureModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -52,8 +63,8 @@ func (model captureModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, tea.Quit
 		}
 	case tea.WindowSizeMsg:
-		model.viewport.SetWidth(max(20, typed.Width))
-		model.viewport.SetHeight(max(3, typed.Height-5))
+		model.viewport.SetWidth(max(minViewportWidth, typed.Width))
+		model.viewport.SetHeight(max(minViewportHeight, typed.Height-chromeHeight))
 	case captureTick:
 		data, err := os.ReadFile(model.capturePath)
 		if err == nil {

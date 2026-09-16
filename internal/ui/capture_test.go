@@ -1,10 +1,11 @@
 package ui
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 func TestCaptureCompletion(t *testing.T) {
@@ -23,7 +24,7 @@ func TestCaptureCompletion(t *testing.T) {
 func TestCaptureModelRecognizesFailure(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "capture.txt")
-	err := os.WriteFile(path, []byte("Capture failed: journal unavailable\n"), 0o600)
+	err := atomicfile.Write(path, []byte("Capture failed: journal unavailable\n"), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func TestCaptureModelRecognizesFailure(t *testing.T) {
 func TestCaptureModelRecognizesTimeout(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "capture.txt")
-	err := os.WriteFile(path, []byte("Capture timed out: collector stalled\n"), 0o600)
+	err := atomicfile.Write(path, []byte("Capture timed out: collector stalled\n"), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

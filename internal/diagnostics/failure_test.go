@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 type failedOutput struct{ err error }
@@ -42,7 +44,7 @@ func TestFailureReportPropagatesOutputError(t *testing.T) {
 func TestFailureRecordingAttemptsBothFormats(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "report.jsonl")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
+	if err := atomicfile.Write(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	err := RecordFailure(Options{TextPath: directory, JSONPath: path}, errors.New("capture failed at 192.168.1.1"))
@@ -65,7 +67,7 @@ func TestFailureRecordingAttemptsBothFormats(t *testing.T) {
 func TestFailureRecordingRejectsSymlink(t *testing.T) {
 	directory := t.TempDir()
 	target, link := filepath.Join(directory, "target"), filepath.Join(directory, "report")
-	if err := os.WriteFile(target, []byte("unchanged"), 0o600); err != nil {
+	if err := atomicfile.Write(target, []byte("unchanged"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, link); err != nil {
@@ -82,7 +84,7 @@ func TestFailureRecordingRejectsSymlink(t *testing.T) {
 
 func TestAppendFailurePropagatesWriteError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
+	if err := atomicfile.Write(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	want := errors.New("disk full")

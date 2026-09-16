@@ -18,7 +18,15 @@ import (
 	"golang.org/x/mod/semver"
 )
 
+// CatalogURL is Ubiquiti's firmware catalog API endpoint.
 const CatalogURL = "https://fw-update.ui.com/api/firmware"
+
+const (
+	// releasesInPair is the old and new firmware release a migration needs.
+	releasesInPair = 2
+	// catalogResponseLimit bounds the firmware catalog HTTP response body.
+	catalogResponseLimit = 16 << 20
+)
 
 var models = []struct{ Name, Board string }{
 	{"udm", "UDM"},
@@ -28,6 +36,7 @@ var models = []struct{ Name, Board string }{
 	{"udmbeast", "UDMEA4C"},
 }
 
+// Release is one downloadable firmware image for a board.
 type Release struct {
 	Board   string `json:"board"`
 	Version string `json:"version"`
@@ -35,6 +44,7 @@ type Release struct {
 	SHA256  string `json:"sha256"`
 }
 
+// Pair is a model's old and new firmware, and the container image tags built for both.
 type Pair struct {
 	Model     string    `json:"model"`
 	Firmwares []Release `json:"firmwares,omitempty"`
@@ -42,6 +52,7 @@ type Pair struct {
 	To        string    `json:"to"`
 }
 
+// Matrix is a GitHub Actions build matrix of firmware pairs.
 type Matrix struct {
 	Include []Pair `json:"include"`
 }
@@ -80,6 +91,7 @@ var (
 	imageName   = regexp.MustCompile(`^ghcr\.io/[a-z0-9][a-z0-9_.-]*/unifi-os$`)
 )
 
+// ValidateImage reports whether image is a valid ghcr.io/*/unifi-os repository.
 func ValidateImage(image string) error {
 	if !imageName.MatchString(image) {
 		return fmt.Errorf("invalid image repository: %s", image)
@@ -88,12 +100,13 @@ func ValidateImage(image string) error {
 	return nil
 }
 
+// ValidatePair reports whether releases is a distinct, ascending pair for model.
 func ValidatePair(model string, releases []Release) error {
 	board, err := boardFor(model)
 	if err != nil {
 		return err
 	}
-	if len(releases) != 2 {
+	if len(releases) != releasesInPair {
 		return fmt.Errorf("two firmware releases required for %s", model)
 	}
 	for _, release := range releases {
@@ -109,6 +122,7 @@ func ValidatePair(model string, releases []Release) error {
 	return nil
 }
 
+// Discover fetches the latest stable firmware pairs from endpoint.
 func Discover(ctx context.Context, client *http.Client, endpoint, image, model string, cutoff time.Time) (Matrix, error) {
 	address, err := url.Parse(endpoint)
 	if err != nil {
@@ -141,9 +155,11 @@ func discoverFromResponse(response *http.Response, image, model string, cutoff t
 		return Matrix{}, fmt.Errorf("firmware catalog: HTTP %d", response.StatusCode)
 	}
 
-	return SelectCatalog(io.LimitReader(response.Body, 16<<20), image, model, cutoff)
+	return SelectCatalog(io.LimitReader(response.Body, catalogResponseLimit), image, model, cutoff)
 }
 
+// SelectCatalog picks the latest two stable, non-prerelease firmware versions
+// per model from a catalog API response.
 func SelectCatalog(reader io.Reader, image, model string, cutoff time.Time) (Matrix, error) {
 	err := ValidateImage(image)
 	if err != nil {
@@ -184,7 +200,7 @@ func SelectCatalog(reader io.Reader, image, model string, cutoff time.Time) (Mat
 			versions = append(versions, version)
 		}
 		slices.SortFunc(versions, compare)
-		if len(versions) < 2 {
+		if len(versions) < releasesInPair {
 			return Matrix{}, fmt.Errorf("two stable releases required for %s", device.Name)
 		}
 		pair := Pair{Model: device.Name}
@@ -203,6 +219,7 @@ func SelectCatalog(reader io.Reader, image, model string, cutoff time.Time) (Mat
 	return matrix, nil
 }
 
+// Published selects the latest two published firmware tags per model.
 func Published(tags, image string) (Matrix, error) {
 	err := ValidateImage(image)
 	if err != nil {
@@ -219,7 +236,7 @@ func Published(tags, image string) (Matrix, error) {
 		}
 		slices.SortFunc(versions, compare)
 		versions = slices.Compact(versions)
-		if len(versions) < 2 {
+		if len(versions) < releasesInPair {
 			return Matrix{}, fmt.Errorf("two published firmware versions required for %s", device.Name)
 		}
 		matrix.Include = append(matrix.Include, Pair{Model: device.Name, From: image + ":" + device.Name + "-" + versions[len(versions)-2], To: image + ":" + device.Name + "-" + versions[len(versions)-1]})

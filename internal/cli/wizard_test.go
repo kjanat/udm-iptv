@@ -21,7 +21,7 @@ func TestPreviewIsIndependentOfHost(t *testing.T) {
 		application := &Application{ConfigPath: filepath.Join(directory, "unreadable-config"), StateDir: directory, Out: &output, Err: &output}
 		calls := 0
 		abort := errors.New("cancelled")
-		command := application.previewCommandWith(func(ctx context.Context, value *config.Config) error {
+		command := application.previewCommandWith(func(_ context.Context, value *config.Config) error {
 			calls++
 			if value.Profile != "tweak" {
 				t.Fatal("profile flag not used")

@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// RenderEvent returns a human-readable text-capture line for event.
 func RenderEvent(event Event) string {
 	switch event.Type {
 	case "started":

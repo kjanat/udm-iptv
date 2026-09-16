@@ -14,17 +14,18 @@ import (
 func TestPackageBoundaries(t *testing.T) {
 	const prefix = "github.com/kjanat/udm-iptv/internal/"
 	allowed := map[string][]string{
-		"atomicfile":    {},
-		"firmware":      {},
-		"config":        {},
+		"atomicfile":    {"filemode"},
+		"filemode":      {},
+		"firmware":      {"filemode"},
+		"config":        {"filemode"},
 		"device":        {"config"},
 		"network":       {"config"},
-		"runtimebundle": {},
-		"telemetry":     {"config"},
+		"runtimebundle": {"filemode"},
+		"telemetry":     {"config", "filemode"},
 		"ui":            {"config"},
-		"service":       {"config", "network", "runtimebundle", "atomicfile", "telemetry"},
+		"service":       {"config", "network", "runtimebundle", "atomicfile", "telemetry", "filemode"},
 		"diagnostics":   {"config", "network", "service"},
-		"installer":     {"config", "network", "service", "runtimebundle", "atomicfile"},
+		"installer":     {"config", "network", "service", "runtimebundle", "atomicfile", "filemode"},
 	}
 	err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {

@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+const (
+	journalCursorLimit = 64 << 10
+	journalOutputLimit = 4 << 20
+	// failureLogLines is how many recent lines a failure report attaches.
+	failureLogLines = 100
+)
+
 type boundedJournal struct {
 	bytes.Buffer
 
@@ -38,7 +45,7 @@ func journalOutput(ctx context.Context, limit int, arguments ...string) ([]byte,
 }
 
 func journalCursor(ctx context.Context) string {
-	output, err := journalOutput(ctx, 64<<10, "-n", "0", "--show-cursor", "--no-pager", "-u", "udm-iptv.service")
+	output, err := journalOutput(ctx, journalCursorLimit, "-n", "0", "--show-cursor", "--no-pager", "-u", "udm-iptv.service")
 	if err != nil {
 		return ""
 	}
@@ -56,7 +63,7 @@ func journalLines(ctx context.Context, cursor string, limit int) []string {
 		return []string{"journal cursor unavailable; service logs were not collected"}
 	}
 	arguments := journalArguments(cursor, limit)
-	output, err := journalOutput(ctx, 4<<20, arguments...)
+	output, err := journalOutput(ctx, journalOutputLimit, arguments...)
 	if err != nil {
 		return []string{"journal unavailable: " + err.Error()}
 	}

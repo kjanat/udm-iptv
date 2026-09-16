@@ -60,9 +60,6 @@ disable = [
   "wsl_v5",
 ]
 
-[linters.settings.staticcheck]
-checks = ["all"]
-
 [linters.settings.depguard.rules.main]
 list-mode = "strict"
 # tombi: format.rules.array-values-order = "ascending"
@@ -81,6 +78,23 @@ allow     = [
   "golang.org/x/",
 ]
 
+[linters.settings.forbidigo]
+forbid = [                                                                                                  # tombi: format.rules.array-values-order = "ascending"
+  { pattern = "^os\\.Create$", msg = "use atomicfile.Write/Copy so a crash never leaves a partial file" },
+  { pattern = "^os\\.WriteFile$", msg = "use atomicfile.Write so a crash never leaves a partial file" },
+]
+
+[linters.settings.gosec]
+# udm-iptv is a local CLI/daemon administered by its own operator: file
+# paths come from --config/--output/--text flags or discovered system state
+# (interface names, its own temp/cache dirs), and subprocess arguments come
+# from validated config or literal binary names — never from untrusted
+# network input, so these taint-analysis codes are structurally noisy here.
+excludes = ["G204", "G304", "G702"]
+
+[linters.settings.staticcheck]
+checks = ["all"]
+
 [linters.settings.nolintlint]  # tombi: format.rules.table-keys-order = "ascending"
 allow-unused        = false
 require-explanation = true
@@ -89,6 +103,12 @@ require-specific    = true
 [linters.exclusions]  # tombi: format.rules.table-keys-order = "ascending"
 generated   = "strict"
 warn-unused = true
+
+[[linters.exclusions.rules]]
+# Streams a download and a squashfs extraction too large to buffer as []byte for atomicfile.Write;
+# both are build-pipeline work files, not daemon/installer state.
+linters = ["forbidigo"]
+path    = "internal/firmware/images\\.go"
 
 [formatters]  # tombi: format.rules.table-keys-order = "ascending"
 enable = ["gci", "goimports"]

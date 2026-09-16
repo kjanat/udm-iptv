@@ -14,16 +14,23 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
+// Runner executes an external command, streaming its output to a writer.
 type Runner interface {
 	Run(context.Context, io.Writer, string, ...string) error
 }
 
+const commandTimeout = 15 * time.Minute
+
+// Commands runs commands directly, bounded by commandTimeout.
 type Commands struct{ Log io.Writer }
 
+// Run executes name with args, writing its stdout to output and stderr to c.Log.
 func (c Commands) Run(ctx context.Context, output io.Writer, name string, args ...string) error {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, name, args...)
 	command.Stdout, command.Stderr = output, c.Log
@@ -35,6 +42,7 @@ func (c Commands) Run(ctx context.Context, output io.Writer, name string, args .
 	return nil
 }
 
+// Pipeline builds, publishes and selects firmware test images.
 type Pipeline struct {
 	Runner Runner
 	Images Images
@@ -49,12 +57,14 @@ func (p Pipeline) capture(ctx context.Context, name string, args ...string) (str
 	return strings.TrimSpace(output.String()), err
 }
 
+// Fingerprint hashes a release's identifying fields, to detect catalog drift.
 func Fingerprint(model string, release Release) string {
 	data := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\n", model, release.Board, release.Version, release.URL, release.SHA256)
 
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
 }
 
+// Build extracts releases' root filesystems and imports them as test images.
 func (p Pipeline) Build(ctx context.Context, image, model, cache string, releases []Release) error {
 	err := ValidateImage(image)
 	if err != nil {
@@ -67,7 +77,7 @@ func (p Pipeline) Build(ctx context.Context, image, model, cache string, release
 	if cache == "" {
 		return errors.New("cache directory required")
 	}
-	err = os.MkdirAll(cache, 0o755)
+	err = os.MkdirAll(cache, filemode.SharedDir)
 	if err != nil {
 		return err
 	}
@@ -189,6 +199,7 @@ func extractFile(source, destination string) (err error) {
 	return Extract(input, info.Size(), output)
 }
 
+// Publish rebuilds and pushes releases' images only if their catalog fingerprint changed.
 func (p Pipeline) Publish(ctx context.Context, image, model string, releases []Release) error {
 	if err := ValidateImage(image); err != nil {
 		return err
@@ -252,6 +263,8 @@ func (p Pipeline) publishTag(ctx context.Context, source, target string) error {
 	return nil
 }
 
+// Published selects the latest two published firmware pairs per model, by
+// listing image's registry tags.
 func (p Pipeline) Published(ctx context.Context, image string) (Matrix, error) {
 	if err := ValidateImage(image); err != nil {
 		return Matrix{}, err

@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// sigtermGrace is how long stop waits for SIGTERM before escalating to SIGKILL.
+const sigtermGrace = 5 * time.Second
+
 type managedProcess struct {
 	command *exec.Cmd
 	done    chan struct{}
@@ -46,7 +49,7 @@ func (process *managedProcess) stop() error {
 	if err := syscall.Kill(-process.command.Process.Pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("terminate process group: %w", err)
 	}
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(sigtermGrace)
 	defer timer.Stop()
 	select {
 	case <-process.done:

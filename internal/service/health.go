@@ -9,6 +9,11 @@ import (
 	systemd "github.com/coreos/go-systemd/v22/dbus"
 )
 
+// healthCheckInterval is how often WaitHealthy samples the service's state.
+const healthCheckInterval = 250 * time.Millisecond
+
+// WaitHealthy waits for udm-iptv.service to become active and stay that way
+// for stable, failing if it does not become ready within startup.
 func WaitHealthy(ctx context.Context, startup, stable time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, startup+stable)
 	defer cancel()
@@ -18,7 +23,7 @@ func WaitHealthy(ctx context.Context, startup, stable time.Duration) error {
 	}
 	defer connection.Close()
 
-	return observeServiceHealth(ctx, startup, stable, 250*time.Millisecond, func(ctx context.Context) (healthSample, error) {
+	return observeServiceHealth(ctx, startup, stable, healthCheckInterval, func(ctx context.Context) (healthSample, error) {
 		properties, err := connection.GetAllPropertiesContext(ctx, "udm-iptv.service")
 		if err != nil {
 			return healthSample{}, fmt.Errorf("read service state: %w", err)

@@ -20,7 +20,7 @@ func verifyArtifactArchive(input io.Reader, expected [sha256.Size]byte) error {
 		return errors.New("unexpected artifact archive entry")
 	}
 	digest := sha256.New()
-	if _, err := io.Copy(digest, archive); err != nil {
+	if _, err := io.CopyN(digest, archive, header.Size); err != nil {
 		return fmt.Errorf("hash installed artifact: %w", err)
 	}
 	if !bytes.Equal(digest.Sum(nil), expected[:]) {

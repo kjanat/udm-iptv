@@ -1,9 +1,10 @@
 package runtimebundle
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 func TestRuntimeRejectsInvalidInputs(t *testing.T) {
@@ -16,7 +17,7 @@ func TestRuntimeRejectsInvalidInputs(t *testing.T) {
 		t.Fatal("missing runtime accepted")
 	}
 	file := filepath.Join(root, "invalid")
-	err = os.WriteFile(file, []byte("not an ELF binary"), 0o700)
+	err = atomicfile.Write(file, []byte("not an ELF binary"), 0o700)
 	if err != nil {
 		t.Fatal(err)
 	}
