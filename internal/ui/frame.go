@@ -31,6 +31,8 @@ const (
 	footerHeight = 3
 	// minContentWidth keeps narrow terminals from collapsing the frame further.
 	minContentWidth = 20
+	// popupPadding is the horizontal frame popupStyle adds around its content.
+	popupPadding = 8
 	// hintGap separates a footer's text from its trailing hint.
 	hintGap = 4
 	// outerMarginX keeps the frame border clear of the terminal edge.
@@ -49,7 +51,8 @@ var (
 	helpTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
 	helpKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
 	helpKeys       = key.NewBinding(key.WithKeys("f1", "ctrl+_"), key.WithHelp("F1", "explain"))
-	quitKeys       = key.NewBinding(key.WithKeys("ctrl+c", "esc"))
+	quitKeys       = key.NewBinding(key.WithKeys("ctrl+c"))
+	backKeys       = key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "back"))
 	closeLabel     = "✕ close"
 	leaveLabel     = " Yes, leave "
 	stayLabel      = " No, stay "
@@ -67,12 +70,31 @@ var (
 
 var wizardTheme = huh.ThemeFunc(func(isDark bool) *huh.Styles {
 	styles := huh.ThemeCharm(isDark)
+	lightDark := lipgloss.LightDark(isDark)
+	accent := lightDark(lipgloss.Color("#5A56E0"), lipgloss.Color("#7571F9"))
+	dim := lightDark(lipgloss.Color("245"), lipgloss.Color("240"))
+	dimmer := lightDark(lipgloss.Color("250"), lipgloss.Color("237"))
 	styles.Group.Title = styles.Group.Title.Bold(true).Transform(strings.ToUpper).MarginBottom(1)
 	styles.Group.Description = styles.Group.Description.MarginBottom(1)
+	styles.Focused.Base = styles.Focused.Base.BorderForeground(accent)
 	styles.Focused.SelectedPrefix = styles.Focused.SelectedPrefix.SetString("[x] ")
 	styles.Focused.UnselectedPrefix = styles.Focused.UnselectedPrefix.SetString("[ ] ")
-	styles.Blurred.SelectedPrefix = styles.Focused.SelectedPrefix
-	styles.Blurred.UnselectedPrefix = styles.Focused.UnselectedPrefix
+
+	blurred := &styles.Blurred
+	blurred.Title = blurred.Title.Foreground(dim).Bold(false)
+	blurred.Description = blurred.Description.Foreground(dimmer)
+	blurred.Option = blurred.Option.Foreground(dim)
+	blurred.SelectedOption = blurred.SelectedOption.Foreground(dim)
+	blurred.UnselectedOption = blurred.UnselectedOption.Foreground(dim)
+	blurred.SelectedPrefix = styles.Focused.SelectedPrefix.Foreground(dim)
+	blurred.UnselectedPrefix = styles.Focused.UnselectedPrefix.Foreground(dim)
+	blurred.SelectSelector = blurred.SelectSelector.Foreground(dim)
+	blurred.MultiSelectSelector = blurred.MultiSelectSelector.Foreground(dim)
+	blurred.FocusedButton = blurred.BlurredButton.Foreground(dim).Background(dimmer)
+	blurred.BlurredButton = blurred.FocusedButton
+	blurred.TextInput.Prompt = blurred.TextInput.Prompt.Foreground(dim)
+	blurred.TextInput.Text = blurred.TextInput.Text.Foreground(dim)
+	blurred.TextInput.Placeholder = blurred.TextInput.Placeholder.Foreground(dimmer)
 
 	return styles
 })
@@ -80,6 +102,8 @@ var wizardTheme = huh.ThemeFunc(func(isDark bool) *huh.Styles {
 // page pairs a huh group with the field keys it owns and its hide condition,
 // which huh does not expose back to callers.
 type page struct {
+	search *searchable
+	entry  *entryPrompt
 	group  *huh.Group
 	keys   []string
 	hidden func() bool
@@ -117,12 +141,77 @@ func (p page) visible() bool {
 	return p.hidden == nil || !p.hidden()
 }
 
+func (p page) searching(s *searchable) page {
+	p.search = s
+
+	return p
+}
+
+// entering registers the popup input the page's list opens for its
+// "enter manually" row.
+func (p page) entering(entry *entryPrompt) page {
+	p.entry = entry
+
+	return p
+}
+
+// ErrBack reports that the user stepped back out of a form's first page.
+// The caller re-runs the previous form.
+var ErrBack = errors.New("back to the previous form")
+
 // Wizard is one huh form plus the step numbers of the surrounding forms.
 type Wizard struct {
 	Form          *huh.Form
 	pages         []page
 	before, after int
+	wentBack      bool
 	done          chan struct{}
+}
+
+// canBack reports whether a form precedes this one.
+func (wizard *Wizard) canBack() bool {
+	return wizard.before > 0
+}
+
+// onFirstPage reports whether the focused field sits on the first visible page.
+func (wizard *Wizard) onFirstPage() bool {
+	focused := focusedKey(wizard.Form)
+	for _, p := range wizard.pages {
+		if p.visible() {
+			return len(p.keys) > 0 && p.keys[0] == focused
+		}
+	}
+
+	return false
+}
+
+// search returns the searchable list behind the focused field, if any.
+func (wizard *Wizard) search() *searchable {
+	if p, ok := wizard.focusedPage(); ok {
+		return p.search
+	}
+
+	return nil
+}
+
+func (wizard *Wizard) focusedPage() (page, bool) {
+	focused := focusedKey(wizard.Form)
+	for _, p := range wizard.pages {
+		if len(p.keys) > 0 && p.keys[0] == focused {
+			return p, true
+		}
+	}
+
+	return page{}, false
+}
+
+// entry returns the popup input behind the focused list, if any.
+func (wizard *Wizard) entry() *entryPrompt {
+	if p, ok := wizard.focusedPage(); ok {
+		return p.entry
+	}
+
+	return nil
 }
 
 func wizardForm(pages ...page) *Wizard {
@@ -131,7 +220,14 @@ func wizardForm(pages ...page) *Wizard {
 		groups = append(groups, p.group)
 	}
 
-	return &Wizard{Form: huh.NewForm(groups...).WithWidth(frameContentWidth).WithTheme(wizardTheme), pages: pages}
+	keymap := huh.NewDefaultKeyMap()
+	for _, p := range pages {
+		if p.search != nil {
+			keymap.Select.Filter = key.NewBinding(key.WithKeys("/"), key.WithHelp("type", "search"))
+		}
+	}
+
+	return &Wizard{Form: huh.NewForm(groups...).WithWidth(frameContentWidth).WithTheme(wizardTheme).WithKeyMap(keymap), pages: pages}
 }
 
 func (wizard *Wizard) steps(before, after int) *Wizard {
@@ -199,6 +295,11 @@ type Frame struct {
 	rows           int
 	help           bool
 	quitPrompt     bool
+	escArmed       bool
+	entry          *entryPrompt
+	entryText      string
+	entryCursor    int
+	entryErr       error
 	stayFocused    bool
 	closeX, closeY int
 	leaveX, leaveY int
@@ -257,10 +358,40 @@ func (frame *Frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return frame, nil
 	case tea.KeyPressMsg:
 		if frame.quitPrompt {
+			frame.escArmed = false
+
 			return frame, frame.answerQuitPrompt(msg)
 		}
-		if key.Matches(msg, quitKeys) && !filtering(frame.wizard.Form) {
+		if frame.entry != nil {
+			frame.escArmed = false
+
+			return frame, frame.answerEntry(msg.Text, msg.Code == tea.KeyEnter, msg.Code == tea.KeyBackspace, msg.Code == tea.KeyEscape,
+				msg.Code == tea.KeyUp, msg.Code == tea.KeyDown)
+		}
+		if entry := frame.wizard.entry(); entry != nil && hoversManualEntry(frame.wizard.Form) &&
+			(msg.Code == tea.KeyEnter || msg.Code == tea.KeySpace || msg.Text == "x") {
+			frame.openEntry(entry)
+
+			return frame, nil
+		}
+		armed := frame.escArmed
+		frame.escArmed = msg.Code == tea.KeyEscape
+		if search := frame.wizard.search(); search != nil && msg.Mod == 0 {
+			if msg.Text == "/" {
+				return frame, nil
+			}
+			if search.keystroke(msg.Text, msg.Code == tea.KeyBackspace, msg.Code == tea.KeyEscape) {
+				return frame, frame.forward(searchChangedMsg{})
+			}
+		}
+		if key.Matches(msg, quitKeys) {
 			return frame, frame.askToLeave()
+		}
+		if msg.Code == tea.KeyEscape && !filtering(frame.wizard.Form) {
+			return frame, frame.escape(armed)
+		}
+		if key.Matches(msg, backKeys) && frame.wizard.canBack() && frame.wizard.onFirstPage() {
+			return frame, frame.goBack()
 		}
 		if key.Matches(msg, helpKeys) {
 			frame.help = !frame.help
@@ -278,28 +409,26 @@ func (frame *Frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Text != "" && !isDigits(msg.Text) && focusedKey(frame.wizard.Form) == "vlan" {
 			return frame, nil
 		}
-		if msg.Code == tea.KeyEnter && hoversUntickedManualEntry(frame.wizard.Form) {
-			return frame, tea.Batch(frame.forward(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}), frame.forward(msg))
-		}
 	}
 
 	return frame, frame.forward(msg)
 }
 
-// Enter on the "enter manually" row means "I want that", so tick it before
-// the form moves on to the manual input page.
-func hoversUntickedManualEntry(form *huh.Form) bool {
-	field, ok := form.GetFocusedField().(*huh.MultiSelect[string])
-	if !ok || field.GetFiltering() {
-		return false
-	}
-	hovered, ok := field.Hovered()
-	if !ok || hovered != manualPort {
-		return false
-	}
-	selected, ok := field.GetValue().([]string)
+// hoversManualEntry reports whether the focused list's cursor sits on the
+// "enter manually" row.
+func hoversManualEntry(form *huh.Form) bool {
+	switch field := form.GetFocusedField().(type) {
+	case *huh.Select[string]:
+		hovered, ok := field.Hovered()
 
-	return ok && !containsString(selected, manualPort)
+		return ok && !field.GetFiltering() && hovered == manualPort
+	case *huh.MultiSelect[string]:
+		hovered, ok := field.Hovered()
+
+		return ok && !field.GetFiltering() && hovered == manualPort
+	default:
+		return false
+	}
 }
 
 func (frame *Frame) resize() tea.Cmd {
@@ -347,6 +476,29 @@ func (frame *Frame) leave() tea.Cmd {
 	frame.observe("abort")
 
 	return frame.forward(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+}
+
+// escape steps back one page, or one form on the first page. A second
+// escape in a row, or one with nothing to go back to, offers to leave.
+func (frame *Frame) escape(armed bool) tea.Cmd {
+	switch {
+	case armed:
+		return frame.askToLeave()
+	case !frame.wizard.onFirstPage():
+		return frame.forward(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	case frame.wizard.canBack():
+		return frame.goBack()
+	default:
+		return frame.askToLeave()
+	}
+}
+
+// goBack ends the current form so the session re-runs the previous one.
+func (frame *Frame) goBack() tea.Cmd {
+	frame.wizard.wentBack = true
+	frame.observe("back")
+
+	return func() tea.Msg { return wizardDoneMsg{} }
 }
 
 func (frame *Frame) answerQuitPrompt(msg tea.KeyPressMsg) tea.Cmd {
@@ -413,6 +565,9 @@ func (frame *Frame) render() string {
 	content := lipgloss.JoinVertical(lipgloss.Left, frame.topRow(lipgloss.Width(box)), box)
 	if frame.width > 0 && frame.height > 0 {
 		content = lipgloss.Place(frame.width, frame.height, lipgloss.Center, lipgloss.Center, content)
+	}
+	if frame.entry != nil {
+		content = frame.overlay(content, frame.entryPopup())
 	}
 	if frame.quitPrompt {
 		content = frame.overlay(content, frame.quitPopup())
@@ -499,7 +654,9 @@ func (frame *Frame) observe(event string) {
 
 func (frame *Frame) progressLine() string {
 	step, total := frame.wizard.progress()
-	hint := helpKeyStyle.Render("F1") + progressTextStyle.Render(" explain  ") + helpKeyStyle.Render("esc") + progressTextStyle.Render(" leave")
+	hint := helpKeyStyle.Render("F1") + progressTextStyle.Render(" explain  ") +
+		helpKeyStyle.Render("esc") + progressTextStyle.Render(" back  ") +
+		helpKeyStyle.Render("esc esc") + progressTextStyle.Render(" leave")
 	text := fmt.Sprintf("Question %d of %d", step, total)
 	width := frame.contentWidth() - lipgloss.Width(text) - lipgloss.Width(hint) - hintGap
 	filled := 0
@@ -563,6 +720,9 @@ func (session *Session) Run(ctx context.Context, wizard *Wizard) error {
 		}
 
 		return err
+	}
+	if wizard.wentBack {
+		return ErrBack
 	}
 	if wizard.Form.State == huh.StateAborted {
 		return huh.ErrUserAborted

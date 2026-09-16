@@ -11,6 +11,7 @@
 		],
 		"deny": [
 			"Bash(gofmt *)",
+			"Bash(gofumpt *)",
 			"Bash(prettier *)"
 		]
 	}

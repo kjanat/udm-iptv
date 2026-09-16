@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -23,7 +24,7 @@ func TestSuggestedProviderIsDraftUntilReview(t *testing.T) {
 			if calls == 1 && form.GetFocusedField().GetValue() != "NL" {
 				t.Fatal("suggested country not preselected")
 			}
-			if calls == 2 && form.GetFocusedField().GetValue() != "tweak" {
+			if calls == 2 && form.GetFocusedField().GetValue() != choiceOf("tweak", "tweak") {
 				t.Fatal("suggestion not preselected")
 			}
 			if calls == 4 && !accept {
@@ -86,7 +87,8 @@ func TestProviderSuggestionCanBeOverridden(t *testing.T) {
 
 		return nil
 	}, "tweak")
-	if err != nil || chosen == "tweak" || value.Profile != catalog.ProfilesOf(chosen)[0].ID {
+	provider, profile, _ := strings.Cut(chosen, "/")
+	if err != nil || provider == "tweak" || value.Profile != profile || catalog.ProfilesOf(provider)[0].ID != profile {
 		t.Fatalf("manual selection lost: %s, %v", chosen, err)
 	}
 }

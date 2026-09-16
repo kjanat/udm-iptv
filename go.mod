@@ -7,6 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.9
 	charm.land/huh/v2 v2.0.3
 	charm.land/lipgloss/v2 v2.0.6
+	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260913004009-c615ff2f7805
 	github.com/coreos/go-iptables v0.8.0
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/getsentry/sentry-go v0.49.0
@@ -25,11 +26,13 @@ require (
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
+	github.com/aymanbagabas/go-udiff v0.4.1 // indirect
 	github.com/catppuccin/go v0.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260910203606-6c9e17dc7a16 // indirect
 	github.com/charmbracelet/x/ansi v0.11.8 // indirect
+	github.com/charmbracelet/x/exp/golden v0.0.0-20251109135125-8916d276318f // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/exp/strings v0.1.0 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
