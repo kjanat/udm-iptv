@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kjanat/udm-iptv/internal/atomicfile"
-
 	"github.com/google/go-github/v80/github"
 )
 
@@ -28,6 +26,9 @@ type UpgradeOptions struct {
 }
 
 func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions) error {
+	if err := validateStatePath(application.StateDir); err != nil {
+		return err
+	}
 	if !Installed(application.StateDir) {
 		return errors.New("udm-iptv is not installed; run 'udm-iptv install' first")
 	}
@@ -91,25 +92,8 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 		return err
 	}
 	target := filepath.Join(application.StateDir, "bin", "udm-iptv")
-	backup := filepath.Join(application.StateDir, "bin", ".udm-iptv.previous")
-	if err := atomicfile.Copy(target, backup); err != nil {
-		return fmt.Errorf("back up current executable: %w", err)
-	}
-	defer removeIgnoringError(backup)
-	if err := atomicfile.Copy(binaryPath, target); err != nil {
+	if err := activateUpgrade(ctx, binaryPath, target, version, systemUpgradeActions(application.Restart)); err != nil {
 		return err
-	}
-	if err := application.Restart(ctx, true); err != nil {
-		rollbackErr := atomicfile.Copy(backup, target)
-		if rollbackErr != nil {
-			return fmt.Errorf("installed %s but failed to restart cleanly (%w), and rollback failed: %w", version, err, rollbackErr)
-		}
-		rollbackErr = application.Restart(ctx, true)
-		if rollbackErr != nil {
-			return fmt.Errorf("installed %s but failed to restart cleanly (%w); restored the old binary but its restart failed: %w", version, err, rollbackErr)
-		}
-
-		return fmt.Errorf("installed %s but failed its health check and was rolled back: %w", version, err)
 	}
 
 	return writef(application.Out, "Upgraded udm-iptv to %s.\n", version)
