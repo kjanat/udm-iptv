@@ -13,9 +13,6 @@ on:
       artifact:
         description: Validated binaries and Debian package.
         value: ${{ jobs.build.outputs.artifact }}
-  workflow_run:
-    workflows: [autofix.ci]
-    types: [completed]
 concurrency: { group: "ci-${{ github.event.pull_request.number || github.ref }}", queue: single }
 permissions: { contents: &r read }
 jobs:
@@ -72,7 +69,6 @@ jobs:
   fmt:
     name: Check formatting
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
     steps:
       - *Checkout
       - *Go
