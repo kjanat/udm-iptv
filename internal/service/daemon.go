@@ -20,6 +20,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/filemode"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/kjanat/udm-iptv/internal/runtimebundle"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
@@ -34,6 +35,20 @@ type Daemon struct {
 
 const runtimeStatePath = "/run/udm-iptv/state.json"
 
+const (
+	// signalGrace is a short pause after a stop signal before forced cleanup.
+	signalGrace = 250 * time.Millisecond
+	// addressUpdateBuffer bounds pending static-address change notifications.
+	addressUpdateBuffer = 4
+	// shutdownTimeout bounds how long a graceful stop waits before giving up.
+	shutdownTimeout = 30 * time.Second
+	// shutdownPoll is how often shutdown checks whether processes have exited.
+	shutdownPoll = 250 * time.Millisecond
+	// processWaitDelay bounds a killed process's exit after Wait's pipes close.
+	processWaitDelay = 5 * time.Second
+)
+
+// RuntimeState is the running proxy's identity, read by `udm-iptv status`.
 type RuntimeState struct {
 	StartedAt time.Time `json:"startedAt"`
 	Proxy     string    `json:"proxy"`
@@ -41,6 +56,8 @@ type RuntimeState struct {
 	Target    string    `json:"target"`
 }
 
+// Run brings up the IPTV network and multicast proxy, and supervises them
+// until the context is cancelled or either exits unexpectedly.
 func (application *Daemon) Run(parent context.Context) (result error) {
 	_, _ = sdnotify.SdNotify(false, "STATUS=Loading configuration")
 	value, err := config.Load(application.ConfigPath)
@@ -67,11 +84,11 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(runtimeStatePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(runtimeStatePath), filemode.SharedDir); err != nil {
 		return err
 	}
 	proxyConfigPath := "/run/udm-iptv/proxy.conf"
-	if err := atomicfile.Write(proxyConfigPath, []byte(proxyConfig), 0o600); err != nil {
+	if err := atomicfile.Write(proxyConfigPath, []byte(proxyConfig), filemode.PrivateFile); err != nil {
 		return err
 	}
 	defer removeIgnoringError(proxyConfigPath)
@@ -128,7 +145,7 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 		}
 
 		return fmt.Errorf("reconcile static IPTV network: %w", staticErr)
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(signalGrace):
 	}
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
 	_, _ = sdnotify.SdNotify(false, "STATUS=IPTV proxy is running")
@@ -189,7 +206,7 @@ func (application *Daemon) startConnection(ctx context.Context, value config.Con
 
 func startStaticReconciler(ctx context.Context, value config.Config, link netlink.Link) (<-chan error, error) {
 	failures := make(chan error, 1)
-	updates := make(chan netlink.AddrUpdate, 4)
+	updates := make(chan netlink.AddrUpdate, addressUpdateBuffer)
 	options := netlink.AddrSubscribeOptions{ErrorCallback: func(err error) {
 		select {
 		case failures <- err:
@@ -292,9 +309,9 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 }
 
 func waitDHCPLease(ctx context.Context, process *managedProcess, target string) error {
-	deadline := time.NewTimer(30 * time.Second)
+	deadline := time.NewTimer(shutdownTimeout)
 	defer deadline.Stop()
-	ticker := time.NewTicker(250 * time.Millisecond)
+	ticker := time.NewTicker(shutdownPoll)
 	defer ticker.Stop()
 	for {
 		select {
@@ -336,7 +353,7 @@ func configureGracefulStop(command *exec.Cmd) {
 
 		return syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
 	}
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = processWaitDelay
 }
 
 func renderProxyConfig(value config.Config) (string, error) {

@@ -18,6 +18,11 @@ import (
 	"github.com/kjanat/udm-iptv/internal/service"
 )
 
+const (
+	restartHealthStartup = 30 * time.Second
+	restartHealthStable  = 6 * time.Second
+)
+
 func (application *Application) installCommand() *cobra.Command {
 	return application.installCommandWith(installDependencies{
 		load: func() (config.Config, error) { return config.Load(application.ConfigPath) },
@@ -170,7 +175,7 @@ func (application *Application) restart(ctx context.Context, verify bool) error 
 		return err
 	}
 	if verify {
-		err := application.waitHealthy(ctx, 30*time.Second, 6*time.Second)
+		err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
 		if err != nil {
 			return errors.Join(err, application.collector().ReportFailure(ctx, application.Err))
 		}
@@ -191,7 +196,7 @@ func (application *Application) installBackend() installer.Backend {
 			return output.Bytes(), err
 		},
 		CheckHealth: func(ctx context.Context) error {
-			err := application.waitHealthy(ctx, 30*time.Second, 6*time.Second)
+			err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
 			if err != nil {
 				return errors.Join(err, application.collector().ReportFailure(ctx, application.Err))
 			}

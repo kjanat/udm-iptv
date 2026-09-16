@@ -4,12 +4,13 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/google/go-github/v80/github"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 func TestVerifyChecksum(t *testing.T) {
@@ -17,11 +18,11 @@ func TestVerifyChecksum(t *testing.T) {
 	directory := t.TempDir()
 	binary := filepath.Join(directory, "udm-iptv-linux-arm64")
 	checksums := filepath.Join(directory, "SHA256SUMS")
-	err := os.WriteFile(binary, []byte("binary"), 0o755)
+	err := atomicfile.Write(binary, []byte("binary"), 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = os.WriteFile(checksums, []byte("9a3a45d01531a20e89ac6ae10b0b0beb0492acd7216a368aa062d1a5fecaf9cd  udm-iptv-linux-arm64\n"), 0o600)
+	err = atomicfile.Write(checksums, []byte("9a3a45d01531a20e89ac6ae10b0b0beb0492acd7216a368aa062d1a5fecaf9cd  udm-iptv-linux-arm64\n"), 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

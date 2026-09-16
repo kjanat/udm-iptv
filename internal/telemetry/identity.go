@@ -24,6 +24,14 @@ type NetworkIdentity struct {
 	Status     string `json:"lookup_status"`
 }
 
+const (
+	ipLookupClientTimeout = 2 * time.Second
+	// ipLookupTimeout bounds the combined HTTPS and PTR lookup.
+	ipLookupTimeout = 3 * time.Second
+	// ipv4TextLimit bounds the IP address response; the longest IPv4 text is 15 bytes.
+	ipv4TextLimit = 65
+)
+
 func (r *Reporter) networkEnabled() bool {
 	if r == nil || r.client == nil || !r.settings.Enabled || !r.settings.NetworkIdentity {
 		return false
@@ -39,13 +47,13 @@ func (r *Reporter) networkEnabled() bool {
 // LookupNetwork performs no request until explicitly invoked by the application.
 // Both HTTPS discovery and DNS share a bounded deadline; no credentials are used.
 func LookupNetwork(parent context.Context) NetworkIdentity {
-	client := &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Timeout: ipLookupClientTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 	return lookupNetwork(parent, client, "https://api.ipify.org", net.DefaultResolver.LookupAddr)
 }
 
 func lookupNetwork(parent context.Context, client *http.Client, endpoint string, ptr func(context.Context, string) ([]string, error)) NetworkIdentity {
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	ctx, cancel := context.WithTimeout(parent, ipLookupTimeout)
 	defer cancel()
 	result := NetworkIdentity{Status: "unavailable"}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -60,8 +68,8 @@ func lookupNetwork(parent context.Context, client *http.Client, endpoint string,
 	if response.StatusCode != http.StatusOK {
 		return cleanIdentity(result)
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, 65))
-	if err != nil || len(data) > 64 {
+	data, err := io.ReadAll(io.LimitReader(response.Body, ipv4TextLimit))
+	if err != nil || len(data) > ipv4TextLimit-1 {
 		return cleanIdentity(result)
 	}
 	address, err := netip.ParseAddr(strings.TrimSpace(string(data)))

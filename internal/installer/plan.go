@@ -20,8 +20,10 @@ type Plan struct {
 	Replace    bool
 }
 
+// Action is one step of an installation, in execution order.
 type Action string
 
+// The installation steps, in the order Actions returns them.
 const (
 	Preflight       Action = "Check installation prerequisites"
 	PreserveRuntime Action = "Preserve the proxy and shared libraries offline"
@@ -39,6 +41,7 @@ type Backend interface {
 	Apply(context.Context, Action, Plan) error
 }
 
+// Validate reports whether the plan's config and paths are usable.
 func (p Plan) Validate() error {
 	if err := validateStatePath(p.StateDir); err != nil {
 		return err
@@ -56,6 +59,7 @@ func (p Plan) Validate() error {
 	return nil
 }
 
+// Actions returns the steps this plan requires, in execution order.
 func (p Plan) Actions() []Action {
 	actions := []Action{Preflight, PreserveRuntime}
 	if p.SaveConfig {

@@ -12,10 +12,33 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
+// DefaultPath is the default location of the persisted configuration file.
 const DefaultPath = "/data/udm-iptv/config.json"
 
+const (
+	// DefaultKPNVLAN is the IPTV VLAN ID KPN assigns in the Netherlands.
+	DefaultKPNVLAN = 4
+	// DefaultIGMPVersion picks IGMPv3, which works for most current receivers.
+	DefaultIGMPVersion = 3
+	// DefaultTraceRate samples one in ten operations for tracing.
+	DefaultTraceRate = 0.1
+	// hostPrefixBits is the /32 prefix length for a single IPv4 host address.
+	hostPrefixBits = 32
+)
+
+// kpnDHCPOptions and kpnNATDestinations are shared by Default and the "kpn"
+// and "solcon" entries in profiles.go, which use identical values.
+var (
+	kpnDHCPOptions     = []string{"-O", "staticroutes", "-V", "IPTV_RG"}
+	kpnNATDestinations = []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"}
+)
+
+// Config is the persisted configuration file format. It is a superset of the
+// legacy shell configuration, which is imported and converted to this format.
 type Config struct {
 	Profile   string    `json:"profile"`
 	WAN       WAN       `json:"wan"`
@@ -24,6 +47,7 @@ type Config struct {
 	Telemetry Telemetry `json:"telemetry"`
 }
 
+// Telemetry holds the configuration for telemetry collection and reporting.
 type Telemetry struct {
 	Presets         bool    `json:"presets"`
 	NetworkIdentity bool    `json:"networkIdentity"`
@@ -35,6 +59,8 @@ type Telemetry struct {
 	TraceRate       float64 `json:"traceRate"`
 }
 
+// WAN holds the configuration for the WAN interface, including VLAN settings,
+// DHCP options, static address, NAT destinations, and static routes.
 type WAN struct {
 	Interface         string   `json:"interface"`
 	VLAN              int      `json:"vlan"`
@@ -48,10 +74,14 @@ type WAN struct {
 	StaticRoutes      []string `json:"staticRoutes,omitempty"`
 }
 
+// LAN holds the configuration for the LAN interface, including the list of
+// interfaces.
 type LAN struct {
 	Interfaces []string `json:"interfaces"`
 }
 
+// Proxy holds the configuration for the IGMP proxy, including the program
+// choice, IGMP version, quick leave option, debug mode, and source ranges.
 type Proxy struct {
 	Program      string   `json:"program"`
 	IGMPVersion  int      `json:"igmpVersion"`
@@ -60,20 +90,25 @@ type Proxy struct {
 	SourceRanges []string `json:"sourceRanges,omitempty"`
 }
 
-func Default() Config {
+// genericBase holds the fallback values every profile inherits for fields it
+// does not set itself: the physical interface, VLAN interface name, proxy
+// choice and telemetry defaults.
+func genericBase() Config {
 	return Config{
-		Profile: "kpn",
-		WAN: WAN{
-			Interface: "eth8", VLAN: 4, VLANInterface: "iptv", DHCP: true,
-			DHCPOptions:     []string{"-O", "staticroutes", "-V", "IPTV_RG"},
-			NATDestinations: []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"},
-		},
+		WAN:       WAN{Interface: "eth8", VLANInterface: "iptv"},
 		LAN:       LAN{Interfaces: []string{"br0"}},
-		Proxy:     Proxy{Program: "improxy", IGMPVersion: 3},
-		Telemetry: Telemetry{Enabled: true, Errors: true, Logs: true, Metrics: true, Tracing: true, TraceRate: 0.1, Presets: true, NetworkIdentity: true},
+		Proxy:     Proxy{Program: "improxy", IGMPVersion: DefaultIGMPVersion},
+		Telemetry: Telemetry{Enabled: true, Errors: true, Logs: true, Metrics: true, Tracing: true, TraceRate: DefaultTraceRate, Presets: true, NetworkIdentity: true},
 	}
 }
 
+// Default is the kpn profile applied to the generic base: KPN is the primary
+// market and the config a fresh install starts from before the wizard runs.
+func Default() Config {
+	return profileDefinitions["kpn"].resolve("kpn").Config
+}
+
+// Load reads and validates the configuration file at path.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -90,6 +125,7 @@ func Load(path string) (Config, error) {
 	return value, nil
 }
 
+// Save validates value and atomically writes it to path.
 func Save(path string, value Config) error {
 	if err := value.Validate(); err != nil {
 		return err
@@ -99,7 +135,7 @@ func Save(path string, value Config) error {
 		return err
 	}
 	data = append(data, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), filemode.PrivateDir); err != nil {
 		return err
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".config-*.json")
@@ -108,7 +144,7 @@ func Save(path string, value Config) error {
 	}
 	name := temporary.Name()
 	defer func() { _ = os.Remove(name) }()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := temporary.Chmod(filemode.PrivateFile); err != nil {
 		_ = temporary.Close()
 
 		return err
@@ -130,6 +166,7 @@ func Save(path string, value Config) error {
 	return os.Rename(name, path)
 }
 
+// Validate reports whether value is a consistent, applyable configuration.
 func (value Config) Validate() error {
 	if !(value.Telemetry.TraceRate >= 0 && value.Telemetry.TraceRate <= 1) {
 		return errors.New("telemetry trace rate must be between 0 and 1")
@@ -273,7 +310,7 @@ func normalizeLegacyPrefixes(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		if address, err := netip.ParseAddr(value); err == nil && address.Is4() {
-			value = netip.PrefixFrom(address, 32).String()
+			value = netip.PrefixFrom(address, hostPrefixBits).String()
 		}
 		result = append(result, value)
 	}

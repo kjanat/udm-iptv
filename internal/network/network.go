@@ -18,6 +18,15 @@ import (
 
 const routeProtocolDHCP = 16
 
+const (
+	// ipv4HostBits is the /32 prefix length for a single IPv4 host address.
+	ipv4HostBits = 32
+	// dhcpBaseMetric keeps DHCP-derived routes below manually configured ones.
+	dhcpBaseMetric = 200
+)
+
+// Target returns the interface IPTV traffic flows through: the VLAN
+// sub-interface when tagged, otherwise the WAN interface itself.
 func Target(value config.Config) string {
 	if value.WAN.VLAN > 0 {
 		return value.WAN.VLANInterface
@@ -26,6 +35,7 @@ func Target(value config.Config) string {
 	return value.WAN.Interface
 }
 
+// EnsureLink brings up the WAN interface, creating the VLAN sub-interface when tagged.
 func EnsureLink(value config.Config) (netlink.Link, error) {
 	if value.WAN.VLAN == 0 {
 		link, err := netlink.LinkByName(value.WAN.Interface)
@@ -86,6 +96,7 @@ func applyMAC(link netlink.Link, address string) error {
 	return netlink.LinkSetHardwareAddr(link, mac)
 }
 
+// EnsureNAT adds MASQUERADE rules for value's NAT destinations, if not already present.
 func EnsureNAT(value config.Config) error {
 	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
@@ -102,6 +113,7 @@ func EnsureNAT(value config.Config) error {
 	return nil
 }
 
+// RemoveNAT removes the MASQUERADE rules EnsureNAT added.
 func RemoveNAT(value config.Config) error {
 	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
@@ -120,6 +132,7 @@ func RemoveNAT(value config.Config) error {
 	return joined
 }
 
+// ApplyStatic sets the configured static address and static routes on link.
 func ApplyStatic(value config.Config, link netlink.Link) error {
 	if value.WAN.StaticAddress != "" {
 		address, err := netlink.ParseAddr(value.WAN.StaticAddress)
@@ -135,7 +148,7 @@ func ApplyStatic(value config.Config, link netlink.Link) error {
 		if err != nil {
 			return err
 		}
-		destination := &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), 32)}
+		destination := &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), ipv4HostBits)}
 		if err := netlink.RouteReplace(&netlink.Route{LinkIndex: link.Attrs().Index, Dst: destination, Protocol: unix.RTPROT_STATIC}); err != nil {
 			return err
 		}
@@ -144,6 +157,7 @@ func ApplyStatic(value config.Config, link netlink.Link) error {
 	return nil
 }
 
+// ResetLease clears any DHCP-derived routes and addresses from link.
 func ResetLease(link netlink.Link) error {
 	err := flushDHCPRoutes(link.Attrs().Index)
 	if err != nil {
@@ -153,6 +167,7 @@ func ResetLease(link netlink.Link) error {
 	return flushAddresses(link)
 }
 
+// Lease is a udhcpc lease event, as udhcpc reports it through environment variables.
 type Lease struct {
 	Action       string
 	Interface    string
@@ -164,6 +179,7 @@ type Lease struct {
 	Metric       int
 }
 
+// LeaseFromEnvironment reads a Lease from the udhcpc hook's environment variables.
 func LeaseFromEnvironment(action string) (Lease, error) {
 	metric := 0
 	if raw := first(os.Getenv("IF_METRIC"), os.Getenv("metric")); raw != "" {
@@ -185,6 +201,7 @@ func LeaseFromEnvironment(action string) (Lease, error) {
 	return lease, nil
 }
 
+// ApplyLease reconciles the interface's address and routes with a DHCP lease event.
 func ApplyLease(lease Lease, allowDefaultRoute bool) error {
 	return applyLease(lease, allowDefaultRoute, leaseOperations{
 		link: netlink.LinkByName, addresses: netlink.AddrList,
@@ -293,7 +310,7 @@ func addStaticRoutes(add func(destination, gateway string, priority int) error, 
 		return errors.New("invalid RFC3442 classless route option")
 	}
 	for index := 0; index < len(staticRoutes); index += 2 {
-		if prefixLength == 32 && staticRoutes[index+1] != "0.0.0.0" {
+		if prefixLength == ipv4HostBits && staticRoutes[index+1] != "0.0.0.0" {
 			if err := add(staticRoutes[index+1]+"/32", "0.0.0.0", metric); err != nil {
 				return err
 			}
@@ -312,7 +329,7 @@ func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute boo
 		return nil, errors.New("DHCP route metric must not be negative")
 	}
 	if metric == 0 {
-		metric = 200 + linkIndex
+		metric = dhcpBaseMetric + linkIndex
 	}
 	var routes []netlink.Route
 	add := func(destination, gateway string, priority int) error {
@@ -332,7 +349,7 @@ func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute boo
 	}
 	if allowDefaultRoute {
 		for index, gateway := range lease.Routers {
-			if prefixLength == 32 {
+			if prefixLength == ipv4HostBits {
 				err := add(gateway+"/32", "0.0.0.0", metric)
 				if err != nil {
 					return nil, err
@@ -401,7 +418,7 @@ func dhcpRoute(linkIndex int, destination, gateway string, metric int) (netlink.
 	prefix = prefix.Masked()
 	route := netlink.Route{
 		LinkIndex: linkIndex,
-		Dst:       &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), 32)},
+		Dst:       &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), ipv4HostBits)},
 		Protocol:  routeProtocolDHCP,
 		Priority:  metric,
 		Table:     unix.RT_TABLE_MAIN,

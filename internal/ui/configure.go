@@ -21,6 +21,15 @@ type formValues struct {
 	vlan, dhcpOptions, nat, sources string
 }
 
+const (
+	// selectChrome is the extra rows a select adds around its visible options.
+	selectChrome = 4
+	// maxProfileSelectHeight caps the provider dropdown so it never dwarfs the screen.
+	maxProfileSelectHeight = 12
+	// igmpVersion2 is IGMPv2, the compatibility fallback next to the recommended v3.
+	igmpVersion2 = 2
+)
+
 func newFormValues(value config.Config) formValues {
 	return formValues{
 		vlan:        strconv.Itoa(value.WAN.VLAN),
@@ -58,7 +67,7 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, profiles []co
 	selector := huh.NewSelect[string]().Key("profile").
 		Title("Who is your TV provider?").
 		Description("Loads matching defaults. You can change them next.").
-		Options(profileOptions...).Height(min(12, len(profileOptions)+4)).Value(&profileID)
+		Options(profileOptions...).Height(min(maxProfileSelectHeight, len(profileOptions)+selectChrome)).Value(&profileID)
 	fields := newFormValues(*value)
 	estimate := configurationPages(value, ports, "", &fields)
 	err := run(ctx, wizardForm(newPage(selector)).steps(0, wizardForm(estimate...).visiblePages()+1))
@@ -220,8 +229,8 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 			huh.NewSelect[int]().Key("igmp").Title("IGMP version").
 				Description("IGMPv3 works for most current receivers.").
 				Options(
-					huh.NewOption("IGMPv3 (recommended)", 3),
-					huh.NewOption("IGMPv2", 2),
+					huh.NewOption("IGMPv3 (recommended)", config.DefaultIGMPVersion),
+					huh.NewOption("IGMPv2", igmpVersion2),
 				).Value(&value.Proxy.IGMPVersion),
 			huh.NewConfirm().Key("quickleave").Title("Enable quickleave?").
 				Description("Off when several TVs share one interface.").

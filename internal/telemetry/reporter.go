@@ -22,6 +22,27 @@ import (
 // have no telemetry destination, even when SENTRY_DSN is set at runtime.
 var DSN string
 
+const (
+	transportBufferSize = 32
+	// sentryRequestTimeout bounds both the HTTP transport and its client, so
+	// a stalled telemetry request never blocks daemon shutdown for long.
+	sentryRequestTimeout = 2 * time.Second
+	// maxTraceSpans bounds a transaction's recorded spans.
+	maxTraceSpans = 32
+	// exceptionChainLimit bounds how many wrapped/joined errors an event keeps.
+	exceptionChainLimit = 16
+)
+
+const (
+	tracesPerMinute  = 20
+	errorsPerMinute  = 5
+	logsPerMinute    = 30
+	metricsPerMinute = 60
+	presetsPerMinute = 5
+)
+
+// Reporter sends bounded telemetry events to Sentry.
+// It is safe to call its methods concurrently.
 type Reporter struct {
 	client     *sentry.Client
 	hub        *sentry.Hub
@@ -35,10 +56,12 @@ type Reporter struct {
 	metadata   map[string]string
 }
 
+// New returns a Reporter that sends events to Sentry, or
+// nil if telemetry is disabled.
 func New(settings config.Telemetry, version, configPath, stateDir string) (*Reporter, error) {
 	transport := sentry.NewHTTPTransport()
-	transport.BufferSize = 32
-	transport.Timeout = 2 * time.Second
+	transport.BufferSize = transportBufferSize
+	transport.Timeout = sentryRequestTimeout
 	r, err := newReporter(settings, version, transport, DSN)
 	if err == nil {
 		r.configPath, r.stateDir = configPath, stateDir
@@ -57,7 +80,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 	}
 	client, err := sentry.NewClient(sentry.ClientOptions{
 		Dsn: dsn, Release: r.release, Environment: "production", ServerName: "udm-iptv",
-		Transport: transport, HTTPClient: &http.Client{Timeout: 2 * time.Second},
+		Transport: transport, HTTPClient: &http.Client{Timeout: sentryRequestTimeout},
 		EnableTracing: settings.Tracing, TracesSampleRate: settings.TraceRate,
 		DataCollection: &sentry.DataCollection{
 			UserInfo: sentry.Set(false), HTTPBodies: []sentry.BodyType{},
@@ -68,7 +91,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 				Response: &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
 			},
 		},
-		MaxBreadcrumbs: -1, MaxSpans: 32, DisableClientReports: true,
+		MaxBreadcrumbs: -1, MaxSpans: maxTraceSpans, DisableClientReports: true,
 		Integrations: func([]sentry.Integration) []sentry.Integration { return nil },
 		BeforeSend:   r.filterEvent, BeforeSendTransaction: r.filterEvent,
 		BeforeSendLog: r.filterLog, BeforeSendMetric: r.filterMetric,
@@ -110,11 +133,12 @@ func (r *Reporter) allow(kind string, maximum int) bool {
 	return true
 }
 
+// Close flushes buffered events and releases the underlying Sentry client.
 func (r *Reporter) Close() {
 	if r == nil || r.client == nil {
 		return
 	}
-	r.client.Flush(2 * time.Second)
+	r.client.Flush(sentryRequestTimeout)
 	r.client.Close()
 }
 
@@ -146,6 +170,8 @@ func (r *Reporter) SetMetadata(model, firmware, proxy, profile string) {
 	}
 }
 
+// Run executes run under a trace and reports its outcome, if operation is
+// enabled for telemetry; otherwise it runs run directly.
 func (r *Reporter) Run(ctx context.Context, operation string, run func(context.Context) error) (err error) {
 	if r == nil || r.client == nil || !operations[operation] {
 		return run(ctx)
@@ -225,7 +251,7 @@ func (r *Reporter) failure(ctx context.Context, operation string, err error, pan
 	}
 	// Let the SDK preserve wrapped and joined errors and any embedded stacks.
 	// BeforeSend removes raw messages and stack details before transport.
-	event.SetException(err, 16)
+	event.SetException(err, exceptionChainLimit)
 	if panicked {
 		event.Exception = []sentry.Exception{{Type: "panic", Stacktrace: sentry.NewStacktrace(), Mechanism: &sentry.Mechanism{Type: "generic"}}}
 		event.Exception[0].Mechanism.SetUnhandled()
@@ -233,6 +259,7 @@ func (r *Reporter) failure(ctx context.Context, operation string, err error, pan
 	r.hub.CaptureEvent(event)
 }
 
+// Gauge records a metric sample, if metrics are enabled.
 func (r *Reporter) Gauge(ctx context.Context, name string, value float64) {
 	if r == nil || r.client == nil || !r.settings.Metrics {
 		return
@@ -266,6 +293,7 @@ func isQuestionKey(value string) bool {
 	return true
 }
 
+// MetricsEnabled checks the saved master switch before starting collection.
 func (r *Reporter) MetricsEnabled() bool {
 	if r == nil || r.client == nil || !r.settings.Metrics {
 		return false
@@ -286,10 +314,10 @@ func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry
 		return nil
 	}
 	trace := event.Type == "transaction"
-	if trace && (!r.settings.Tracing || !r.allow("traces", 20)) {
+	if trace && (!r.settings.Tracing || !r.allow("traces", tracesPerMinute)) {
 		return nil
 	}
-	if !trace && (!r.settings.Errors || !r.allow("errors", 5)) {
+	if !trace && (!r.settings.Errors || !r.allow("errors", errorsPerMinute)) {
 		return nil
 	}
 	clean := &sentry.Event{
@@ -373,7 +401,7 @@ func (r *Reporter) filterLog(log *sentry.Log) *sentry.Log {
 			break
 		}
 	}
-	if !valid || !r.allow("logs", 30) {
+	if !valid || !r.allow("logs", logsPerMinute) {
 		return nil
 	}
 
@@ -389,7 +417,7 @@ func (r *Reporter) filterMetric(metric *sentry.Metric) *sentry.Metric {
 	default:
 		return nil
 	}
-	if !r.allow("metrics", 60) {
+	if !r.allow("metrics", metricsPerMinute) {
 		return nil
 	}
 	attributes := r.attributes()

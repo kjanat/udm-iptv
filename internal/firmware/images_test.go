@@ -63,7 +63,7 @@ func (r *fakeRunner) Run(_ context.Context, w io.Writer, name string, args ...st
 	}
 	if name == "docker" && args[0] == "image" {
 		value := "sha256:expected"
-		if strings.Contains(args[3], "fingerprint") {
+		if len(args) > 4 && strings.Contains(args[3], "fingerprint") {
 			value = r.fingerprints[args[4]]
 		} else if r.mismatch && r.pulled {
 			value = "sha256:wrong"

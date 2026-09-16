@@ -31,14 +31,19 @@ func run() error {
 	return command().ExecuteContext(ctx)
 }
 
+const (
+	catalogClientTimeout  = 15 * time.Minute
+	catalogRequestTimeout = 45 * time.Second
+)
+
 func command() *cobra.Command {
 	root := &cobra.Command{Use: "firmware", Short: "Manage UniFi OS test images.", SilenceUsage: true, SilenceErrors: true}
 	var image, model, output string
 	root.PersistentFlags().StringVar(&image, "image", os.Getenv("IMAGE"), "Container repository.")
-	client := &http.Client{Timeout: 15 * time.Minute}
+	client := &http.Client{Timeout: catalogClientTimeout}
 	pipeline := firmware.Pipeline{Runner: firmware.Commands{Log: os.Stderr}, Client: client, Log: os.Stderr}
 	catalog := &cobra.Command{Use: "catalog", Short: "Discover stable firmware pairs.", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		ctx, cancel := context.WithTimeout(cmd.Context(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(cmd.Context(), catalogRequestTimeout)
 		defer cancel()
 		matrix, err := firmware.Discover(ctx, client, firmware.CatalogURL, image, model, time.Now())
 		if err != nil {

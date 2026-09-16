@@ -17,24 +17,44 @@ import (
 const (
 	frameContentWidth = 100
 	frameChrome       = 6
+	// panelPaddingY and panelPaddingX pad the frame and help panel borders.
+	panelPaddingY = 1
+	panelPaddingX = 2
+	// footerHeight is the status/hint row reserved below the viewport.
+	footerHeight = 3
+	// minContentWidth keeps narrow terminals from collapsing the frame further.
+	minContentWidth = 20
+	// hintGap separates a footer's text from its trailing hint.
+	hintGap = 4
+	// outerMarginX keeps the frame border clear of the terminal edge.
+	outerMarginX = 2
 )
 
 var (
 	frameStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#444444")).
-			Padding(1, 2)
+			Padding(panelPaddingY, panelPaddingX)
 	helpStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#7571F9")).
-			Padding(1, 2)
-	helpTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
-	helpKeyStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
-	helpKeys          = key.NewBinding(key.WithKeys("f1", "ctrl+_"), key.WithHelp("F1", "explain"))
-	quitKeys          = key.NewBinding(key.WithKeys("ctrl+c"))
-	progressDoneStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7571F9"))
-	progressLeftStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
-	progressTextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+			Padding(panelPaddingY, panelPaddingX)
+	helpTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
+	helpKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
+	helpKeys       = key.NewBinding(key.WithKeys("f1", "ctrl+_"), key.WithHelp("F1", "explain"))
+	quitKeys       = key.NewBinding(key.WithKeys("ctrl+c", "esc"))
+	closeLabel     = "✕ close"
+	leaveLabel     = " Yes, leave "
+	stayLabel      = " No, stay "
+	popupStyle     = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("#F780E2")).
+			Padding(1, 3)
+	focusedButtonStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFDF5")).Background(lipgloss.Color("#F780E2"))
+	blurredButtonStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFDF5")).Background(lipgloss.Color("#444444"))
+	progressDoneStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#7571F9"))
+	progressLeftStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
+	progressTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
 )
 
 var wizardTheme = huh.ThemeFunc(func(isDark bool) *huh.Styles {
@@ -164,27 +184,35 @@ type Observer func(event, question string)
 // Frame owns the screen around a wizard: alternate screen buffer, a bordered
 // box centered in the terminal, a progress line and an optional header.
 type Frame struct {
-	wizard        *Wizard
-	header        string
-	observer      Observer
-	width, height int
-	rows          int
-	help          bool
-	quitPrompt    bool
+	wizard         *Wizard
+	header         string
+	observer       Observer
+	width, height  int
+	rows           int
+	help           bool
+	quitPrompt     bool
+	stayFocused    bool
+	closeX, closeY int
+	leaveX, leaveY int
+	stayX, stayY   int
 }
 
 type setWizardMsg struct{ wizard *Wizard }
 
 type wizardDoneMsg struct{}
 
+// NewFrame wraps wizard in a bordered, resizable Bubble Tea screen.
 func NewFrame(wizard *Wizard, header string) *Frame {
 	return &Frame{wizard: wizard, header: header}
 }
 
+// Init starts the wrapped wizard's form.
 func (frame *Frame) Init() tea.Cmd {
 	return frame.wizard.Form.Init()
 }
 
+// Update handles resize, help, quit and quit-confirmation, forwarding
+// everything else to the wrapped wizard.
 func (frame *Frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case setWizardMsg:
@@ -205,22 +233,26 @@ func (frame *Frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		frame.wizard.Form.WithWidth(frame.contentWidth())
 
 		return frame, frame.resize()
-	case tea.KeyPressMsg:
-		if key.Matches(msg, quitKeys) {
-			if frame.quitPrompt {
-				frame.observe("abort")
-
-				return frame, frame.forward(msg)
-			}
-			frame.help, frame.quitPrompt = false, true
-			frame.observe("quit.prompt")
-
+	case tea.MouseClickMsg:
+		if msg.Button != tea.MouseLeft {
 			return frame, nil
 		}
-		if frame.quitPrompt {
+		switch {
+		case frame.quitPrompt && hits(msg.X, msg.Y, frame.leaveX, frame.leaveY, leaveLabel):
+			return frame, frame.leave()
+		case frame.quitPrompt && hits(msg.X, msg.Y, frame.stayX, frame.stayY, stayLabel):
 			frame.quitPrompt = false
+		case hits(msg.X, msg.Y, frame.closeX, frame.closeY, closeLabel):
+			return frame, frame.askToLeave()
+		}
 
-			return frame, nil
+		return frame, nil
+	case tea.KeyPressMsg:
+		if frame.quitPrompt {
+			return frame, frame.answerQuitPrompt(msg)
+		}
+		if key.Matches(msg, quitKeys) && !filtering(frame.wizard.Form) {
+			return frame, frame.askToLeave()
 		}
 		if key.Matches(msg, helpKeys) {
 			frame.help = !frame.help
@@ -266,7 +298,7 @@ func (frame *Frame) resize() tea.Cmd {
 	if frame.width == 0 {
 		return nil
 	}
-	height := frame.height - frameChrome - lipgloss.Height(frame.header) - 3
+	height := frame.height - frameChrome - lipgloss.Height(frame.header) - footerHeight
 
 	return frame.forward(tea.WindowSizeMsg{Width: frame.contentWidth(), Height: max(height, 1)})
 }
@@ -280,11 +312,71 @@ func (frame *Frame) forward(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+// View renders the wizard inside its bordered frame, with an optional
+// header, progress line, help panel and quit confirmation.
 func (frame *Frame) View() tea.View {
 	view := tea.NewView(frame.render())
 	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
 
 	return view
+}
+
+// The first request opens the popup with "Yes, leave" focused; the second
+// one, or Enter, leaves the form.
+func (frame *Frame) askToLeave() tea.Cmd {
+	if frame.quitPrompt {
+		return frame.leave()
+	}
+	frame.help, frame.quitPrompt, frame.stayFocused = false, true, false
+	frame.observe("quit.prompt")
+
+	return nil
+}
+
+func (frame *Frame) leave() tea.Cmd {
+	frame.quitPrompt = false
+	frame.observe("abort")
+
+	return frame.forward(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+}
+
+func (frame *Frame) answerQuitPrompt(msg tea.KeyPressMsg) tea.Cmd {
+	switch {
+	case msg.Code == tea.KeyEscape, msg.Text == "n", msg.Text == "N":
+		frame.quitPrompt = false
+	case key.Matches(msg, quitKeys), msg.Text == "y", msg.Text == "Y":
+		return frame.leave()
+	case msg.Code == tea.KeyEnter:
+		if frame.stayFocused {
+			frame.quitPrompt = false
+
+			return nil
+		}
+
+		return frame.leave()
+	case msg.Code == tea.KeyLeft, msg.Code == tea.KeyRight, msg.Code == tea.KeyTab, msg.Text == "h", msg.Text == "l":
+		frame.stayFocused = !frame.stayFocused
+	}
+
+	return nil
+}
+
+func hits(x, y, atX, atY int, label string) bool {
+	return atY >= 0 && y == atY && x >= atX && x < atX+lipgloss.Width(label)
+}
+
+func filtering(form *huh.Form) bool {
+	switch field := form.GetFocusedField().(type) {
+	case *huh.Select[string]:
+		return field.GetFiltering()
+	case *huh.Select[int]:
+		return field.GetFiltering()
+	case *huh.MultiSelect[string]:
+		return field.GetFiltering()
+	default:
+		return false
+	}
 }
 
 func (frame *Frame) contentWidth() int {
@@ -292,7 +384,7 @@ func (frame *Frame) contentWidth() int {
 		return frameContentWidth
 	}
 
-	return max(min(frame.width-frameChrome-2, frameContentWidth), 20)
+	return max(min(frame.width-frameChrome-outerMarginX, frameContentWidth), minContentWidth)
 }
 
 func (frame *Frame) render() string {
@@ -306,18 +398,62 @@ func (frame *Frame) render() string {
 	if frame.help {
 		box = frame.helpBox()
 	}
-	if frame.quitPrompt {
-		box = frame.quitBox()
-	}
-	content := box
+	closeRow := lipgloss.PlaceHorizontal(lipgloss.Width(box), lipgloss.Right, progressTextStyle.Render(closeLabel))
+	content := lipgloss.JoinVertical(lipgloss.Left, closeRow, box)
 	if frame.header != "" {
-		content = lipgloss.JoinVertical(lipgloss.Center, frame.header, "", box)
+		content = lipgloss.JoinVertical(lipgloss.Center, frame.header, "", content)
 	}
-	if frame.width == 0 || frame.height == 0 {
-		return content
+	if frame.width > 0 && frame.height > 0 {
+		content = lipgloss.Place(frame.width, frame.height, lipgloss.Center, lipgloss.Center, content)
+	}
+	if frame.quitPrompt {
+		content = frame.overlay(content, frame.quitPopup())
+	}
+	frame.closeX, frame.closeY = locate(content, closeLabel)
+	frame.leaveX, frame.leaveY = locate(content, leaveLabel)
+	frame.stayX, frame.stayY = locate(content, stayLabel)
+
+	return content
+}
+
+// overlay draws the popup centered on top of the content.
+func (frame *Frame) overlay(content, popup string) string {
+	width, height := lipgloss.Width(content), lipgloss.Height(content)
+	x := max(0, (width-lipgloss.Width(popup))/2)
+	y := max(0, (height-lipgloss.Height(popup))/2)
+	canvas := lipgloss.NewCanvas(width, height)
+	canvas.Compose(lipgloss.NewCompositor(lipgloss.NewLayer(content), lipgloss.NewLayer(popup).X(x).Y(y).Z(1)))
+
+	return canvas.Render()
+}
+
+func (frame *Frame) quitPopup() string {
+	leave, stay := focusedButtonStyle, blurredButtonStyle
+	if frame.stayFocused {
+		leave, stay = blurredButtonStyle, focusedButtonStyle
+	}
+	buttons := leave.Render(leaveLabel) + "   " + stay.Render(stayLabel)
+	hint := progressTextStyle.Render("←/→ choose  enter confirm  y/n  esc back")
+
+	return popupStyle.Render(lipgloss.JoinVertical(lipgloss.Center,
+		helpTitleStyle.Render("Leave the wizard?"),
+		"",
+		"Nothing has been saved. The current configuration stays as it is.",
+		"",
+		buttons,
+		"",
+		hint,
+	))
+}
+
+func locate(content, text string) (x, y int) {
+	for y, line := range strings.Split(content, "\n") {
+		if index := strings.Index(line, text); index >= 0 {
+			return lipgloss.Width(line[:index]), y
+		}
 	}
 
-	return lipgloss.Place(frame.width, frame.height, lipgloss.Center, lipgloss.Center, content)
+	return -1, -1
 }
 
 func (frame *Frame) helpBox() string {
@@ -334,16 +470,6 @@ func (frame *Frame) helpBox() string {
 	return helpStyle.Render(lipgloss.JoinVertical(lipgloss.Left, text, "", footer))
 }
 
-func (frame *Frame) quitBox() string {
-	width := frame.contentWidth()
-	body := lipgloss.NewStyle().Width(width).Render("Nothing has been saved. Leaving now keeps the current configuration untouched.")
-	footer := helpKeyStyle.Render("ctrl+c") + progressTextStyle.Render(" again to leave  ") + helpKeyStyle.Render("any other key") + progressTextStyle.Render(" to stay")
-	text := lipgloss.JoinVertical(lipgloss.Left, helpTitleStyle.Render("Leave the wizard?"), "", body)
-	text = lipgloss.NewStyle().Width(width).Height(frame.rows).Render(text)
-
-	return helpStyle.Render(lipgloss.JoinVertical(lipgloss.Left, text, "", footer))
-}
-
 func (frame *Frame) observe(event string) {
 	if frame.observer != nil {
 		frame.observer(event, focusedKey(frame.wizard.Form))
@@ -352,9 +478,9 @@ func (frame *Frame) observe(event string) {
 
 func (frame *Frame) progressLine() string {
 	step, total := frame.wizard.progress()
-	hint := helpKeyStyle.Render("F1") + progressTextStyle.Render(" explain")
+	hint := helpKeyStyle.Render("F1") + progressTextStyle.Render(" explain  ") + helpKeyStyle.Render("esc") + progressTextStyle.Render(" leave")
 	text := fmt.Sprintf("Question %d of %d", step, total)
-	width := frame.contentWidth() - lipgloss.Width(text) - lipgloss.Width(hint) - 4
+	width := frame.contentWidth() - lipgloss.Width(text) - lipgloss.Width(hint) - hintGap
 	filled := 0
 	if total > 0 {
 		filled = width * step / total
@@ -376,6 +502,8 @@ type Session struct {
 	closed   sync.Once
 }
 
+// NewSession creates a terminal session for running one or more wizards
+// against the same alternate screen.
 func NewSession(header string, input io.Reader, output io.Writer) *Session {
 	return &Session{header: header, input: input, output: output}
 }
@@ -387,6 +515,8 @@ func (session *Session) Observe(observer Observer) *Session {
 	return session
 }
 
+// Run displays wizard until it is submitted or aborted, reusing the session's
+// alternate screen across successive wizards.
 func (session *Session) Run(ctx context.Context, wizard *Wizard) error {
 	wizard.done = make(chan struct{})
 	wizard.Form.SubmitCmd = func() tea.Msg { return wizardDoneMsg{} }

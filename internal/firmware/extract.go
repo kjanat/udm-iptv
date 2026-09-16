@@ -12,22 +12,35 @@ import (
 
 const maximumFirmwareSize int64 = 4 << 30
 
+const (
+	// ubntHeaderSize is the fixed UBNT image header, ending in a CRC32 trailer.
+	ubntHeaderSize = 0x108
+	// fileRecordHeaderSize is a FILE record's fixed header, before its payload.
+	fileRecordHeaderSize = 0x38
+	// crcFooterSize is the trailing CRC32 that follows a FILE record's payload.
+	crcFooterSize = 8
+	// squashfsSuperblockSize is the "hsqs" superblock read from a PARTrootfs entry.
+	squashfsSuperblockSize = 96
+	// rootfsScanBufferSize is the read chunk used to search for "PARTrootfs".
+	rootfsScanBufferSize = 1 << 20
+)
+
 // Extract verifies firmware records and streams the root filesystem.
 func Extract(source io.ReaderAt, size int64, output io.Writer) error {
-	if size < 0x108 {
+	if size < ubntHeaderSize {
 		return errors.New("truncated firmware header")
 	}
 	if size > maximumFirmwareSize {
 		return errors.New("firmware exceeds four GiB")
 	}
-	header := make([]byte, 0x108)
+	header := make([]byte, ubntHeaderSize)
 	if _, err := source.ReadAt(header, 0); err != nil {
 		return fmt.Errorf("read firmware header: %w", err)
 	}
 	if string(header[:4]) != "UBNT" {
 		return errors.New("not a UBNT firmware image")
 	}
-	if crc32.ChecksumIEEE(header[:0x104]) != binary.BigEndian.Uint32(header[0x104:]) {
+	if crc32.ChecksumIEEE(header[:ubntHeaderSize-4]) != binary.BigEndian.Uint32(header[ubntHeaderSize-4:]) {
 		return errors.New("firmware header CRC mismatch")
 	}
 	offset, err := validateFiles(source, size)
@@ -39,7 +52,7 @@ func Extract(source io.ReaderAt, size int64, output io.Writer) error {
 		return err
 	}
 	if part < 0 {
-		part, err = findRootfs(source, 0x108, size)
+		part, err = findRootfs(source, ubntHeaderSize, size)
 	}
 	if err != nil {
 		return err
@@ -58,11 +71,11 @@ func Extract(source io.ReaderAt, size int64, output io.Writer) error {
 }
 
 func rootfsRange(source io.ReaderAt, part, size int64) (int64, int64, error) {
-	if part < 0 || size < 0 || size > maximumFirmwareSize || part > size || size-part < 0x38+96 {
+	if part < 0 || size < 0 || size > maximumFirmwareSize || part > size || size-part < fileRecordHeaderSize+squashfsSuperblockSize {
 		return 0, 0, errors.New("missing squashfs superblock")
 	}
-	start := part + 0x38
-	block := make([]byte, 96)
+	start := part + fileRecordHeaderSize
+	block := make([]byte, squashfsSuperblockSize)
 	if _, err := source.ReadAt(block, start); err != nil {
 		return 0, 0, fmt.Errorf("read squashfs superblock: %w", err)
 	}
@@ -70,7 +83,7 @@ func rootfsRange(source io.ReaderAt, part, size int64) (int64, int64, error) {
 		return 0, 0, errors.New("missing squashfs superblock")
 	}
 	length := binary.LittleEndian.Uint64(block[40:48])
-	if length < 96 || length > math.MaxInt64 {
+	if length < squashfsSuperblockSize || length > math.MaxInt64 {
 		return 0, 0, errors.New("invalid squashfs length")
 	}
 	if int64(length) > size-start {
@@ -80,7 +93,7 @@ func rootfsRange(source io.ReaderAt, part, size int64) (int64, int64, error) {
 }
 
 func validateFiles(source io.ReaderAt, size int64) (int64, error) {
-	offset := int64(0x108)
+	offset := int64(ubntHeaderSize)
 	var tag [4]byte
 	for offset+4 <= size {
 		if _, err := source.ReadAt(tag[:], offset); err != nil {
@@ -104,18 +117,18 @@ func validateFiles(source io.ReaderAt, size int64) (int64, error) {
 }
 
 func validateFile(source io.ReaderAt, offset, size int64) (int64, error) {
-	header := make([]byte, 0x38)
-	if offset < 0 || size < 0 || size > maximumFirmwareSize || offset > size || size-offset < int64(len(header))+8 {
+	header := make([]byte, fileRecordHeaderSize)
+	if offset < 0 || size < 0 || size > maximumFirmwareSize || offset > size || size-offset < int64(len(header))+crcFooterSize {
 		return 0, errors.New("truncated FILE header")
 	}
 	if _, err := source.ReadAt(header, offset); err != nil {
 		return 0, err
 	}
 	length := int64(binary.BigEndian.Uint32(header[48:52]))
-	if length > size-offset-0x38-8 {
+	if length > size-offset-fileRecordHeaderSize-crcFooterSize {
 		return 0, errors.New("truncated FILE payload")
 	}
-	end := offset + 0x38 + length
+	end := offset + fileRecordHeaderSize + length
 	checksum := crc32.NewIEEE()
 	if _, err := io.Copy(checksum, io.NewSectionReader(source, offset, end-offset)); err != nil {
 		return 0, err
@@ -128,7 +141,7 @@ func validateFile(source io.ReaderAt, offset, size int64) (int64, error) {
 		return 0, errors.New("FILE CRC mismatch")
 	}
 
-	return end + 8, nil
+	return end + crcFooterSize, nil
 }
 
 func findRootfs(source io.ReaderAt, start, size int64) (int64, error) {
@@ -136,7 +149,7 @@ func findRootfs(source io.ReaderAt, start, size int64) (int64, error) {
 		return -1, errors.New("invalid root filesystem search range")
 	}
 	marker := []byte("PARTrootfs")
-	buffer := make([]byte, 1<<20)
+	buffer := make([]byte, rootfsScanBufferSize)
 	for start < size {
 		n, err := source.ReadAt(buffer[:min(int64(len(buffer)), size-start)], start)
 		if err != nil && err != io.EOF {

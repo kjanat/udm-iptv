@@ -2,9 +2,10 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 func TestLegacyMissingDefaults(t *testing.T) {
@@ -26,7 +27,7 @@ func TestLegacyMissingDefaults(t *testing.T) {
 		if test.program != "" {
 			data += "IPTV_IGMPPROXY_PROGRAM=" + test.program + "\n"
 		}
-		if err := os.WriteFile(file, []byte(data), 0o600); err != nil {
+		if err := atomicfile.Write(file, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		value, err := ImportLegacy(file)

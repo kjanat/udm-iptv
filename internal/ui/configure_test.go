@@ -155,7 +155,7 @@ func TestConfigurationPageFits(t *testing.T) {
 		if top < 0 || bottom < 0 {
 			t.Fatal("page has no box")
 		}
-		if above, below := top-2, 44-bottom; above < 3 || below < 3 || above-below > 2 || below-above > 2 {
+		if above, below := top-3, 44-bottom; above < 3 || below < 3 || above-below > 2 || below-above > 2 {
 			t.Fatalf("box is not vertically centered: %d rows above the header, %d below", above, below)
 		}
 		right := 180 - lipgloss.Width(strings.TrimRight(lines[top], " "))
@@ -168,8 +168,8 @@ func TestConfigurationPageFits(t *testing.T) {
 		if bottom-top != boxRows {
 			t.Fatalf("box height changed between pages: %d rows, then %d", boxRows, bottom-top)
 		}
-		if !strings.Contains(lines[top-2], "Preview · Example data.") {
-			t.Fatalf("header missing above the box: %q", lines[top-2])
+		if !strings.Contains(lines[top-3], "Preview · Example data.") {
+			t.Fatalf("header missing above the box: %q", lines[top-3])
 		}
 		for _, jammed := range []string{"quickleave?Off", "logs?Temporary", "address?Most"} {
 			if strings.Contains(view.Content, jammed) {
@@ -309,7 +309,7 @@ func TestEnterOnManualNetworkEntryTicksIt(t *testing.T) {
 func TestCtrlCAsksBeforeLeaving(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups := configurationPages(&value, nil, "", &fields)
+	groups, _, _, _ := configurationGroups(&value, nil, "", &fields)
 	var events []string
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.observer = func(event, question string) { events = append(events, event+":"+question) }
@@ -317,21 +317,94 @@ func TestCtrlCAsksBeforeLeaving(t *testing.T) {
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	frame.Update(ctrlC)
-	if view := frame.View().Content; !strings.Contains(view, "Leave the wizard?") || frame.wizard.Form.State != huh.StateNormal {
-		t.Fatal("first ctrl+c did not prompt")
+	view := frame.View().Content
+	if !strings.Contains(view, "Leave the wizard?") || !strings.Contains(view, "Which connection") || frame.wizard.Form.State != huh.StateNormal {
+		t.Fatal("first ctrl+c did not open the popup over the question")
 	}
-	frame.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	frame.Update(tea.KeyPressMsg{Text: "n", Code: 'n'})
 	if strings.Contains(frame.View().Content, "Leave the wizard?") || frame.wizard.Form.State != huh.StateNormal {
-		t.Fatal("another key did not dismiss the prompt")
+		t.Fatal("n did not dismiss the popup")
 	}
 	frame.Update(ctrlC)
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if strings.Contains(frame.View().Content, "Leave the wizard?") || frame.wizard.Form.State != huh.StateNormal {
+		t.Fatal("enter on No, stay did not stay")
+	}
 	frame.Update(ctrlC)
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if frame.wizard.Form.State != huh.StateAborted {
-		t.Fatal("second ctrl+c did not leave")
+		t.Fatal("enter on Yes, leave did not leave")
 	}
-	want := []string{"quit.prompt:wan-port", "quit.prompt:wan-port", "abort:wan-port"}
+	want := []string{"quit.prompt:wan-port", "quit.prompt:wan-port", "quit.prompt:wan-port", "abort:wan-port"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestEscapeLeavesUnlessFiltering(t *testing.T) {
+	value := config.Default()
+	fields := newFormValues(value)
+	groups, _, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}, {Name: "eth9"}}, "", &fields)
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	frame.wizard.Form.GetFocusedField().Focus()
+	frame.Update(tea.KeyPressMsg{Text: "/", Code: '/'})
+	frame.Update(tea.KeyPressMsg{Text: "9", Code: '9'})
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if strings.Contains(frame.View().Content, "Leave the wizard?") {
+		t.Fatal("escape while filtering asked to leave")
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !strings.Contains(frame.View().Content, "Leave the wizard?") {
+		t.Fatal("escape did not prompt")
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if strings.Contains(frame.View().Content, "Leave the wizard?") || frame.wizard.Form.State != huh.StateNormal {
+		t.Fatal("escape did not close the popup")
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	frame.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if frame.wizard.Form.State != huh.StateAborted {
+		t.Fatal("ctrl+c in the popup did not leave")
+	}
+}
+
+func TestCloseButtonAndPopupButtonsAreClickable(t *testing.T) {
+	value := config.Default()
+	fields := newFormValues(value)
+	groups, _, _, _ := configurationGroups(&value, nil, "", &fields)
+	frame := NewFrame(wizardForm(groups...), "Preview")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := frame.View()
+	if view.MouseMode == tea.MouseModeNone {
+		t.Fatal("mouse disabled")
+	}
+	x, y := locate(view.Content, closeLabel)
+	if x < 60 || y < 0 {
+		t.Fatalf("close button not on the right: %d,%d", x, y)
+	}
+	frame.Update(tea.MouseClickMsg{X: x - 1, Y: y, Button: tea.MouseLeft})
+	if strings.Contains(frame.View().Content, "Leave the wizard?") {
+		t.Fatal("click beside the button prompted")
+	}
+	frame.Update(tea.MouseClickMsg{X: x + 2, Y: y, Button: tea.MouseLeft})
+	content := frame.View().Content
+	if !strings.Contains(content, "Leave the wizard?") {
+		t.Fatal("click on the button did not open the popup")
+	}
+	stayX, stayY := locate(content, stayLabel)
+	frame.Update(tea.MouseClickMsg{X: stayX + 1, Y: stayY, Button: tea.MouseLeft})
+	if strings.Contains(frame.View().Content, "Leave the wizard?") {
+		t.Fatal("click on No, stay did not close the popup")
+	}
+	frame.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	leaveX, leaveY := locate(frame.View().Content, leaveLabel)
+	frame.Update(tea.MouseClickMsg{X: leaveX + 1, Y: leaveY, Button: tea.MouseLeft})
+	if frame.wizard.Form.State != huh.StateAborted {
+		t.Fatal("click on Yes, leave did not leave")
 	}
 }
 

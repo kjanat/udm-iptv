@@ -13,6 +13,7 @@ import (
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
+// Application holds the shared state the udm-iptv CLI commands operate on.
 type Application struct {
 	Version            string
 	ConfigPath         string
@@ -27,6 +28,7 @@ type Application struct {
 	providerSuggestion string
 }
 
+// Execute runs the udm-iptv root command against os.Args.
 func Execute(version string) error {
 	application := &Application{
 		Version:         version,

@@ -17,6 +17,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/diagnostics"
+	"github.com/kjanat/udm-iptv/internal/filemode"
 	"github.com/kjanat/udm-iptv/internal/ui"
 )
 
@@ -93,7 +94,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 func (application *Application) startCapture(options diagnostics.Options) error {
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	directory := filepath.Join(application.StateDir, "diagnostics")
-	if err := os.MkdirAll(directory, 0o700); err != nil {
+	if err := os.MkdirAll(directory, filemode.PrivateDir); err != nil {
 		return err
 	}
 	base := filepath.Join(directory, "udm-iptv-"+stamp+"-"+strconv.Itoa(os.Getpid()))
@@ -107,7 +108,7 @@ func (application *Application) startCapture(options diagnostics.Options) error 
 		paths = append(paths, options.JSONPath)
 	}
 	for _, path := range paths {
-		err := atomicfile.Write(path, nil, 0o600)
+		err := atomicfile.Write(path, nil, filemode.PrivateFile)
 		if err != nil {
 			return err
 		}

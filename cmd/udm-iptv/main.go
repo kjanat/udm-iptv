@@ -1,3 +1,4 @@
+// Command udm-iptv routes provider IPTV traffic over a UniFi OS gateway.
 package main
 
 import (
@@ -12,6 +13,9 @@ import (
 
 var version = "dev"
 
+// sigintExitCode follows the POSIX convention of 128+signal for SIGINT.
+const sigintExitCode = 130
+
 func main() {
 	if filepath.Base(os.Args[0]) == "udhcpc-hook" {
 		os.Args = append([]string{os.Args[0], "dhcp-hook"}, os.Args[1:]...)
@@ -20,7 +24,7 @@ func main() {
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			fmt.Fprintln(os.Stderr, "Cancelled.")
-			os.Exit(130)
+			os.Exit(sigintExitCode)
 		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

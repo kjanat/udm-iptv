@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func TestManagedProcessHelper(t *testing.T) {
+func TestManagedProcessHelper(_ *testing.T) {
 	if os.Args[len(os.Args)-1] != "process-helper" {
 		return
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/filemode"
 	"github.com/kjanat/udm-iptv/internal/runtimebundle"
 	"github.com/kjanat/udm-iptv/internal/service"
 )
@@ -34,6 +35,7 @@ const (
 	completionPath = "/etc/bash_completion.d/udm-iptv"
 )
 
+// PreserveProxy snapshots program and its ELF dependencies for offline recovery.
 func PreserveProxy(stateDir, program string) error {
 	source, err := exec.LookPath(program)
 	if err != nil {
@@ -49,6 +51,7 @@ func PreserveProxy(stateDir, program string) error {
 	return nil
 }
 
+// Apply performs action against the host filesystem and systemd.
 func (backend SystemBackend) Apply(ctx context.Context, action Action, plan Plan) error {
 	target := filepath.Join(plan.StateDir, "bin", "udm-iptv")
 	switch action {
@@ -179,7 +182,7 @@ func replaceSymlink(target, path string) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	err = os.MkdirAll(filepath.Dir(path), 0o755)
+	err = os.MkdirAll(filepath.Dir(path), filemode.SharedDir)
 	if err != nil {
 		return err
 	}
@@ -194,6 +197,7 @@ func sameFile(left, right string) bool {
 	return errA == nil && errB == nil && os.SameFile(a, b)
 }
 
+// Installed reports whether a persistent installation exists under stateDir.
 func Installed(stateDir string) bool {
 	info, err := os.Stat(filepath.Join(stateDir, "bin", "udm-iptv"))
 
@@ -202,11 +206,11 @@ func Installed(stateDir string) bool {
 
 func (backend SystemBackend) writeFiles(ctx context.Context, target string, plan Plan) error {
 	unit := systemdUnit(target, plan.ConfigPath, plan.StateDir)
-	if err := atomicfile.Write(unitPath, []byte(unit), 0o644); err != nil {
+	if err := atomicfile.Write(unitPath, []byte(unit), filemode.SharedFile); err != nil {
 		return err
 	}
 	tmpfiles := fmt.Sprintf("L+ %s - - - - %s\n", commandPath, target)
-	if err := atomicfile.Write(tmpfilesPath, []byte(tmpfiles), 0o644); err != nil {
+	if err := atomicfile.Write(tmpfilesPath, []byte(tmpfiles), filemode.SharedFile); err != nil {
 		return err
 	}
 	if err := replaceSymlink(target, commandPath); err != nil {
@@ -219,7 +223,7 @@ func (backend SystemBackend) writeFiles(ctx context.Context, target string, plan
 	if err != nil {
 		return fmt.Errorf("install Bash completion: %w", err)
 	}
-	if err := atomicfile.Write(completionPath, completion, 0o644); err != nil {
+	if err := atomicfile.Write(completionPath, completion, filemode.SharedFile); err != nil {
 		return fmt.Errorf("install Bash completion: %w", err)
 	}
 

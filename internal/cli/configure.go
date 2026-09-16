@@ -195,7 +195,7 @@ func (application *Application) configureCommand() *cobra.Command {
 	flags.BoolVar(&telemetryOptions.Tracing, "telemetry-tracing", true, "send sampled operation timings")
 	flags.BoolVar(&telemetryOptions.Presets, "telemetry-presets", true, "share selected settings, changes and a random installation ID")
 	flags.BoolVar(&telemetryOptions.NetworkIdentity, "telemetry-network-identity", true, "include public IP and reverse-DNS hostname in research")
-	flags.Float64Var(&telemetryOptions.TraceRate, "telemetry-trace-rate", 0.1, "fraction of operations traced, from 0 to 1")
+	flags.Float64Var(&telemetryOptions.TraceRate, "telemetry-trace-rate", config.DefaultTraceRate, "fraction of operations traced, from 0 to 1")
 	for _, name := range []string{
 		"telemetry-errors", "telemetry-logs", "telemetry-metrics", "telemetry-tracing",
 		"telemetry-presets", "telemetry-network-identity", "telemetry-trace-rate",

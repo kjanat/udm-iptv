@@ -15,11 +15,16 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
+// addressUpdateBuffer bounds pending netlink address updates before the
+// sanitizer's watch loop applies backpressure.
+const addressUpdateBuffer = 16
+
 var (
 	macPattern = regexp.MustCompile(`(?i)(?:\b[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b|\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b`)
 	ipPattern  = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b|\b[0-9a-fA-F:]{2,}%?[0-9A-Za-z_.-]*\b`)
 )
 
+// Sanitize redacts MAC addresses and IP addresses from text.
 func Sanitize(text string) string {
 	return sanitize(text)
 }
@@ -103,7 +108,7 @@ func (value *diagnosticSanitizer) sanitize(text string) string {
 
 func (value *diagnosticSanitizer) watch(ctx context.Context) (<-chan error, error) {
 	failures := make(chan error, 1)
-	updates := make(chan netlink.AddrUpdate, 16)
+	updates := make(chan netlink.AddrUpdate, addressUpdateBuffer)
 	options := netlink.AddrSubscribeOptions{
 		ListExisting: true,
 		ErrorCallback: func(err error) {

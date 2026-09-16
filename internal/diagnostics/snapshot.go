@@ -21,6 +21,8 @@ import (
 // Collector reads router state for snapshots and bounded captures.
 type Collector struct{ ConfigPath, Version string }
 
+// Snapshot represents a point-in-time summary of the router's
+// configuration and status.
 type Snapshot struct {
 	Timestamp   time.Time          `json:"timestamp"`
 	Version     string             `json:"version"`
@@ -77,20 +79,26 @@ type multicastInfo struct {
 	Packets uint64 `json:"packets"`
 }
 
+// ipMRCachePacketsColumn is the packet-count field in /proc/net/ip_mr_cache.
+const ipMRCachePacketsColumn = 3
+
+// Snapshot returns a snapshot of the current state of the system.
 func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	value, err := config.Load(application.ConfigPath)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	result := Snapshot{Timestamp: time.Now().UTC(), Version: application.Version, Config: configSummary{
-		Profile: value.Profile, WANInterface: value.WAN.Interface, VLAN: value.WAN.VLAN, IPTVInterface: value.WAN.VLANInterface,
-		CustomMAC: value.WAN.VLANMAC != "", DHCP: value.WAN.DHCP, DHCPOptions: len(value.WAN.DHCPOptions) > 0, StaticAddress: value.WAN.StaticAddress != "",
-		AllowDefaultRoute: value.WAN.AllowDefaultRoute, NATDestinations: sanitizePrefixes(value.WAN.NATDestinations),
-		LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion,
-		QuickLeave: value.Proxy.QuickLeave, Debug: value.Proxy.Debug, ProxySourceRanges: sanitizePrefixes(value.Proxy.SourceRanges),
-	}}
-	result.Network = inspectLink(network.Target(value))
-	result.Downstream = inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces)
+	result := Snapshot{
+		Timestamp: time.Now().UTC(), Version: application.Version, Config: configSummary{
+			Profile: value.Profile, WANInterface: value.WAN.Interface, VLAN: value.WAN.VLAN, IPTVInterface: value.WAN.VLANInterface,
+			CustomMAC: value.WAN.VLANMAC != "", DHCP: value.WAN.DHCP, DHCPOptions: len(value.WAN.DHCPOptions) > 0, StaticAddress: value.WAN.StaticAddress != "",
+			AllowDefaultRoute: value.WAN.AllowDefaultRoute, NATDestinations: sanitizePrefixes(value.WAN.NATDestinations),
+			LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion,
+			QuickLeave: value.Proxy.QuickLeave, Debug: value.Proxy.Debug, ProxySourceRanges: sanitizePrefixes(value.Proxy.SourceRanges),
+		},
+		Network:    inspectLink(network.Target(value)),
+		Downstream: inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces),
+	}
 	result.Switches, result.NativeProxy, result.Playback = "not checked", "not checked", "not checked"
 	if state, stateErr := service.ReadRuntimeState(); stateErr == nil {
 		result.Service.Proxy = state.Proxy
@@ -112,8 +120,8 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 			result.Multicast.Routes = len(lines) - 1
 			for _, line := range lines[1:] {
 				fields := strings.Fields(line)
-				if len(fields) > 3 {
-					packets, _ := strconv.ParseUint(fields[3], 0, 64)
+				if len(fields) > ipMRCachePacketsColumn {
+					packets, _ := strconv.ParseUint(fields[ipMRCachePacketsColumn], 0, 64)
 					result.Multicast.Packets += packets
 				}
 			}
@@ -161,6 +169,7 @@ func inspectLink(target string) networkStatus {
 	return result
 }
 
+// RenderSnapshot returns a human-readable string representation of a snapshot.
 func RenderSnapshot(value Snapshot) string {
 	return fmt.Sprintf(`udm-iptv %s
 Profile: %s

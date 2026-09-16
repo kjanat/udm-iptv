@@ -14,6 +14,13 @@ import (
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
+const (
+	// ipMRCacheLimit bounds the read of /proc/net/ip_mr_cache.
+	ipMRCacheLimit = 1 << 20
+	// systemdSampleTimeout bounds each per-tick systemd property query.
+	systemdSampleTimeout = 2 * time.Second
+)
+
 func (application *Daemon) startTelemetryMetrics(parent context.Context) func() {
 	if !application.Monitor.MetricsEnabled() && !application.Monitor.ResearchEnabled() {
 		return func() {}
@@ -36,7 +43,7 @@ func (application *Daemon) startTelemetryMetrics(parent context.Context) func() 
 				}
 				application.Monitor.Gauge(ctx, "daemon.uptime", time.Since(started).Seconds())
 				if file, err := os.Open("/proc/net/ip_mr_cache"); err == nil {
-					routes, packets, err := multicastCounters(io.LimitReader(file, 1<<20))
+					routes, packets, err := multicastCounters(io.LimitReader(file, ipMRCacheLimit))
 					_ = file.Close()
 					if err == nil {
 						application.Monitor.Gauge(ctx, "multicast.routes", float64(routes))
@@ -54,7 +61,7 @@ func (application *Daemon) startTelemetryMetrics(parent context.Context) func() 
 // sampleSystemd reports the restart count and, once an hour, records a
 // telemetry observation. It returns the observation time to carry forward.
 func (application *Daemon) sampleSystemd(ctx context.Context, started, lastObservation time.Time) time.Time {
-	sampleContext, stop := context.WithTimeout(ctx, 2*time.Second)
+	sampleContext, stop := context.WithTimeout(ctx, systemdSampleTimeout)
 	defer stop()
 	connection, err := systemd.NewSystemConnectionContext(sampleContext)
 	if err != nil {
@@ -82,6 +89,10 @@ func (application *Daemon) sampleSystemd(ctx context.Context, started, lastObser
 	return time.Now()
 }
 
+// ipMRCacheFields is the minimum column count of a /proc/net/ip_mr_cache row,
+// through the packets column.
+const ipMRCacheFields = 4
+
 func multicastCounters(reader io.Reader) (int, uint64, error) {
 	scanner := bufio.NewScanner(reader)
 	if !scanner.Scan() {
@@ -91,10 +102,10 @@ func multicastCounters(reader io.Reader) (int, uint64, error) {
 	var packets uint64
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < 4 {
+		if len(fields) < ipMRCacheFields {
 			return 0, 0, io.ErrUnexpectedEOF
 		}
-		count, err := strconv.ParseUint(fields[3], 10, 64)
+		count, err := strconv.ParseUint(fields[ipMRCacheFields-1], 10, 64)
 		if err != nil {
 			return 0, 0, err
 		}

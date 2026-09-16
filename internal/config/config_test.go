@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
@@ -46,7 +48,7 @@ IPTV_IGMPPROXY_PROGRAM="improxy"
 IPTV_IGMPPROXY_IGMP_VERSION="3"
 MALICIOUS="$(touch ` + marker + `)"
 `
-	if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+	if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	value, err := ImportLegacy(legacy)
@@ -86,7 +88,7 @@ IPTV_LAN_INTERFACES="br0"
 IPTV_IGMPPROXY_PROGRAM="improxy"
 IPTV_IGMPPROXY_IGMP_VERSION="3"
 `
-	if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+	if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	value, err := ImportLegacy(legacy)
@@ -163,7 +165,7 @@ IPTV_LAN_INTERFACES="br0"
 IPTV_IGMPPROXY_PROGRAM="improxy"
 IPTV_IGMPPROXY_IGMP_VERSION="3"
 `
-	if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+	if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	value, err := ImportLegacy(legacy)
@@ -198,7 +200,7 @@ IPTV_IGMPPROXY_PROGRAM="improxy"
 IPTV_IGMPPROXY_IGMP_VERSION="3"
 NO_GATEWAY="` + noGateway + `"
 `
-			if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+			if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			value, err := ImportLegacy(legacy)
@@ -223,7 +225,7 @@ IPTV_LAN_INTERFACES="br0"
 IPTV_IGMPPROXY_PROGRAM="igmpproxy"
 IPTV_IGMPPROXY_IGMP_VERSION="3"
 `
-	if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+	if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	value, err := ImportLegacy(legacy)

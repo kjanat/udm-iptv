@@ -14,6 +14,8 @@ type Port struct {
 	AddressesKnown    bool
 }
 
+// Ports returns a list of locally observed network interfaces,
+// sorted by relevance to WAN connectivity.
 func Ports() []Port {
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -51,16 +53,21 @@ func Ports() []Port {
 		}
 		ports = append(ports, port)
 	}
+	const (
+		rankRoute = iota
+		rankCandidate
+		rankOther
+	)
 	sort.SliceStable(ports, func(i, j int) bool {
 		rank := func(name string) int {
 			if name == route {
-				return 0
+				return rankRoute
 			}
 			if slicesContain(candidates, name) {
-				return 1
+				return rankCandidate
 			}
 
-			return 2
+			return rankOther
 		}
 
 		return rank(ports[i].Name) < rank(ports[j].Name)

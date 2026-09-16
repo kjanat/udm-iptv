@@ -44,7 +44,7 @@ func TestExtractPreservesOutputError(t *testing.T) {
 func FuzzExtract(f *testing.F) {
 	f.Add(fixture(false))
 	f.Add(fixture(true))
-	f.Fuzz(func(t *testing.T, image []byte) {
+	f.Fuzz(func(_ *testing.T, image []byte) {
 		_ = Extract(bytes.NewReader(image), int64(len(image)), io.Discard)
 	})
 }
@@ -61,9 +61,12 @@ func fixture(nested bool) []byte {
 	if nested {
 		payload = partition
 	}
+	if len(payload) > math.MaxUint32 {
+		panic("fixture payload exceeds a FILE record's uint32 length field")
+	}
 	record := make([]byte, 0x38, 0x38+len(payload)+8)
 	copy(record, "FILE../../bad")
-	binary.BigEndian.PutUint32(record[48:], uint32(len(payload)))
+	binary.BigEndian.PutUint32(record[48:], uint32(len(payload))) //nolint:gosec // Guarded above; gosec's check is syntactic and misses it.
 	record = append(record[:0x38:0x38], payload...)
 	checksum := crc32.ChecksumIEEE(record)
 	record = append(slices.Clip(record), make([]byte, 8)...)

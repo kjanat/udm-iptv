@@ -25,6 +25,10 @@
 				"exts": ["toml"],
 				"setupCommand": "node -e \"try { require('child_process').execSync('tombi --version', {stdio:'ignore'}); } catch { require('child_process').execSync('npm i -g tombi', {stdio:'inherit'}); }\"",
 				"cacheKeyFiles": ["tombi.toml"]
+			},
+			{
+				"command": "gofmt -s",
+				"exts": ["go"]
 			}
 		]
 	},

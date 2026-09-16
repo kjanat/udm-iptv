@@ -10,6 +10,9 @@ import (
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
+// reportConfigTimeout bounds how long the best-effort configuration report waits.
+const reportConfigTimeout = 3 * time.Second
+
 func (application *Application) reportSavedConfiguration(command *cobra.Command) {
 	if application.reportConfig == nil {
 		return
@@ -26,7 +29,7 @@ func (application *Application) reportSavedConfiguration(command *cobra.Command)
 	}
 	defer reporter.Close()
 	setTelemetryMetadata(reporter, value)
-	ctx, cancel := context.WithTimeout(command.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(command.Context(), reportConfigTimeout)
 	defer cancel()
 	_ = reporter.RecordConfiguration(ctx, *application.reportConfig, application.reportApplied, application.networkIdentity)
 }

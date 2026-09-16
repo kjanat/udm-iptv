@@ -7,6 +7,7 @@ import (
 	"os/exec"
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
 func startProxy(command *exec.Cmd, path string, state RuntimeState) (*managedProcess, error) {
@@ -26,7 +27,7 @@ func writeRuntimeState(path string, state RuntimeState) error {
 	if err != nil {
 		return fmt.Errorf("encode daemon runtime state: %w", err)
 	}
-	if err := atomicfile.Write(path, append(data, '\n'), 0o644); err != nil {
+	if err := atomicfile.Write(path, append(data, '\n'), filemode.SharedFile); err != nil {
 		return fmt.Errorf("save daemon runtime state: %w", err)
 	}
 	return nil

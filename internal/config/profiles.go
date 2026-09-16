@@ -6,6 +6,8 @@ import (
 	"sort"
 )
 
+// Profile represents a provider profile with its ID, name, note,
+// and configuration.
 type Profile struct {
 	ID     string
 	Name   string
@@ -13,12 +15,22 @@ type Profile struct {
 	Config Config
 }
 
+// profileDefinition holds the definition of a provider profile,
+// including its name, WAN configuration, source ranges,
+// and an optional note.
 type profileDefinition struct {
 	Name    string
 	WAN     WAN
 	Sources []string
 	Note    string
 }
+
+const (
+	// vlanVivoSP is the IPTV VLAN Vivo assigns in São Paulo, Brazil.
+	vlanVivoSP = 20
+	// vlanVivoGVT is the IPTV VLAN Vivo assigns on its former GVT network.
+	vlanVivoGVT = 4000
+)
 
 var profileDefinitions = map[string]profileDefinition{
 	"bt": {
@@ -39,10 +51,10 @@ var profileDefinitions = map[string]profileDefinition{
 	"kpn": {
 		Name: "KPN / XS4ALL / Freedom (NL)",
 		WAN: WAN{
-			VLAN: 4, DHCP: true, DHCPOptions: []string{"-O", "staticroutes", "-V", "IPTV_RG"},
-			NATDestinations: []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"},
+			VLAN: DefaultKPNVLAN, DHCP: true, DHCPOptions: kpnDHCPOptions,
+			NATDestinations: kpnNATDestinations,
 		},
-		Sources: []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"},
+		Sources: kpnNATDestinations,
 	},
 	"magentatv": {
 		Name: "MagentaTV (DE)",
@@ -71,7 +83,7 @@ var profileDefinitions = map[string]profileDefinition{
 	"solcon": {
 		Name: "Solcon (NL)",
 		WAN: WAN{
-			VLAN: 4, DHCP: true, DHCPOptions: []string{"-O", "staticroutes", "-V", "IPTV_RG"},
+			VLAN: DefaultKPNVLAN, DHCP: true, DHCPOptions: kpnDHCPOptions,
 			NATDestinations: []string{"10.0.0.0/8", "10.252.0.0/16", "10.253.0.0/16", "217.166.0.0/16"},
 		},
 		Sources: []string{"10.0.0.0/8", "10.252.0.0/16", "10.253.0.0/16", "217.166.0.0/16"},
@@ -93,14 +105,14 @@ var profileDefinitions = map[string]profileDefinition{
 	"tweak": {
 		Name: "Tweak (NL)",
 		WAN: WAN{
-			VLAN: 4, DHCP: true, DHCPOptions: []string{"-O", "staticroutes"}, NATDestinations: []string{"0.0.0.0/0"},
+			VLAN: DefaultKPNVLAN, DHCP: true, DHCPOptions: []string{"-O", "staticroutes"}, NATDestinations: []string{"0.0.0.0/0"},
 		},
 		Sources: []string{"0.0.0.0/0"},
 	},
 	"vivo": {
 		Name: "Vivo SP (BR)",
 		WAN: WAN{
-			VLAN: 20, DHCP: true,
+			VLAN: vlanVivoSP, DHCP: true,
 			NATDestinations: []string{"172.28.0.0/14", "201.0.52.0/23", "200.161.71.0/24", "177.16.0.0/16"},
 		},
 		Sources: []string{"172.28.0.0/14", "201.0.52.0/23", "200.161.71.0/24", "177.16.0.0/16"},
@@ -109,7 +121,7 @@ var profileDefinitions = map[string]profileDefinition{
 	"vivogvt": {
 		Name: "Vivo GVT (BR)",
 		WAN: WAN{
-			VLAN: 4000, DHCP: false, StaticAddress: "10.0.0.1/32", NATDestinations: []string{"0.0.0.0/0"},
+			VLAN: vlanVivoGVT, DHCP: false, StaticAddress: "10.0.0.1/32", NATDestinations: []string{"0.0.0.0/0"},
 		},
 		Sources: []string{"0.0.0.0/0"},
 	},
@@ -127,7 +139,7 @@ func buildProfiles() map[string]Profile {
 }
 
 func (definition profileDefinition) resolve(id string) Profile {
-	base := Default()
+	base := genericBase()
 	base.Profile = id
 	wan := definition.WAN
 	if wan.Interface == "" {
@@ -142,6 +154,8 @@ func (definition profileDefinition) resolve(id string) Profile {
 	return Profile{ID: id, Name: definition.Name, Note: definition.Note, Config: base}
 }
 
+// Profiles returns a sorted list of all available provider profiles, including
+// the "Custom" profile.
 func Profiles() []Profile {
 	result := make([]Profile, 0, 1+len(profiles))
 	result = append(result, Profile{ID: "custom", Name: "Custom", Config: Default()})
@@ -153,6 +167,10 @@ func Profiles() []Profile {
 	return result
 }
 
+// ProfileByID returns the provider profile corresponding to the specified ID.
+// If the ID is "custom" or "legacy", it returns a profile with the name "Custom".
+// If the ID corresponds to a known profile, it returns that profile.
+// If the ID is unknown, it returns false.
 func ProfileByID(id string) (Profile, bool) {
 	if id == "custom" || id == "legacy" {
 		return Profile{ID: id, Name: "Custom"}, true
@@ -162,6 +180,11 @@ func ProfileByID(id string) (Profile, bool) {
 	return value, found
 }
 
+// FromProfile returns a configuration based on the specified provider profile ID.
+// If the ID is "custom" or "legacy", it returns the provided current configuration.
+// If the ID corresponds to a known profile, it returns the configuration for that profile,
+// preserving the telemetry setting from the current configuration.
+// If the ID is unknown, it returns an error.
 func FromProfile(id string, current Config) (Config, error) {
 	if id == "custom" || id == "legacy" {
 		current.Profile = id

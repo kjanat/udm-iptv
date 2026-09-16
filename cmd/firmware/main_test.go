@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/firmware"
 )
 
@@ -33,7 +34,7 @@ func TestCommandDefaultsAreIndependent(t *testing.T) {
 
 func TestMatrixOutput(t *testing.T) {
 	filename := filepath.Join(t.TempDir(), "output")
-	if err := os.WriteFile(filename, []byte("existing=preserved\n"), 0o600); err != nil {
+	if err := atomicfile.Write(filename, []byte("existing=preserved\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer
