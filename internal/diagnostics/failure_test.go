@@ -13,6 +13,13 @@ import (
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
+var (
+	errOutputUnavailable = errors.New("output unavailable")
+	errCaptureFailed     = errors.New("capture failed at 192.168.1.1")
+	errRecordFailure     = errors.New("failure")
+	errDiskFull          = errors.New("disk full")
+)
+
 type failedOutput struct{ err error }
 
 func TestJournalOutputBound(t *testing.T) {
@@ -34,7 +41,7 @@ func TestJournalOutputBound(t *testing.T) {
 func (output failedOutput) Write([]byte) (int, error) { return 0, output.err }
 
 func TestFailureReportPropagatesOutputError(t *testing.T) {
-	want := errors.New("output unavailable")
+	want := errOutputUnavailable
 	err := (&Collector{}).ReportFailure(context.Background(), failedOutput{want})
 	if !errors.Is(err, want) || !strings.Contains(err.Error(), "header") {
 		t.Fatalf("lost output error: %v", err)
@@ -47,7 +54,7 @@ func TestFailureRecordingAttemptsBothFormats(t *testing.T) {
 	if err := atomicfile.Write(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := RecordFailure(Options{TextPath: directory, JSONPath: path}, errors.New("capture failed at 192.168.1.1"))
+	err := RecordFailure(Options{TextPath: directory, JSONPath: path}, errCaptureFailed)
 	if err == nil || !strings.Contains(err.Error(), "record capture failure") {
 		t.Fatal("missing text failure")
 	}
@@ -73,7 +80,7 @@ func TestFailureRecordingRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := RecordFailure(Options{TextPath: link}, errors.New("failure")); err == nil {
+	if err := RecordFailure(Options{TextPath: link}, errRecordFailure); err == nil {
 		t.Fatal("followed symlink")
 	}
 	data, err := os.ReadFile(target)
@@ -87,7 +94,7 @@ func TestAppendFailurePropagatesWriteError(t *testing.T) {
 	if err := atomicfile.Write(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want := errors.New("disk full")
+	want := errDiskFull
 	err := appendFailure(path, func(io.Writer) error { return want })
 	if !errors.Is(err, want) {
 		t.Fatalf("lost write error: %v", err)

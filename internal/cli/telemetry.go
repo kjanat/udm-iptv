@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -41,7 +42,7 @@ func (application *Application) telemetryCommand() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			err := telemetry.ResetIdentity(application.StateDir)
 			if err != nil {
-				return err
+				return fmt.Errorf("reset the reporting identity in %s: %w", application.StateDir, err)
 			}
 
 			return writeString(application.Out, "Reporting identity reset. Previously sent reports are unchanged.\n")
@@ -54,15 +55,15 @@ func (application *Application) telemetryCommand() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			value, err := config.Load(application.ConfigPath)
 			if err != nil {
-				return err
+				return fmt.Errorf("load configuration from %s: %w", application.ConfigPath, err)
 			}
 			reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
 			if err != nil {
-				return err
+				return fmt.Errorf("open the reporter: %w", err)
 			}
 			defer reporter.Close()
 			if err := reporter.Feedback(args[0], provider); err != nil {
-				return err
+				return fmt.Errorf("queue the feedback: %w", err)
 			}
 
 			return writeString(application.Out, "Feedback submitted to the reporting queue; delivery is best effort.\n")

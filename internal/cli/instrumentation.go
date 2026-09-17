@@ -31,57 +31,77 @@ func setTelemetryMetadata(reporter *telemetry.Reporter, value config.Config) {
 	reporter.SetMetadata(device.Board(), firmware, value.Proxy.Program, value.Profile)
 }
 
-func (application *Application) instrumentCommands(root *cobra.Command) {
-	for _, command := range root.Commands() {
-		application.instrumentCommands(command)
-		switch command.Name() {
-		case commandConfigure, commandInstall, "upgrade", "restart", "uninstall", "daemon", "dhcp-hook":
-		default:
-			continue
-		}
-		run := command.RunE
-		if run == nil {
-			continue
-		}
-		command.RunE = func(command *cobra.Command, args []string) error {
-			if command.Name() == commandConfigure && command.Flags().Changed("telemetry") {
-				if enabled, _ := command.Flags().GetBool("telemetry"); !enabled {
-					return run(command, args)
-				}
-			}
-			if command.Name() == commandInstall {
-				if dryRun, _ := command.Flags().GetBool("dry-run"); dryRun {
-					return run(command, args)
-				}
-			}
-			// Reporting after the command also covers first installation and a
-			// previously disabled user enabling reporting in the wizard.
-			if command.Name() == commandConfigure || command.Name() == commandInstall {
-				application.reportConfig, application.reportApplied = nil, false
-				defer func() { application.reportSavedConfiguration(command) }()
-			}
-			value, err := config.Load(application.ConfigPath)
-			if err != nil || !value.Telemetry.Enabled {
-				return run(command, args)
-			}
-			reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
-			if err != nil {
-				return run(command, args)
-			}
-			defer reporter.Close()
-			setTelemetryMetadata(reporter, value)
-			application.monitor = reporter
-			defer func() { application.monitor = nil }()
-			operation := command.Name()
-			if operation == "dhcp-hook" && len(args) == 1 {
-				operation = "dhcp." + args[0]
-			}
+// cobraRun is a Cobra RunE handler.
+type cobraRun func(*cobra.Command, []string) error
 
-			return reporter.Run(command.Context(), operation, func(ctx context.Context) error {
-				command.SetContext(ctx)
-
-				return run(command, args)
-			})
+// reporting wraps run so the invocation is reported as operation whenever the
+// saved configuration enables reporting. A command opts in by wrapping its own
+// handler, so nothing rewrites the command tree after it is built.
+func (application *Application) reporting(operation string, run cobraRun) cobraRun {
+	return func(command *cobra.Command, args []string) error {
+		value, err := config.Load(application.ConfigPath)
+		if err != nil || !value.Telemetry.Enabled {
+			return run(command, args)
 		}
+		reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
+		if err != nil {
+			return run(command, args)
+		}
+		defer reporter.Close()
+		setTelemetryMetadata(reporter, value)
+		application.monitor = reporter
+		defer func() { application.monitor = nil }()
+
+		return reporter.Run(command.Context(), operation, func(ctx context.Context) error {
+			command.SetContext(ctx)
+
+			return run(command, args)
+		})
 	}
+}
+
+// reportingSaved wraps a command that persists a configuration. bypass skips
+// reporting entirely for an invocation; otherwise whatever the command saved
+// is reported once it returns, which covers both first-install consent and an
+// opt-out chosen inside the wizard.
+func (application *Application) reportingSaved(operation string, bypass func(*cobra.Command) bool, run cobraRun) cobraRun {
+	return func(command *cobra.Command, args []string) error {
+		if bypass(command) {
+			return run(command, args)
+		}
+		application.reportConfig, application.reportApplied = nil, false
+		defer func() { application.reportSavedConfiguration(command) }()
+
+		return application.reporting(operation, run)(command, args)
+	}
+}
+
+// reportingHook wraps the DHCP hook, whose argument names the event handled.
+func (application *Application) reportingHook(run cobraRun) cobraRun {
+	return func(command *cobra.Command, args []string) error {
+		operation := command.Name()
+		if len(args) == 1 {
+			operation = "dhcp." + args[0]
+		}
+
+		return application.reporting(operation, run)(command, args)
+	}
+}
+
+// reportingTurnedOff reports that this invocation switches reporting off, so
+// it must not open a reporter of its own.
+func reportingTurnedOff(command *cobra.Command) bool {
+	if !command.Flags().Changed("telemetry") {
+		return false
+	}
+	enabled, _ := command.Flags().GetBool("telemetry")
+
+	return !enabled
+}
+
+// previewOnly reports that this invocation changes nothing worth reporting.
+func previewOnly(command *cobra.Command) bool {
+	dryRun, _ := command.Flags().GetBool("dry-run")
+
+	return dryRun
 }

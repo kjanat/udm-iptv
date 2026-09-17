@@ -33,7 +33,10 @@ type Daemon struct {
 	Monitor              *telemetry.Reporter
 }
 
-const runtimeStatePath = "/run/udm-iptv/state.json"
+const (
+	runtimeStatePath = "/run/udm-iptv/state.json"
+	proxyConfigPath  = "/run/udm-iptv/proxy.conf"
+)
 
 const (
 	// signalGrace is a short pause after a stop signal before forced cleanup.
@@ -46,6 +49,13 @@ const (
 	shutdownPoll = 250 * time.Millisecond
 	// processWaitDelay bounds a killed process's exit after Wait's pipes close.
 	processWaitDelay = 5 * time.Second
+)
+
+var (
+	errProxyExited               = errors.New("multicast proxy exited unexpectedly")
+	errProcessExited             = errors.New("exited unexpectedly")
+	errAddressSubscriptionClosed = errors.New("address change subscription closed")
+	errDHCPLeaseTimeout          = errors.New("DHCP did not assign an address within 30 seconds")
 )
 
 // RuntimeState is the running proxy's identity, read by `udm-iptv status`.
@@ -62,13 +72,13 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	_, _ = sdnotify.SdNotify(false, "STATUS=Loading configuration")
 	value, err := config.Load(application.ConfigPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("load configuration: %w", err)
 	}
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	link, err := network.EnsureLink(value)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare the IPTV interface: %w", err)
 	}
 	defer func() { _ = network.RemoveNAT(value) }()
 	var dhcp *managedProcess
@@ -78,44 +88,16 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 		return err
 	}
 	if err := network.EnsureNAT(value); err != nil {
-		return err
+		return fmt.Errorf("configure IPTV NAT: %w", err)
 	}
-	proxyConfig, err := renderProxyConfig(value)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(runtimeStatePath), filemode.SharedDir); err != nil {
-		return err
-	}
-	proxyConfigPath := "/run/udm-iptv/proxy.conf"
-	if err := atomicfile.Write(proxyConfigPath, []byte(proxyConfig), filemode.PrivateFile); err != nil {
+	if err := writeProxyConfig(value); err != nil {
 		return err
 	}
 	defer removeIgnoringError(proxyConfigPath)
-	arguments := []string{}
-	if value.Proxy.Program == "improxy" {
-		if value.Proxy.Debug {
-			arguments = append(arguments, "-d", "5")
-		}
-		arguments = append(arguments, "-c", proxyConfigPath)
-	} else {
-		arguments = append(arguments, "-n")
-		if value.Proxy.Debug {
-			arguments = append(arguments, "-d", "-v")
-		}
-		arguments = append(arguments, proxyConfigPath)
+	proxy, err := application.proxyCommand(ctx, value)
+	if err != nil {
+		return err
 	}
-	proxyBinary, lookupErr := exec.LookPath(value.Proxy.Program)
-	if lookupErr != nil {
-		proxyBinary, arguments, err = runtimebundle.Command(application.StateDir, value.Proxy.Program, arguments)
-		if err != nil {
-			return err
-		}
-	}
-	proxy := exec.CommandContext(ctx, proxyBinary, arguments...)
-	proxy.Stdout, proxy.Stderr = application.Out, application.Err
-	proxy.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	configureGracefulStop(proxy)
 	state := RuntimeState{StartedAt: time.Now().UTC(), Proxy: value.Proxy.Program, Target: network.Target(value)}
 	process, err := startProxy(proxy, runtimeStatePath, state)
 	if err != nil {
@@ -123,28 +105,30 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	}
 	defer func() { result = errors.Join(result, process.stop()) }()
 	defer removeIgnoringError(runtimeStatePath)
+
+	return application.supervise(ctx, supervised{
+		program: value.Proxy.Program, proxy: process, dhcp: dhcp, static: staticFailure,
+	})
+}
+
+// supervised names the ways a started run can end.
+type supervised struct {
+	program string
+	proxy   *managedProcess
+	dhcp    *managedProcess
+	static  <-chan error
+}
+
+// supervise waits out a settling period before reporting readiness, so a
+// proxy that fails immediately is reported as a startup failure.
+func (application *Daemon) supervise(ctx context.Context, sources supervised) error {
 	select {
-	case <-process.done:
-		if ctx.Err() != nil {
-			return nil
-		}
-		if process.err != nil {
-			return fmt.Errorf("%s exited: %w", value.Proxy.Program, process.err)
-		}
-
-		return errors.New("multicast proxy exited unexpectedly")
-	case <-processDone(dhcp):
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		return unexpectedProcessExit("DHCP client", dhcp.err)
-	case staticErr := <-staticFailure:
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		return fmt.Errorf("reconcile static IPTV network: %w", staticErr)
+	case <-sources.proxy.done:
+		return sources.proxyStopped(ctx)
+	case <-processDone(sources.dhcp):
+		return sources.dhcpStopped(ctx)
+	case cause := <-sources.static:
+		return staticReconcileFailed(ctx, cause)
 	case <-time.After(signalGrace):
 	}
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
@@ -156,28 +140,95 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 		_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
 
 		return nil
-	case <-process.done:
-		if ctx.Err() != nil {
-			return nil
-		}
-		if process.err != nil {
-			return fmt.Errorf("%s exited: %w", value.Proxy.Program, process.err)
-		}
-
-		return errors.New("multicast proxy exited unexpectedly")
-	case <-processDone(dhcp):
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		return unexpectedProcessExit("DHCP client", dhcp.err)
-	case staticErr := <-staticFailure:
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		return fmt.Errorf("reconcile static IPTV network: %w", staticErr)
+	case <-sources.proxy.done:
+		return sources.proxyStopped(ctx)
+	case <-processDone(sources.dhcp):
+		return sources.dhcpStopped(ctx)
+	case cause := <-sources.static:
+		return staticReconcileFailed(ctx, cause)
 	}
+}
+
+// stopping reports whether the daemon is already shutting down, which makes a
+// supervised process ending an expected event rather than a failure.
+func stopping(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
+func (sources supervised) proxyStopped(ctx context.Context) error {
+	if stopping(ctx) {
+		return nil
+	}
+	if sources.proxy.err != nil {
+		return fmt.Errorf("%s exited: %w", sources.program, sources.proxy.err)
+	}
+
+	return errProxyExited
+}
+
+func (sources supervised) dhcpStopped(ctx context.Context) error {
+	if stopping(ctx) {
+		return nil
+	}
+
+	return unexpectedProcessExit("DHCP client", sources.dhcp.err)
+}
+
+func staticReconcileFailed(ctx context.Context, cause error) error {
+	if stopping(ctx) {
+		return nil
+	}
+
+	return fmt.Errorf("reconcile static IPTV network: %w", cause)
+}
+
+func writeProxyConfig(value config.Config) error {
+	rendered, err := renderProxyConfig(value)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(runtimeStatePath), filemode.SharedDir); err != nil {
+		return fmt.Errorf("create the daemon runtime directory: %w", err)
+	}
+	if err := atomicfile.Write(proxyConfigPath, []byte(rendered), filemode.PrivateFile); err != nil {
+		return fmt.Errorf("write the proxy configuration: %w", err)
+	}
+
+	return nil
+}
+
+func (application *Daemon) proxyCommand(ctx context.Context, value config.Config) (*exec.Cmd, error) {
+	arguments := proxyArguments(value)
+	binary, err := exec.LookPath(value.Proxy.Program)
+	if err != nil {
+		binary, arguments, err = runtimebundle.Command(application.StateDir, value.Proxy.Program, arguments)
+		if err != nil {
+			return nil, fmt.Errorf("find %s: %w", value.Proxy.Program, err)
+		}
+	}
+	proxy := exec.CommandContext(ctx, binary, arguments...)
+	proxy.Stdout, proxy.Stderr = application.Out, application.Err
+	proxy.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureGracefulStop(proxy)
+
+	return proxy, nil
+}
+
+func proxyArguments(value config.Config) []string {
+	if value.Proxy.Program == "improxy" {
+		arguments := []string{}
+		if value.Proxy.Debug {
+			arguments = append(arguments, "-d", "5")
+		}
+
+		return append(arguments, "-c", proxyConfigPath)
+	}
+	arguments := []string{"-n"}
+	if value.Proxy.Debug {
+		arguments = append(arguments, "-d", "-v")
+	}
+
+	return append(arguments, proxyConfigPath)
 }
 
 // startConnection brings up either the DHCP client or the static IPTV
@@ -201,54 +252,57 @@ func (application *Daemon) startConnection(ctx context.Context, value config.Con
 		}
 	}
 
-	return nil, staticFailure, network.ApplyStatic(value, link)
+	if err := network.ApplyStatic(value, link); err != nil {
+		return nil, staticFailure, fmt.Errorf("apply the static IPTV network: %w", err)
+	}
+
+	return nil, staticFailure, nil
 }
 
 func startStaticReconciler(ctx context.Context, value config.Config, link netlink.Link) (<-chan error, error) {
 	failures := make(chan error, 1)
 	updates := make(chan netlink.AddrUpdate, addressUpdateBuffer)
-	options := netlink.AddrSubscribeOptions{ErrorCallback: func(err error) {
-		select {
-		case failures <- err:
-		default:
-		}
-	}}
+	options := netlink.AddrSubscribeOptions{ErrorCallback: func(err error) { reportFailure(failures, err) }}
 	err := netlink.AddrSubscribeWithOptions(updates, ctx.Done(), options)
 	if err != nil {
 		return nil, fmt.Errorf("subscribe to address changes: %w", err)
 	}
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case update, ok := <-updates:
-				if !ok {
-					if ctx.Err() == nil {
-						select {
-						case failures <- errors.New("address change subscription closed"):
-						default:
-						}
-					}
-
-					return
-				}
-				if staticAddressDeleted(value.WAN.StaticAddress, link.Attrs().Index, update) {
-					err := network.ApplyStatic(value, link)
-					if err != nil {
-						select {
-						case failures <- err:
-						default:
-						}
-
-						return
-					}
-				}
-			}
-		}
-	}()
+	go restoreStaticAddress(ctx, value, link, updates, failures)
 
 	return failures, nil
+}
+
+// reportFailure keeps the first failure without blocking the netlink reader.
+func reportFailure(failures chan<- error, cause error) {
+	select {
+	case failures <- cause:
+	default:
+	}
+}
+
+func restoreStaticAddress(ctx context.Context, value config.Config, link netlink.Link, updates <-chan netlink.AddrUpdate, failures chan<- error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case update, ok := <-updates:
+			if !ok {
+				if ctx.Err() == nil {
+					reportFailure(failures, errAddressSubscriptionClosed)
+				}
+
+				return
+			}
+			if !staticAddressDeleted(value.WAN.StaticAddress, link.Attrs().Index, update) {
+				continue
+			}
+			if err := network.ApplyStatic(value, link); err != nil {
+				reportFailure(failures, err)
+
+				return
+			}
+		}
+	}
 }
 
 func staticAddressDeleted(configured string, linkIndex int, update netlink.AddrUpdate) bool {
@@ -266,10 +320,10 @@ func staticAddressDeleted(configured string, linkIndex int, update netlink.AddrU
 
 func unexpectedProcessExit(name string, err error) error {
 	if err != nil {
-		return fmt.Errorf("%s exited unexpectedly: %w", name, err)
+		return fmt.Errorf("%s %w: %w", name, errProcessExited, err)
 	}
 
-	return fmt.Errorf("%s exited unexpectedly", name)
+	return fmt.Errorf("%s %w", name, errProcessExited)
 }
 
 func (application *Daemon) startDHCP(ctx context.Context, value config.Config) (*managedProcess, error) {
@@ -280,8 +334,11 @@ func (application *Daemon) startDHCP(ctx context.Context, value config.Config) (
 
 		return err
 	})
+	if err != nil {
+		return done, fmt.Errorf("acquire the IPTV DHCP lease: %w", err)
+	}
 
-	return done, err
+	return done, nil
 }
 
 func (application *Daemon) startDHCPClient(ctx context.Context, value config.Config) (*managedProcess, error) {
@@ -316,11 +373,11 @@ func waitDHCPLease(ctx context.Context, process *managedProcess, target string) 
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("wait for the DHCP lease: %w", ctx.Err())
 		case <-process.done:
 			return unexpectedProcessExit("DHCP client before assigning an address", process.err)
 		case <-deadline.C:
-			return errors.New("DHCP did not assign an address within 30 seconds")
+			return errDHCPLeaseTimeout
 		case <-ticker.C:
 			link, err := net.InterfaceByName(target)
 			if err != nil {
@@ -357,33 +414,43 @@ func configureGracefulStop(command *exec.Cmd) {
 }
 
 func renderProxyConfig(value config.Config) (string, error) {
-	var output strings.Builder
 	target := network.Target(value)
 	if value.Proxy.Program == "improxy" {
-		fmt.Fprintf(&output, "igmp enable version %d\n", value.Proxy.IGMPVersion)
-		output.WriteString("mld disable\n")
-		if value.Proxy.QuickLeave {
-			output.WriteString("quickleave enable\n")
-		} else {
-			output.WriteString("quickleave disable\n")
-		}
-		fmt.Fprintf(&output, "upstream %s\n", target)
-		for _, name := range value.LAN.Interfaces {
-			fmt.Fprintf(&output, "downstream %s\n", name)
-		}
-
-		return output.String(), nil
+		return renderIMProxyConfig(value, target), nil
 	}
+
+	return renderIGMPProxyConfig(value, target)
+}
+
+func renderIMProxyConfig(value config.Config, target string) string {
+	var output strings.Builder
+	fmt.Fprintf(&output, "igmp enable version %d\n", value.Proxy.IGMPVersion)
+	output.WriteString("mld disable\n")
+	if value.Proxy.QuickLeave {
+		output.WriteString("quickleave enable\n")
+	} else {
+		output.WriteString("quickleave disable\n")
+	}
+	fmt.Fprintf(&output, "upstream %s\n", target)
+	for _, name := range value.LAN.Interfaces {
+		fmt.Fprintf(&output, "downstream %s\n", name)
+	}
+
+	return output.String()
+}
+
+func renderIGMPProxyConfig(value config.Config, target string) (string, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("list network interfaces: %w", err)
+	}
+	var output strings.Builder
 	if value.Proxy.QuickLeave {
 		output.WriteString("quickleave\n")
 	}
 	fmt.Fprintf(&output, "phyint %s upstream ratelimit 0 threshold 1\n", target)
 	for _, prefix := range value.Proxy.SourceRanges {
 		fmt.Fprintf(&output, "  altnet %s\n", prefix)
-	}
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return "", err
 	}
 	downstream := make(map[string]bool, len(value.LAN.Interfaces))
 	for _, name := range value.LAN.Interfaces {

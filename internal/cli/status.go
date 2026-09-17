@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -15,7 +16,7 @@ func (application *Application) statusCommand() *cobra.Command {
 		RunE: func(command *cobra.Command, _ []string) error {
 			value, err := application.collector().Snapshot(command.Context())
 			if err != nil {
-				return err
+				return fmt.Errorf("collect the current state: %w", err)
 			}
 			if outputJSON {
 				encoder := json.NewEncoder(application.Out)

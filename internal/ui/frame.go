@@ -428,57 +428,136 @@ func (frame *Frame) handleMouse(msg tea.MouseClickMsg) tea.Cmd {
 	return nil
 }
 
+type keyPress struct {
+	msg   tea.KeyPressMsg
+	armed bool
+}
+
+type keyRule struct {
+	when func(*Frame, keyPress) bool
+	then func(*Frame, keyPress) tea.Cmd
+}
+
+var frameKeys = []keyRule{
+	{(*Frame).leaveRequested, (*Frame).askToLeaveOn},
+	{(*Frame).escapesQuestion, (*Frame).escapeOn},
+	{(*Frame).stepsOutOfForm, (*Frame).goBackOn},
+	{(*Frame).explainRequested, (*Frame).toggleHelpOn},
+	{(*Frame).showingHelp, (*Frame).closeHelpOn},
+	{(*Frame).rejectedByVLAN, (*Frame).ignoreOn},
+}
+
 // handleKey routes a key by mode: quit prompt, entry popup, then the
 // frame's own keys, then the form.
 func (frame *Frame) handleKey(msg tea.KeyPressMsg) tea.Cmd {
-	if frame.quitPrompt {
-		frame.escArmed = false
-
-		return frame.answerQuitPrompt(msg)
+	if handled, cmd := frame.handleModalKey(msg); handled {
+		return cmd
 	}
-	if frame.entry != nil {
-		frame.escArmed = false
-
-		return frame.answerEntry(msg)
-	}
-	if entry := frame.wizard.entry(); entry != nil && hoversManualEntry(frame.wizard.Form) && opensEntry(msg) {
-		frame.openEntry(entry)
-
-		return nil
-	}
-	armed := frame.escArmed
+	press := keyPress{msg: msg, armed: frame.escArmed}
 	frame.escArmed = msg.Code == tea.KeyEscape
-	if search := frame.wizard.search(); search != nil && msg.Mod == 0 {
-		if msg.Text == "/" {
-			return nil
-		}
-		if search.keystroke(msg.Text, msg.Code == tea.KeyBackspace, msg.Code == tea.KeyEscape) {
-			return frame.forward(searchChangedMsg{})
+	if handled, cmd := frame.handleSearchKey(msg); handled {
+		return cmd
+	}
+	for _, rule := range frameKeys {
+		if rule.when(frame, press) {
+			return rule.then(frame, press)
 		}
 	}
+
+	return frame.forward(msg)
+}
+
+func (frame *Frame) handleModalKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	switch {
-	case key.Matches(msg, quitKeys):
-		return frame.askToLeave()
-	case msg.Code == tea.KeyEscape && !filtering(frame.wizard.Form):
-		return frame.escape(armed)
-	case key.Matches(msg, backKeys) && frame.wizard.canBack() && frame.wizard.atFirstField():
-		return frame.goBack()
-	case key.Matches(msg, helpKeys):
-		frame.help = !frame.help
-		if frame.help {
-			frame.observe(EventHelp)
-		}
+	case frame.quitPrompt:
+		frame.escArmed = false
 
-		return nil
-	case frame.help:
-		frame.help = false
+		return true, frame.answerQuitPrompt(msg)
+	case frame.entry != nil:
+		frame.escArmed = false
 
-		return nil
-	case msg.Text != "" && !isDigits(msg.Text) && focusedKey(frame.wizard.Form) == "vlan":
-		return nil
+		return true, frame.answerEntry(msg)
+	case frame.opensManualEntry(msg):
+		frame.openEntry(frame.wizard.entry())
+
+		return true, nil
 	default:
-		return frame.forward(msg)
+		return false, nil
 	}
+}
+
+func (frame *Frame) handleSearchKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
+	search := frame.wizard.search()
+	if search == nil || msg.Mod != 0 {
+		return false, nil
+	}
+	if msg.Text == "/" {
+		return true, nil
+	}
+	if search.keystroke(msg.Text, msg.Code == tea.KeyBackspace, msg.Code == tea.KeyEscape) {
+		return true, frame.forward(searchChangedMsg{})
+	}
+
+	return false, nil
+}
+
+func (frame *Frame) opensManualEntry(msg tea.KeyPressMsg) bool {
+	return frame.wizard.entry() != nil && hoversManualEntry(frame.wizard.Form) && opensEntry(msg)
+}
+
+func (frame *Frame) leaveRequested(press keyPress) bool {
+	return key.Matches(press.msg, quitKeys)
+}
+
+func (frame *Frame) askToLeaveOn(keyPress) tea.Cmd {
+	return frame.askToLeave()
+}
+
+func (frame *Frame) escapesQuestion(press keyPress) bool {
+	return press.msg.Code == tea.KeyEscape && !filtering(frame.wizard.Form)
+}
+
+func (frame *Frame) escapeOn(press keyPress) tea.Cmd {
+	return frame.escape(press.armed)
+}
+
+func (frame *Frame) stepsOutOfForm(press keyPress) bool {
+	return key.Matches(press.msg, backKeys) && frame.wizard.canBack() && frame.wizard.atFirstField()
+}
+
+func (frame *Frame) goBackOn(keyPress) tea.Cmd {
+	return frame.goBack()
+}
+
+func (frame *Frame) explainRequested(press keyPress) bool {
+	return key.Matches(press.msg, helpKeys)
+}
+
+func (frame *Frame) toggleHelpOn(keyPress) tea.Cmd {
+	frame.help = !frame.help
+	if frame.help {
+		frame.observe(EventHelp)
+	}
+
+	return nil
+}
+
+func (frame *Frame) showingHelp(keyPress) bool {
+	return frame.help
+}
+
+func (frame *Frame) closeHelpOn(keyPress) tea.Cmd {
+	frame.help = false
+
+	return nil
+}
+
+func (frame *Frame) rejectedByVLAN(press keyPress) bool {
+	return press.msg.Text != "" && !isDigits(press.msg.Text) && focusedKey(frame.wizard.Form) == "vlan"
+}
+
+func (frame *Frame) ignoreOn(keyPress) tea.Cmd {
+	return nil
 }
 
 func opensEntry(msg tea.KeyPressMsg) bool {
@@ -790,7 +869,7 @@ func (session *Session) Run(ctx context.Context, wizard *Wizard) error {
 	select {
 	case <-wizard.done:
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("show the form: %w", ctx.Err())
 	case <-session.finished:
 		if session.err == nil || errors.Is(session.err, tea.ErrInterrupted) {
 			return huh.ErrUserAborted

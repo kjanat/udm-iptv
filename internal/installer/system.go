@@ -24,9 +24,11 @@ import (
 type SystemBackend struct {
 	Out, Err       io.Writer
 	Completion     func(context.Context) ([]byte, error)
-	CheckHealth    func(context.Context) error
+	Health         func(context.Context) error
 	Saved, Healthy func(config.Config)
 }
+
+var errAlreadyInstalled = errors.New("udm-iptv is already installed; use --force to replace it")
 
 const (
 	unitPath       = "/etc/systemd/system/udm-iptv.service"
@@ -51,51 +53,78 @@ func PreserveProxy(stateDir, program string) error {
 	return nil
 }
 
-// Apply performs action against the host filesystem and systemd.
-func (backend SystemBackend) Apply(ctx context.Context, action Action, plan Plan) error {
-	target := filepath.Join(plan.StateDir, "bin", "udm-iptv")
-	switch action {
-	case Preflight:
-		if Installed(plan.StateDir) && !plan.Replace && !sameFile(plan.Executable, target) {
-			return errors.New("udm-iptv is already installed; use --force to replace it")
-		}
+func installedExecutable(plan Plan) string {
+	return filepath.Join(plan.StateDir, "bin", "udm-iptv")
+}
 
-		return nil
-	case SaveConfig:
-		err := config.Save(plan.ConfigPath, plan.Config)
-		if err != nil {
-			return err
-		}
-		if backend.Saved != nil {
-			backend.Saved(plan.Config)
-		}
-
-		return nil
-	case RemoveLegacy:
-		return removeLegacyPackage(ctx, backend.Out, backend.Err)
-	case PreserveRuntime:
-		return PreserveProxy(plan.StateDir, plan.Config.Proxy.Program)
-	case CopyBinary:
-		return atomicfile.Copy(plan.Executable, target)
-	case WriteFiles:
-		return backend.writeFiles(ctx, target, plan)
-	case Activate:
-		return activateService(ctx)
-	case CheckHealth:
-		err := backend.CheckHealth(ctx)
-		if err != nil {
-			return fmt.Errorf("installation completed but the service is unhealthy: %w", err)
-		}
-		if backend.Healthy != nil {
-			backend.Healthy(plan.Config)
-		}
-
-		return nil
-	case Cleanup:
-		return removeObsoleteLegacyFiles(plan.StateDir)
-	default:
-		return fmt.Errorf("unknown installation action %q", action)
+// Preflight refuses to overwrite an existing installation without Replace.
+func (backend SystemBackend) Preflight(_ context.Context, plan Plan) error {
+	if Installed(plan.StateDir) && !plan.Replace && !sameFile(plan.Executable, installedExecutable(plan)) {
+		return errAlreadyInstalled
 	}
+
+	return nil
+}
+
+// PreserveRuntime snapshots the proxy and its libraries for offline recovery.
+func (backend SystemBackend) PreserveRuntime(_ context.Context, plan Plan) error {
+	return PreserveProxy(plan.StateDir, plan.Config.Proxy.Program)
+}
+
+// SaveConfig writes the planned configuration and reports it as saved.
+func (backend SystemBackend) SaveConfig(_ context.Context, plan Plan) error {
+	err := config.Save(plan.ConfigPath, plan.Config)
+	if err != nil {
+		return fmt.Errorf("save configuration to %s: %w", plan.ConfigPath, err)
+	}
+	if backend.Saved != nil {
+		backend.Saved(plan.Config)
+	}
+
+	return nil
+}
+
+// RemoveLegacy removes the legacy Debian package once its config is imported.
+func (backend SystemBackend) RemoveLegacy(ctx context.Context, _ Plan) error {
+	return removeLegacyPackage(ctx, backend.Out, backend.Err)
+}
+
+// CopyBinary installs the running executable into the state directory.
+func (backend SystemBackend) CopyBinary(_ context.Context, plan Plan) error {
+	target := installedExecutable(plan)
+	if err := atomicfile.Copy(plan.Executable, target); err != nil {
+		return fmt.Errorf("install executable at %s: %w", target, err)
+	}
+
+	return nil
+}
+
+// WriteFiles writes the unit, links, tmpfiles rule and shell completion.
+func (backend SystemBackend) WriteFiles(ctx context.Context, plan Plan) error {
+	return backend.writeFiles(ctx, installedExecutable(plan), plan)
+}
+
+// Activate reloads systemd, enables the unit and restarts the service.
+func (backend SystemBackend) Activate(ctx context.Context, _ Plan) error {
+	return activateService(ctx)
+}
+
+// CheckHealth waits for readiness and reports the configuration as applied.
+func (backend SystemBackend) CheckHealth(ctx context.Context, plan Plan) error {
+	err := backend.Health(ctx)
+	if err != nil {
+		return fmt.Errorf("installation completed but the service is unhealthy: %w", err)
+	}
+	if backend.Healthy != nil {
+		backend.Healthy(plan.Config)
+	}
+
+	return nil
+}
+
+// Cleanup removes obsolete legacy recovery files.
+func (backend SystemBackend) Cleanup(_ context.Context, plan Plan) error {
+	return removeObsoleteLegacyFiles(plan.StateDir)
 }
 
 func removeObsoleteLegacyFiles(stateDir string) error {
@@ -180,14 +209,17 @@ func replaceSymlink(target, path string) error {
 	}
 	err := os.Remove(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return fmt.Errorf("remove stale link %s: %w", path, err)
 	}
 	err = os.MkdirAll(filepath.Dir(path), filemode.SharedDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("create parent directory for %s: %w", path, err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		return fmt.Errorf("link %s to %s: %w", path, target, err)
 	}
 
-	return os.Symlink(target, path)
+	return nil
 }
 
 func sameFile(left, right string) bool {
@@ -207,11 +239,11 @@ func Installed(stateDir string) bool {
 func (backend SystemBackend) writeFiles(ctx context.Context, target string, plan Plan) error {
 	unit := systemdUnit(target, plan.ConfigPath, plan.StateDir)
 	if err := atomicfile.Write(unitPath, []byte(unit), filemode.SharedFile); err != nil {
-		return err
+		return fmt.Errorf("write systemd unit: %w", err)
 	}
 	tmpfiles := fmt.Sprintf("L+ %s - - - - %s\n", commandPath, target)
 	if err := atomicfile.Write(tmpfilesPath, []byte(tmpfiles), filemode.SharedFile); err != nil {
-		return err
+		return fmt.Errorf("write tmpfiles rule: %w", err)
 	}
 	if err := replaceSymlink(target, commandPath); err != nil {
 		return err
@@ -243,5 +275,9 @@ func activateService(ctx context.Context) error {
 		return fmt.Errorf("enable service: %w", err)
 	}
 
-	return service.Restart(ctx, connection, "udm-iptv.service")
+	if err := service.Restart(ctx, connection, "udm-iptv.service"); err != nil {
+		return fmt.Errorf("restart udm-iptv.service: %w", err)
+	}
+
+	return nil
 }

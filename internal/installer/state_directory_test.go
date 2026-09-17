@@ -4,13 +4,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
-func TestPurgeRemovesOwnedStateOnly(t *testing.T) {
-	directory := t.TempDir()
+func stateRoot(t *testing.T, directory string) *os.Root {
+	t.Helper()
 	root, err := openStateDirectory(directory)
 	if err != nil {
 		t.Fatal(err)
@@ -20,16 +21,48 @@ func TestPurgeRemovesOwnedStateOnly(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	for _, name := range []string{"bin", "runtime", "diagnostics"} {
+
+	return root
+}
+
+func populateState(t *testing.T, root *os.Root, directories, files []string) {
+	t.Helper()
+	for _, name := range directories {
 		if err := root.Mkdir(name, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"bin/udm-iptv", "bin/udhcpc-hook", "config.json", "telemetry-research.json", "telemetry-research.lock", "telemetry-errors.rate"} {
+	for _, name := range files {
 		if err := root.WriteFile(name, []byte("fixture"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+func assertStatePresent(t *testing.T, root *os.Root, paths []string) {
+	t.Helper()
+	for _, path := range paths {
+		if _, err := root.Stat(path); err != nil {
+			t.Fatalf("preserved entry removed: %s: %v", path, err)
+		}
+	}
+}
+
+func assertStateAbsent(t *testing.T, root *os.Root, paths []string) {
+	t.Helper()
+	for _, path := range paths {
+		if _, err := root.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("installation entry remains: %s: %v", path, err)
+		}
+	}
+}
+
+func TestPurgeRemovesOwnedStateOnly(t *testing.T) {
+	directory := t.TempDir()
+	root := stateRoot(t, directory)
+	populateState(t, root,
+		[]string{"bin", "runtime", "diagnostics", "sigstore", "sigstore/tuf"},
+		[]string{"bin/udm-iptv", "bin/udhcpc-hook", "config.json", "telemetry-research.json", "telemetry-research.lock", "telemetry-errors.rate", "sigstore/tuf/root.json"})
 	external := filepath.Join(t.TempDir(), "config.json")
 	if err := atomicfile.Write(external, []byte("external configuration"), 0o600); err != nil {
 		t.Fatal(err)
@@ -82,51 +115,34 @@ func TestRejectSymlinkedStateDirectory(t *testing.T) {
 }
 
 func TestRemoveStatePreservesUnrelatedFiles(t *testing.T) {
-	for _, keep := range []bool{false, true} {
-		directory := t.TempDir()
-		root, err := openStateDirectory(directory)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := root.Close(); err != nil {
-				t.Error(err)
+	owned := []string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "diagnostics", "sigstore"}
+	unrelated := []string{"bin/unrelated", "notes.txt"}
+	configured := []string{"runtime", "config.json", "custom.json", "telemetry-errors.rate"}
+	for _, test := range []struct {
+		name               string
+		keep               bool
+		preserved, removed []string
+	}{
+		{"purge", false, unrelated, append(slices.Clone(owned), configured...)},
+		{"keep-config", true, append(slices.Clone(unrelated), configured...), owned},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			root := stateRoot(t, directory)
+			populateState(t, root,
+				[]string{"bin", "runtime", "diagnostics", "sigstore", "sigstore/tuf"},
+				[]string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "bin/unrelated", "runtime/proxy", "diagnostics/capture", "sigstore/tuf/root.json", "config.json", "custom.json", "telemetry-errors.rate", "notes.txt"})
+			if err := removeStateFiles(root, filepath.Join(directory, "custom.json"), test.keep); err != nil {
+				t.Fatal(err)
 			}
+			assertStatePresent(t, root, test.preserved)
+			assertStateAbsent(t, root, test.removed)
 		})
-		for _, path := range []string{"bin", "runtime", "diagnostics"} {
-			if err := root.Mkdir(path, 0o700); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, path := range []string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "bin/unrelated", "runtime/proxy", "diagnostics/capture", "config.json", "custom.json", "telemetry-errors.rate", "notes.txt"} {
-			if err := root.WriteFile(path, []byte("fixture"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := removeStateFiles(root, filepath.Join(directory, "custom.json"), keep); err != nil {
-			t.Fatal(err)
-		}
-		for _, path := range []string{"bin/unrelated", "notes.txt"} {
-			if _, err := root.Stat(path); err != nil {
-				t.Fatalf("unrelated file removed: %s: %v", path, err)
-			}
-		}
-		for _, path := range []string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "diagnostics"} {
-			if _, err := root.Stat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("installation entry remains: %s: %v", path, err)
-			}
-		}
-		for _, path := range []string{"runtime", "config.json", "custom.json", "telemetry-errors.rate"} {
-			_, err := root.Stat(path)
-			if (err == nil) != keep {
-				t.Fatalf("keep=%t path=%s: %v", keep, path, err)
-			}
-		}
 	}
 }
 
 func TestStateCleanupCannotFollowExternalSymlinks(t *testing.T) {
-	for _, entry := range []string{"bin", "runtime", "diagnostics"} {
+	for _, entry := range []string{"bin", "runtime", "diagnostics", "sigstore"} {
 		t.Run(entry, func(t *testing.T) {
 			directory, outside := t.TempDir(), t.TempDir()
 			sentinel := filepath.Join(outside, "udm-iptv")
@@ -136,16 +152,8 @@ func TestStateCleanupCannotFollowExternalSymlinks(t *testing.T) {
 			if err := os.Symlink(outside, filepath.Join(directory, entry)); err != nil {
 				t.Fatal(err)
 			}
-			root, err := openStateDirectory(directory)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := root.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			err = removeStateFiles(root, "/external/config.json", false)
+			root := stateRoot(t, directory)
+			err := removeStateFiles(root, "/external/config.json", false)
 			if entry == "bin" && err == nil {
 				t.Fatal("external bin link accepted")
 			}

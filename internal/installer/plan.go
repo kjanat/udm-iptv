@@ -3,12 +3,15 @@ package installer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 
 	"github.com/kjanat/udm-iptv/internal/config"
 )
+
+var errPathNotAbsolute = errors.New("installation path must be absolute")
 
 // Plan is the validated input for preview and execution. It performs no I/O.
 type Plan struct {
@@ -20,25 +23,23 @@ type Plan struct {
 	Replace    bool
 }
 
-// Action is one step of an installation, in execution order.
-type Action string
+// step is one stage of an installation: what it is called, and the work.
+type step struct {
+	name string
+	run  func(Backend, context.Context, Plan) error
+}
 
-// The installation steps, in the order Actions returns them.
-const (
-	Preflight       Action = "Check installation prerequisites"
-	PreserveRuntime Action = "Preserve the proxy and shared libraries offline"
-	SaveConfig      Action = "Save configuration"
-	RemoveLegacy    Action = "Remove legacy Debian package if installed"
-	CopyBinary      Action = "Install persistent executable"
-	WriteFiles      Action = "Write service, links, tmpfiles rule and shell completion"
-	Activate        Action = "Reload systemd, enable and restart service"
-	CheckHealth     Action = "Wait for stable proxy readiness"
-	Cleanup         Action = "Remove obsolete legacy recovery files after health verification"
-)
-
-// Backend provides the host-specific implementation of each installation action.
+// Backend is the host-specific implementation of each installation stage.
 type Backend interface {
-	Apply(context.Context, Action, Plan) error
+	Preflight(context.Context, Plan) error
+	PreserveRuntime(context.Context, Plan) error
+	SaveConfig(context.Context, Plan) error
+	RemoveLegacy(context.Context, Plan) error
+	CopyBinary(context.Context, Plan) error
+	WriteFiles(context.Context, Plan) error
+	Activate(context.Context, Plan) error
+	CheckHealth(context.Context, Plan) error
+	Cleanup(context.Context, Plan) error
 }
 
 // Validate reports whether the plan's config and paths are usable.
@@ -48,25 +49,35 @@ func (p Plan) Validate() error {
 	}
 	err := p.Config.Validate()
 	if err != nil {
-		return err
+		return fmt.Errorf("validate installation configuration: %w", err)
 	}
 	for _, path := range []string{p.ConfigPath, p.StateDir, p.Executable} {
 		if !filepath.IsAbs(path) {
-			return fmt.Errorf("installation path must be absolute: %q", path)
+			return fmt.Errorf("%w: %q", errPathNotAbsolute, path)
 		}
 	}
 
 	return nil
 }
 
-// Actions returns the steps this plan requires, in execution order.
-func (p Plan) Actions() []Action {
-	actions := []Action{Preflight, PreserveRuntime}
+// steps returns the stages this plan requires, in execution order.
+func (p Plan) steps() []step {
+	steps := []step{
+		{"Check installation prerequisites", Backend.Preflight},
+		{"Preserve the proxy and shared libraries offline", Backend.PreserveRuntime},
+	}
 	if p.SaveConfig {
-		actions = append(actions, SaveConfig)
+		steps = append(steps, step{"Save configuration", Backend.SaveConfig})
 	}
 
-	return append(actions, RemoveLegacy, CopyBinary, WriteFiles, Activate, CheckHealth, Cleanup)
+	return append(steps,
+		step{"Remove legacy Debian package if installed", Backend.RemoveLegacy},
+		step{"Install persistent executable", Backend.CopyBinary},
+		step{"Write service, links, tmpfiles rule and shell completion", Backend.WriteFiles},
+		step{"Reload systemd, enable and restart service", Backend.Activate},
+		step{"Wait for stable proxy readiness", Backend.CheckHealth},
+		step{"Remove obsolete legacy recovery files after health verification", Backend.Cleanup},
+	)
 }
 
 // Preview intentionally does not accept a Backend: it cannot apply the plan.
@@ -75,17 +86,16 @@ func (p Plan) Preview(out io.Writer) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(out, "Dry run: no changes, services or telemetry."); err != nil {
+	if err := writeString(out, "Dry run: no changes, services or telemetry.\n"); err != nil {
 		return err
 	}
-	for _, action := range p.Actions() {
-		if _, err := fmt.Fprintf(out, "  - %s\n", action); err != nil {
+	for _, stage := range p.steps() {
+		if err := writef(out, "  - %s\n", stage.name); err != nil {
 			return err
 		}
 	}
-	_, err := fmt.Fprintln(out, "Preview complete. Prerequisites and service health remain untested.")
 
-	return err
+	return writeString(out, "Preview complete. Prerequisites and service health remain untested.\n")
 }
 
 // Execute stops at the first failure. Cleanup is reached only after health passes.
@@ -94,14 +104,14 @@ func (p Plan) Execute(ctx context.Context, backend Backend) error {
 	if err != nil {
 		return err
 	}
-	for _, action := range p.Actions() {
+	for _, stage := range p.steps() {
 		err := ctx.Err()
 		if err != nil {
-			return err
+			return fmt.Errorf("installation cancelled before %q: %w", stage.name, err)
 		}
-		err = backend.Apply(ctx, action, p)
+		err = stage.run(backend, ctx, p)
 		if err != nil {
-			return fmt.Errorf("%s: %w", action, err)
+			return fmt.Errorf("%s: %w", stage.name, err)
 		}
 	}
 

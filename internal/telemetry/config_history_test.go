@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 
@@ -20,13 +21,10 @@ import (
 
 func researchReporter(t *testing.T) (*Reporter, *recordingTransport) {
 	t.Helper()
-	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), transport)
-	if err != nil {
-		t.Fatal(err)
-	}
+	r, transport := newRecordingReporter(t, testSettings())
 	r.stateDir = t.TempDir()
 	t.Cleanup(r.Close)
+
 	return r, transport
 }
 
@@ -42,43 +40,104 @@ func reportAt(t *testing.T, transport *recordingTransport, index int) researchRe
 	return report
 }
 
+type timeCheck int
+
+const (
+	timeUnchecked timeCheck = iota
+	timeZero
+	timeSet
+)
+
+func assertTimeCheck(t *testing.T, name string, value time.Time, check timeCheck) {
+	t.Helper()
+	switch check {
+	case timeZero:
+		if !value.IsZero() {
+			t.Fatalf("%s is set", name)
+		}
+	case timeSet:
+		if value.IsZero() {
+			t.Fatalf("%s is zero", name)
+		}
+	case timeUnchecked:
+	}
+}
+
+type historyStep struct {
+	name             string
+	mutate           func(*config.Config)
+	applied          bool
+	revision         uint64
+	previousRevision uint64
+	appliedRevision  uint64
+	changed          []string
+	appliedChange    timeCheck
+	savedChangeOf    int
+	appliedChangeOf  int
+}
+
+func configurationHistorySteps() []historyStep {
+	return []historyStep{
+		{
+			name: "first save", mutate: func(*config.Config) {}, applied: false,
+			revision: 1, previousRevision: 0, appliedRevision: 0, changed: nil,
+			appliedChange: timeZero, savedChangeOf: -1, appliedChangeOf: -1,
+		},
+		{
+			name: "apply with a telemetry preference change", mutate: func(value *config.Config) { value.Telemetry.Logs = false }, applied: true,
+			revision: 1, previousRevision: 1, appliedRevision: 1, changed: []string{},
+			appliedChange: timeSet, savedChangeOf: 0, appliedChangeOf: -1,
+		},
+		{
+			name: "save without applying", mutate: func(value *config.Config) { value.Proxy.QuickLeave = true }, applied: false,
+			revision: 2, previousRevision: 1, appliedRevision: 1, changed: []string{"quickleave"},
+			appliedChange: timeSet, savedChangeOf: -1, appliedChangeOf: 1,
+		},
+		{
+			name: "reopened settings", mutate: func(*config.Config) {}, applied: false,
+			revision: 2, previousRevision: 2, appliedRevision: 1, changed: []string{},
+			appliedChange: timeSet, savedChangeOf: 2, appliedChangeOf: 1,
+		},
+	}
+}
+
+func assertHistoryStep(t *testing.T, step historyStep, report researchReport, earlier []researchReport) {
+	t.Helper()
+	assertEqual(t, step.name+" revision", report.Revision, step.revision)
+	assertEqual(t, step.name+" previous revision", report.PreviousRevision, step.previousRevision)
+	assertEqual(t, step.name+" applied revision", report.AppliedRevision, step.appliedRevision)
+	assertEqual(t, step.name+" applied", report.Applied, step.applied)
+	assertTimeCheck(t, step.name+" last applied change", report.LastAppliedChange, step.appliedChange)
+	if step.changed != nil && !reflect.DeepEqual(report.ChangedFields, step.changed) {
+		t.Fatalf("%s changed fields = %v, want %v", step.name, report.ChangedFields, step.changed)
+	}
+	if step.savedChangeOf >= 0 {
+		assertEqual(t, step.name+" last saved change", report.LastSavedChange, earlier[step.savedChangeOf].LastSavedChange)
+	}
+	if step.appliedChangeOf >= 0 {
+		assertEqual(t, step.name+" last applied change", report.LastAppliedChange, earlier[step.appliedChangeOf].LastAppliedChange)
+	}
+}
+
 func TestResearchSavedVersusAppliedAndMeaningfulChanges(t *testing.T) {
 	r, transport := researchReporter(t)
 	value := config.Default()
-	if err := r.RecordConfiguration(context.Background(), value, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	first := reportAt(t, transport, 0)
-	if first.Revision != 1 || first.Applied || !first.LastAppliedChange.IsZero() {
-		t.Fatal("saved configuration marked applied")
-	}
-	value.Telemetry.Logs = false
-	if err := r.RecordConfiguration(context.Background(), value, true, nil); err != nil {
-		t.Fatal(err)
-	}
-	applied := reportAt(t, transport, 1)
-	if applied.Revision != 1 || !applied.Applied || applied.LastAppliedChange.IsZero() || applied.LastSavedChange != first.LastSavedChange {
-		t.Fatal("application or telemetry preference counted as a settings change")
-	}
-	value.Proxy.QuickLeave = true
-	if err := r.RecordConfiguration(context.Background(), value, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	failed := reportAt(t, transport, 2)
-	if failed.Revision != 2 || failed.PreviousRevision != 1 || failed.AppliedRevision != 1 || failed.LastAppliedChange != applied.LastAppliedChange || !reflect.DeepEqual(failed.ChangedFields, []string{"quickleave"}) {
-		t.Fatal("failed application advanced applied history or lost changed fields")
-	}
-	if err := r.RecordConfiguration(context.Background(), value, false, nil); err != nil {
-		t.Fatal(err)
-	}
-	repeated := reportAt(t, transport, 3)
-	if repeated.Revision != 2 || repeated.LastSavedChange != failed.LastSavedChange || len(repeated.ChangedFields) != 0 {
-		t.Fatal("reopening settings counted as a change")
+	steps := configurationHistorySteps()
+	reports := make([]researchReport, 0, len(steps))
+	for index, step := range steps {
+		step.mutate(&value)
+		if err := r.RecordConfiguration(context.Background(), value, step.applied, nil); err != nil {
+			t.Fatal(err)
+		}
+		report := reportAt(t, transport, index)
+		assertHistoryStep(t, step, report, reports)
+		reports = append(reports, report)
 	}
 	info, err := os.Stat(filepath.Join(r.stateDir, "telemetry-research.json"))
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatal("research history permissions")
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertEqual(t, "research history permissions", info.Mode().Perm(), os.FileMode(0o600))
 }
 
 func TestResearchPublicPrefixes(t *testing.T) {
@@ -122,45 +181,73 @@ func TestResearchSeparateProcessAndLiveRevocation(t *testing.T) {
 	}
 }
 
+type networkChoiceCase struct {
+	name       string
+	network    bool
+	provider   string
+	method     string
+	confidence string
+}
+
+func networkChoiceConfig() config.Config {
+	value := config.Default()
+	value.WAN.Interface = "private0"
+	value.WAN.VLANMAC = "aa:bb:cc:dd:ee:ff"
+	value.WAN.DHCPOptions = []string{"-V", "private-token"}
+	value.WAN.StaticAddress = "192.168.199.7/24"
+	value.WAN.NATDestinations = append(value.WAN.NATDestinations, "192.168.199.0/24", "11.22.33.44/32")
+
+	return value
+}
+
+func assertNetworkIdentity(t *testing.T, identity *NetworkIdentity, test networkChoiceCase) {
+	t.Helper()
+	if !test.network {
+		if identity != nil {
+			t.Fatalf("report carried a network identity while the preference was off: %+v", identity)
+		}
+
+		return
+	}
+	if identity == nil {
+		t.Fatal("PTR hint lost")
+	}
+	assertEqual(t, "detected provider", identity.Provider, test.provider)
+	assertEqual(t, "detection method", identity.Method, test.method)
+	assertEqual(t, "confidence", identity.Confidence, test.confidence)
+}
+
+func runNetworkChoiceCase(t *testing.T, test networkChoiceCase) {
+	t.Helper()
+	r, transport := researchReporter(t)
+	r.settings.NetworkIdentity = test.network
+	called := false
+	lookup := func(context.Context) NetworkIdentity {
+		called = true
+
+		return NetworkIdentity{IP: "11.22.33.44", PTR: "Customer.KPN.NET."}
+	}
+	if err := r.RecordConfiguration(context.Background(), networkChoiceConfig(), true, lookup); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(transport.events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoSecrets(t, string(data), "private0", "aa:bb", "private-token", "192.168.199", "11.22.33.44/32", "fingerprint")
+	assertEqual(t, "lookup performed", called, test.network)
+	assertEqual(t, "PTR name in report", strings.Contains(string(data), "Customer.KPN.NET."), test.network)
+	report := reportAt(t, transport, 0)
+	assertEqual(t, "custom-prefix count", report.Settings.CustomNAT, 2)
+	assertNetworkIdentity(t, report.Network, test)
+}
+
 func TestResearchAllowlistAndNetworkChoice(t *testing.T) {
-	for _, network := range []bool{false, true} {
-		t.Run(map[bool]string{false: "off", true: "on"}[network], func(t *testing.T) {
-			r, transport := researchReporter(t)
-			r.settings.NetworkIdentity = network
-			value := config.Default()
-			value.WAN.Interface = "private0"
-			value.WAN.VLANMAC = "aa:bb:cc:dd:ee:ff"
-			value.WAN.DHCPOptions = []string{"-V", "private-token"}
-			value.WAN.StaticAddress = "192.168.199.7/24"
-			value.WAN.NATDestinations = append(value.WAN.NATDestinations, "192.168.199.0/24", "11.22.33.44/32")
-			called := false
-			lookup := func(context.Context) NetworkIdentity {
-				called = true
-				return NetworkIdentity{IP: "11.22.33.44", PTR: "Customer.KPN.NET."}
-			}
-			if err := r.RecordConfiguration(context.Background(), value, true, lookup); err != nil {
-				t.Fatal(err)
-			}
-			data, err := json.Marshal(transport.events[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, secret := range []string{"private0", "aa:bb", "private-token", "192.168.199", "11.22.33.44/32", "fingerprint"} {
-				if strings.Contains(string(data), secret) {
-					t.Fatalf("report leaked %s", secret)
-				}
-			}
-			if called != network || strings.Contains(string(data), "Customer.KPN.NET.") != network {
-				t.Fatal("network preference ignored")
-			}
-			report := reportAt(t, transport, 0)
-			if report.Settings.CustomNAT != 2 {
-				t.Fatal("custom-prefix count lost")
-			}
-			if network && (report.Network.Provider != "kpn" || report.Network.Confidence != "low") {
-				t.Fatal("PTR hint lost or overconfident")
-			}
-		})
+	for _, test := range []networkChoiceCase{
+		{name: "off", network: false},
+		{name: "on", network: true, provider: "kpn", method: "ptr-suffix", confidence: "low"},
+	} {
+		t.Run(test.name, func(t *testing.T) { runNetworkChoiceCase(t, test) })
 	}
 }
 
@@ -191,39 +278,45 @@ func TestResearchOptOutAndForgedEvents(t *testing.T) {
 	}
 }
 
+func assertRejectedFeedback(t *testing.T, r *Reporter) {
+	t.Helper()
+	for _, test := range []struct{ name, answer, provider string }{
+		{"free text", "arbitrary private text", ""},
+		{"arbitrary provider", "working", "private-customer"},
+	} {
+		if err := r.Feedback(test.answer, test.provider); err == nil {
+			t.Fatalf("%s accepted", test.name)
+		}
+	}
+}
+
 func TestResearchResetAndFeedback(t *testing.T) {
 	r, transport := researchReporter(t)
-	err := r.RecordConfiguration(context.Background(), config.Default(), true, nil)
-	if err != nil {
+	if err := r.RecordConfiguration(context.Background(), config.Default(), true, nil); err != nil {
 		t.Fatal(err)
 	}
 	old := r.installationID()
-	if len(old) != 32 {
-		t.Fatal("identity missing")
-	}
-	err = ResetIdentity(r.stateDir)
-	if err != nil {
+	assertEqual(t, "identity length", len(old), 32)
+	if err := ResetIdentity(r.stateDir); err != nil {
 		t.Fatal(err)
 	}
-	if id := r.installationID(); id == old || len(id) != 32 {
+	fresh := r.installationID()
+	assertEqual(t, "identity length after reset", len(fresh), 32)
+	if fresh == old {
 		t.Fatal("running reporter did not notice reset")
 	}
-	err = r.Feedback("problems", "freedom")
-	if err != nil {
+	if err := r.Feedback("problems", "freedom"); err != nil {
 		t.Fatal(err)
 	}
 	report := reportAt(t, transport, 1)
-	if report.Feedback != "problems" || report.ConfirmedProvider != "freedom" || report.Revision != 0 || !report.LastAppliedChange.IsZero() {
-		t.Fatal("reset retained history or feedback lost")
+	assertEqual(t, "feedback", report.Feedback, "problems")
+	assertEqual(t, "confirmed provider", report.ConfirmedProvider, "freedom")
+	assertEqual(t, "revision after reset", report.Revision, uint64(0))
+	assertTimeCheck(t, "last applied change after reset", report.LastAppliedChange, timeZero)
+	if report.Settings != nil {
+		t.Fatalf("reset retained settings history: %+v", report.Settings)
 	}
-	err = r.Feedback("arbitrary private text", "")
-	if err == nil {
-		t.Fatal("free text accepted")
-	}
-	err = r.Feedback("working", "private-customer")
-	if err == nil {
-		t.Fatal("arbitrary provider accepted")
-	}
+	assertRejectedFeedback(t, r)
 }
 
 func TestResearchRejectsSymlinks(t *testing.T) {
@@ -244,30 +337,42 @@ func TestResearchRejectsSymlinks(t *testing.T) {
 	}
 }
 
+type lookupCase struct {
+	name     string
+	body     string
+	called   bool
+	ip       string
+	provider string
+	method   string
+}
+
+func runLookupCase(t *testing.T, test lookupCase) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(test.body)) }))
+	defer server.Close()
+	called := false
+	result := lookupNetwork(context.Background(), server.Client(), server.URL, func(_ context.Context, ip string) ([]string, error) {
+		called = true
+		assertEqual(t, "PTR address", ip, "11.22.33.44")
+
+		return []string{"customer.kpn.net."}, nil
+	})
+	assertEqual(t, "PTR lookup performed", called, test.called)
+	assertEqual(t, "public IP", result.IP, test.ip)
+	assertEqual(t, "detected provider", result.Provider, test.provider)
+	assertEqual(t, "detection method", result.Method, test.method)
+}
+
 func TestNetworkLookupIsBoundedAndUsesPTR(t *testing.T) {
-	for _, body := range []string{"11.22.33.44", "192.168.1.1", strings.Repeat("1", 66)} {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
-		called := false
-		result := lookupNetwork(context.Background(), server.Client(), server.URL, func(_ context.Context, ip string) ([]string, error) {
-			called = true
-			if ip != "11.22.33.44" {
-				t.Fatal("wrong PTR address")
-			}
-			return []string{"customer.kpn.net."}, nil
-		})
-		server.Close()
-		if body == "11.22.33.44" {
-			if !called || result.Provider != "kpn" || result.Method != "ptr-suffix" {
-				t.Fatal("missing provider hint")
-			}
-		} else if called || result.IP != "" {
-			t.Fatal("invalid external-IP response accepted")
-		}
+	for _, test := range []lookupCase{
+		{name: "public address", body: "11.22.33.44", called: true, ip: "11.22.33.44", provider: "kpn", method: "ptr-suffix"},
+		{name: "private address", body: "192.168.1.1", called: false, ip: "", provider: "unknown", method: "none"},
+		{name: "oversized body", body: strings.Repeat("1", 66), called: false, ip: "", provider: "unknown", method: "none"},
+	} {
+		t.Run(test.name, func(t *testing.T) { runLookupCase(t, test) })
 	}
 	for _, name := range []string{"notkpn.net", "kpn.net.attacker.invalid", "customer\n.kpn.net"} {
 		result := cleanIdentity(NetworkIdentity{IP: "11.22.33.44", PTR: name})
-		if result.Provider != "unknown" {
-			t.Fatal("unsafe PTR matching")
-		}
+		assertEqual(t, "provider for "+name, result.Provider, "unknown")
 	}
 }

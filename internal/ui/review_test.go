@@ -13,37 +13,67 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
-func TestSuggestedProviderIsDraftUntilReview(t *testing.T) {
-	for _, accept := range []bool{false, true} {
-		value := config.Default()
-		original := clone(value)
-		calls := 0
-		err := ConfigureSuggested(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {
-			form := wizard.Form
-			calls++
-			if calls == 1 && form.GetFocusedField().GetValue() != "NL" {
-				t.Fatal("suggested country not preselected")
-			}
-			if calls == 2 && form.GetFocusedField().GetValue() != choiceOf("tweak", "tweak") {
-				t.Fatal("suggestion not preselected")
-			}
-			if calls == 4 && !accept {
-				return huh.ErrUserAborted
-			}
+type suggestionResult struct {
+	value, before config.Config
+	err           error
+	calls         int
+}
 
-			return nil
-		}, "tweak")
-		if calls != 4 {
-			t.Fatalf("missing review: %d calls", calls)
+func assertPreselected(t *testing.T, wizard *Wizard, preselected map[int]string, call int) {
+	t.Helper()
+	want, ok := preselected[call]
+	if !ok {
+		return
+	}
+	if got := wizard.Form.GetFocusedField().GetValue(); got != want {
+		t.Fatalf("form %d preselects %v, want %q", call, got, want)
+	}
+}
+
+func runSuggestedWizard(t *testing.T, suggestion string, preselected map[int]string, abortAt int) suggestionResult {
+	t.Helper()
+	value := config.Default()
+	result := suggestionResult{before: clone(value)}
+	result.err = ConfigureSuggested(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {
+		result.calls++
+		assertPreselected(t, wizard, preselected, result.calls)
+		if result.calls == abortAt {
+			return huh.ErrUserAborted
 		}
-		if accept {
-			if err != nil || value.Profile != "tweak" {
-				t.Fatalf("selection not applied: %v", err)
-			}
-		} else if !errors.Is(err, huh.ErrUserAborted) || !reflect.DeepEqual(value, original) {
+
+		return nil
+	}, suggestion)
+	result.value = value
+
+	return result
+}
+
+func TestSuggestedProviderIsDraftUntilReview(t *testing.T) {
+	const reviewForm = 4
+	preselected := map[int]string{1: "NL", 2: choiceOf("tweak", "tweak")}
+
+	t.Run("accept", func(t *testing.T) {
+		result := runSuggestedWizard(t, "tweak", preselected, 0)
+		assertEqual(t, "forms", result.calls, reviewForm)
+		if result.err != nil {
+			t.Fatalf("selection not applied: %v", result.err)
+		}
+		assertEqual(t, "profile", result.value.Profile, "tweak")
+		if reflect.DeepEqual(result.value, result.before) {
+			t.Fatal("accepted review left the settings untouched")
+		}
+	})
+
+	t.Run("decline", func(t *testing.T) {
+		result := runSuggestedWizard(t, "tweak", preselected, reviewForm)
+		assertEqual(t, "forms", result.calls, reviewForm)
+		if !errors.Is(result.err, huh.ErrUserAborted) {
+			t.Fatalf("decline returned %v, want %v", result.err, huh.ErrUserAborted)
+		}
+		if !reflect.DeepEqual(result.value, result.before) {
 			t.Fatal("cancelled review changed settings")
 		}
-	}
+	})
 }
 
 func TestReviewDeclinePreservesConfiguration(t *testing.T) {
@@ -108,7 +138,7 @@ func TestInlineInputValidation(t *testing.T) {
 	if got := splitList(" 1.0.0.0/8,2.0.0.0/8 ;\t3.0.0.0/8, "); !reflect.DeepEqual(got, []string{"1.0.0.0/8", "2.0.0.0/8", "3.0.0.0/8"}) {
 		t.Fatalf("splitList = %v", got)
 	}
-	if validateInterface("eth8") != nil || validateInterface("../bad") == nil {
+	if config.ValidateInterfaceName("eth8") != nil || config.ValidateInterfaceName("../bad") == nil {
 		t.Fatal("bad interface validation")
 	}
 }

@@ -6,7 +6,7 @@ permissions: { contents: read }
 jobs:
   ci:
     uses: $/.github/workflows/ci.yml
-    permissions: { contents: read, packages: read }
+    permissions: { contents: read, packages: read, pull-requests: read }
     with: { release: true }
 
   attest:

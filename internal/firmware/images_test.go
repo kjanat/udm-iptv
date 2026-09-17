@@ -15,6 +15,11 @@ import (
 	"time"
 )
 
+var (
+	errResponseCloseFailed = errors.New("response close failed")
+	errOutputUnavailable   = errors.New("output unavailable")
+)
+
 type fakeRunner struct {
 	calls        []string
 	visibility   string
@@ -50,30 +55,70 @@ func (r *fakeRunner) Inspect(_ context.Context, ref string) (Image, error) {
 
 func (r *fakeRunner) Run(_ context.Context, w io.Writer, name string, args ...string) error {
 	r.calls = append(r.calls, name+" "+strings.Join(args, " "))
-	if name == "gh" {
-		_, err := fmt.Fprint(w, r.visibility)
+	handler, known := map[string]func(io.Writer, []string) error{
+		"gh":     r.runGitHub,
+		"sudo":   r.runSudo,
+		"docker": r.runDocker,
+	}[name]
+	if !known {
+		return nil
+	}
 
-		return err
-	}
-	if name == "sudo" && args[0] == "rm" {
-		return os.RemoveAll(args[len(args)-1])
-	}
-	if name == "docker" && args[0] == "pull" {
-		r.pulled = true
-	}
-	if name == "docker" && args[0] == "image" {
-		value := "sha256:expected"
-		if len(args) > 4 && strings.Contains(args[3], "fingerprint") {
-			value = r.fingerprints[args[4]]
-		} else if r.mismatch && r.pulled {
-			value = "sha256:wrong"
-		}
-		_, err := fmt.Fprint(w, value)
+	return handler(w, args)
+}
 
-		return err
+func (r *fakeRunner) runGitHub(w io.Writer, _ []string) error {
+	if _, err := fmt.Fprint(w, r.visibility); err != nil {
+		return fmt.Errorf("write package visibility: %w", err)
 	}
 
 	return nil
+}
+
+func (r *fakeRunner) runSudo(_ io.Writer, args []string) error {
+	if args[0] != "rm" {
+		return nil
+	}
+	if err := os.RemoveAll(args[len(args)-1]); err != nil {
+		return fmt.Errorf("remove %s: %w", args[len(args)-1], err)
+	}
+
+	return nil
+}
+
+func (r *fakeRunner) runDocker(w io.Writer, args []string) error {
+	switch args[0] {
+	case "pull":
+		r.pulled = true
+	case "image":
+		if _, err := fmt.Fprint(w, r.inspected(args)); err != nil {
+			return fmt.Errorf("write image inspection: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (r *fakeRunner) inspected(args []string) string {
+	if len(args) > 4 && strings.Contains(args[3], "fingerprint") {
+		return r.fingerprints[args[4]]
+	}
+	if r.mismatch && r.pulled {
+		return "sha256:wrong"
+	}
+
+	return "sha256:expected"
+}
+
+func (r *fakeRunner) count(prefix string) int {
+	matched := 0
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, prefix) {
+			matched++
+		}
+	}
+
+	return matched
 }
 
 func TestPublishAliasesAndRemoteVerification(t *testing.T) {
@@ -121,12 +166,7 @@ func TestPublicationStopsOnFailure(t *testing.T) {
 			if err == nil {
 				t.Fatal("publication unexpectedly succeeded")
 			}
-			pushes := 0
-			for _, call := range runner.calls {
-				if strings.HasPrefix(call, "docker push ") {
-					pushes++
-				}
-			}
+			pushes := runner.count("docker push ")
 			if test.mismatch && pushes != 1 || !test.mismatch && pushes != 0 {
 				t.Fatalf("unexpected pushes: %d", pushes)
 			}
@@ -145,7 +185,7 @@ type failedCloseBody struct {
 func (body failedCloseBody) Close() error { return body.err }
 
 func TestHTTPFailuresRetainCloseError(t *testing.T) {
-	want := errors.New("response close failed")
+	want := errResponseCloseFailed
 	client := &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: failedCloseBody{strings.NewReader(""), want}}, nil
 	})}
@@ -163,7 +203,7 @@ func TestHTTPFailuresRetainCloseError(t *testing.T) {
 func TestCachedBuildReportsOutputFailure(t *testing.T) {
 	pair := pairFor("udmpro")
 	runner := &fakeRunner{fingerprints: map[string]string{testImage + ":udmpro-" + pair[0].Version: Fingerprint("udmpro", pair[0])}}
-	want := errors.New("output unavailable")
+	want := errOutputUnavailable
 	pipeline := Pipeline{Runner: runner, Images: runner, Log: failingExtractWriter{want}}
 	err := pipeline.Build(t.Context(), testImage, "udmpro", t.TempDir(), pair)
 	if !errors.Is(err, want) || !strings.Contains(err.Error(), "report cached firmware image") {
@@ -173,20 +213,35 @@ func TestCachedBuildReportsOutputFailure(t *testing.T) {
 
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func buildFixture(image []byte, checksum, cached bool) ([]Release, *fakeRunner) {
+	pair := pairFor("udmpro")
+	runner := &fakeRunner{fingerprints: make(map[string]string)}
+	for i := range pair {
+		if checksum {
+			pair[i].SHA256 = fmt.Sprintf("%x", sha256.Sum256(image))
+		}
+		if cached {
+			runner.fingerprints[testImage+":udmpro-"+pair[i].Version] = Fingerprint("udmpro", pair[i])
+		}
+	}
+
+	return pair, runner
+}
+
 func TestBuildCacheAndChecksum(t *testing.T) {
-	for _, mode := range []string{"cache", "download", "bad-checksum"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		checksum, cached   bool
+		fails              bool
+		downloads, imports int
+	}{
+		{"cache", true, true, false, 0, 0},
+		{"download", true, false, false, 2, 2},
+		{"bad-checksum", false, false, true, 1, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			image := fixture(false)
-			pair := pairFor("udmpro")
-			runner := &fakeRunner{fingerprints: make(map[string]string)}
-			for i := range pair {
-				if mode != "bad-checksum" {
-					pair[i].SHA256 = fmt.Sprintf("%x", sha256.Sum256(image))
-				}
-				if mode == "cache" {
-					runner.fingerprints[testImage+":udmpro-"+pair[i].Version] = Fingerprint("udmpro", pair[i])
-				}
-			}
+			pair, runner := buildFixture(image, test.checksum, test.cached)
 			downloads := 0
 			client := &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
 				downloads++
@@ -196,17 +251,14 @@ func TestBuildCacheAndChecksum(t *testing.T) {
 			p := Pipeline{Runner: runner, Images: runner, Client: client, Log: io.Discard}
 			cache := t.TempDir()
 			err := p.Build(t.Context(), testImage, "udmpro", cache, pair)
-			if (err != nil) != (mode == "bad-checksum") {
+			if (err != nil) != test.fails {
 				t.Fatalf("build: %v", err)
 			}
-			imports := 0
-			for _, call := range runner.calls {
-				if strings.HasPrefix(call, "docker import ") {
-					imports++
-				}
+			if downloads != test.downloads {
+				t.Fatalf("downloads=%d, want %d", downloads, test.downloads)
 			}
-			if mode == "cache" && downloads != 0 || mode == "download" && imports != 2 || mode == "bad-checksum" && imports != 0 {
-				t.Fatalf("downloads=%d imports=%d", downloads, imports)
+			if imports := runner.count("docker import "); imports != test.imports {
+				t.Fatalf("imports=%d, want %d", imports, test.imports)
 			}
 			entries, err := os.ReadDir(cache)
 			if err != nil || len(entries) != 0 {

@@ -59,28 +59,13 @@ func (model captureModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var commands []tea.Cmd
 	switch typed := message.(type) {
 	case tea.KeyPressMsg:
-		if typed.String() == "ctrl+c" || typed.String() == "q" {
+		if closesViewer(typed) {
 			return model, tea.Quit
 		}
 	case tea.WindowSizeMsg:
-		model.viewport.SetWidth(max(minViewportWidth, typed.Width))
-		model.viewport.SetHeight(max(minViewportHeight, typed.Height-chromeHeight))
+		model = model.resized(typed)
 	case captureTick:
-		data, err := os.ReadFile(model.capturePath)
-		if err == nil {
-			content := string(data)
-			followBottom := model.viewport.AtBottom()
-			model.viewport.SetContent(content)
-			if followBottom {
-				model.viewport.GotoBottom()
-			}
-			model.done = strings.Contains(content, "Capture completed:") || strings.Contains(content, `"type":"completed"`)
-			model.failed = strings.Contains(content, "Capture failed:") || strings.Contains(content, `"type":"failed"`) ||
-				strings.Contains(content, "Capture timed out:") || strings.Contains(content, `"type":"timeout"`)
-			if model.completion.IsZero() {
-				model.completion = captureCompletion(content)
-			}
-		}
+		model = model.refreshed()
 		if model.done || model.failed {
 			return model, tea.Quit
 		}
@@ -93,6 +78,55 @@ func (model captureModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	commands = append(commands, spinnerCommand, command)
 
 	return model, tea.Batch(commands...)
+}
+
+func closesViewer(msg tea.KeyPressMsg) bool {
+	return msg.String() == "ctrl+c" || msg.String() == "q"
+}
+
+func (model captureModel) resized(msg tea.WindowSizeMsg) captureModel {
+	model.viewport.SetWidth(max(minViewportWidth, msg.Width))
+	model.viewport.SetHeight(max(minViewportHeight, msg.Height-chromeHeight))
+
+	return model
+}
+
+func (model captureModel) refreshed() captureModel {
+	data, err := os.ReadFile(model.capturePath)
+	if err != nil {
+		return model
+	}
+	content := string(data)
+	followBottom := model.viewport.AtBottom()
+	model.viewport.SetContent(content)
+	if followBottom {
+		model.viewport.GotoBottom()
+	}
+	model.done = captureCompleted(content)
+	model.failed = captureStopped(content)
+	if model.completion.IsZero() {
+		model.completion = captureCompletion(content)
+	}
+
+	return model
+}
+
+func captureCompleted(content string) bool {
+	return containsAny(content, "Capture completed:", `"type":"completed"`)
+}
+
+func captureStopped(content string) bool {
+	return containsAny(content, "Capture failed:", `"type":"failed"`, "Capture timed out:", `"type":"timeout"`)
+}
+
+func containsAny(content string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(content, marker) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (model captureModel) View() tea.View {

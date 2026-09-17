@@ -18,14 +18,139 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
+var (
+	errSecret          = errors.New("secret")
+	errSecretFirst     = errors.New("secret first")
+	errLeakyPayload    = errors.New("password=supersecret 192.0.2.55 /home/private-router/config.json")
+	errOperationFailed = errors.New("failure")
+	errPrivateFailure  = errors.New("private failure")
+)
+
 type recordingTransport struct {
 	mu         sync.Mutex
 	events     []*sentry.Event
 	configured bool
 }
 
+func (t *recordingTransport) Configure(sentry.ClientOptions) { t.configured = true }
+func (t *recordingTransport) SendEvent(event *sentry.Event) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.events = append(t.events, event)
+}
+func (*recordingTransport) Flush(time.Duration) bool              { return true }
+func (*recordingTransport) FlushWithContext(context.Context) bool { return true }
+func (*recordingTransport) Close()                                {}
+
 func newTestReporter(settings config.Telemetry, transport sentry.Transport) (*Reporter, error) {
 	return newReporter(settings, "test", transport, "https://public@example.invalid/1")
+}
+
+func testSettings() config.Telemetry {
+	settings := config.Default().Telemetry
+	settings.Enabled, settings.TraceRate = true, 1
+
+	return settings
+}
+
+func newRecordingReporter(t *testing.T, settings config.Telemetry) (*Reporter, *recordingTransport) {
+	t.Helper()
+	transport := &recordingTransport{}
+	r, err := newTestReporter(settings, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return r, transport
+}
+
+func assertEqual[T comparable](t *testing.T, name string, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s = %v, want %v", name, got, want)
+	}
+}
+
+func assertNoSecrets(t *testing.T, data string, secrets ...string) {
+	t.Helper()
+	for _, secret := range secrets {
+		if strings.Contains(data, secret) {
+			t.Fatalf("leaked %q: %s", secret, data)
+		}
+	}
+}
+
+func assertNoLeaks(t *testing.T, events []*sentry.Event, secrets ...string) {
+	t.Helper()
+	for _, event := range events {
+		for _, value := range []any{event, event.Logs, event.Metrics} {
+			data, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNoSecrets(t, string(data), secrets...)
+		}
+	}
+}
+
+type productCounts struct {
+	failures int
+	traces   int
+	logs     int
+	metrics  int
+}
+
+func countProducts(events []*sentry.Event) productCounts {
+	var counts productCounts
+	for _, event := range events {
+		if len(event.Exception) > 0 {
+			counts.failures++
+		}
+		if event.Type == "transaction" {
+			counts.traces++
+		}
+		counts.logs += len(event.Logs)
+		counts.metrics += len(event.Metrics)
+	}
+
+	return counts
+}
+
+func failureEvents(events []*sentry.Event) []*sentry.Event {
+	var result []*sentry.Event
+	for _, event := range events {
+		if len(event.Exception) > 0 {
+			result = append(result, event)
+		}
+	}
+
+	return result
+}
+
+func countNamedMetric(events []*sentry.Event, name string) int {
+	var total int
+	for _, event := range events {
+		for _, metric := range event.Metrics {
+			if metric.Name == name {
+				total++
+			}
+		}
+	}
+
+	return total
+}
+
+func countErrorLogs(events []*sentry.Event) int {
+	var total int
+	for _, event := range events {
+		for _, log := range event.Logs {
+			if log.Level == sentry.LogLevelError {
+				total++
+			}
+		}
+	}
+
+	return total
 }
 
 func TestMissingBuildEndpointDoesNotUseEnvironment(t *testing.T) {
@@ -58,48 +183,45 @@ func TestBuildEndpoint(t *testing.T) {
 	}
 }
 
-func (t *recordingTransport) Configure(sentry.ClientOptions) { t.configured = true }
-func (t *recordingTransport) SendEvent(event *sentry.Event) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.events = append(t.events, event)
-}
-func (*recordingTransport) Flush(time.Duration) bool              { return true }
-func (*recordingTransport) FlushWithContext(context.Context) bool { return true }
-func (*recordingTransport) Close()                                {}
-
-func testSettings() config.Telemetry {
-	settings := config.Default().Telemetry
-	settings.Enabled, settings.TraceRate = true, 1
-
-	return settings
+func assertPrivacyFilters(t *testing.T, options sentry.ClientOptions) {
+	t.Helper()
+	if options.BeforeSend == nil {
+		t.Fatal("errors are missing their privacy filter")
+	}
+	if options.BeforeSendTransaction == nil {
+		t.Fatal("traces are missing their privacy filter")
+	}
+	if options.BeforeSendLog == nil {
+		t.Fatal("logs are missing their privacy filter")
+	}
+	if options.BeforeSendMetric == nil {
+		t.Fatal("metrics are missing their privacy filter")
+	}
+	if options.TracesSampler != nil {
+		t.Fatal("SDK ignored configured fixed sampling rate")
+	}
 }
 
 func TestSDKConfigurationPreservesPrivacyAndSampling(t *testing.T) {
 	settings := testSettings()
 	settings.TraceRate = 0.2
-	r, err := newTestReporter(settings, &recordingTransport{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	r, _ := newRecordingReporter(t, settings)
 	defer r.Close()
 	options := r.client.Options()
 	collection := r.client.GetDataCollection()
-	if collection.UserInfo.Or(true) || options.Debug {
-		t.Fatal("SDK enabled personal data collection or debug output")
-	}
-	if len(collection.HTTPBodies) != 0 || collection.Cookies.Mode != sentry.CollectionOff || collection.QueryParams.Mode != sentry.CollectionOff || collection.HTTPHeaders.Request.Mode != sentry.CollectionOff || collection.HTTPHeaders.Response.Mode != sentry.CollectionOff {
-		t.Fatal("SDK enabled automatic HTTP data collection")
-	}
-	if !options.EnableTracing || options.TracesSampleRate != 0.2 || options.TracesSampler != nil {
-		t.Fatal("SDK ignored configured fixed sampling rate")
-	}
-	if options.BeforeSend == nil || options.BeforeSendTransaction == nil || options.BeforeSendLog == nil || options.BeforeSendMetric == nil {
-		t.Fatal("a telemetry product is missing its privacy filter")
-	}
-	if options.Release != "udm-iptv@test" || options.Environment != "production" || options.ServerName != "udm-iptv" {
-		t.Fatal("SDK metadata defaults changed")
-	}
+	assertEqual(t, "personal data collection", collection.UserInfo.Or(true), false)
+	assertEqual(t, "debug output", options.Debug, false)
+	assertEqual(t, "collected HTTP bodies", len(collection.HTTPBodies), 0)
+	assertEqual(t, "cookie collection", collection.Cookies.Mode, sentry.CollectionOff)
+	assertEqual(t, "query parameter collection", collection.QueryParams.Mode, sentry.CollectionOff)
+	assertEqual(t, "request header collection", collection.HTTPHeaders.Request.Mode, sentry.CollectionOff)
+	assertEqual(t, "response header collection", collection.HTTPHeaders.Response.Mode, sentry.CollectionOff)
+	assertEqual(t, "tracing", options.EnableTracing, true)
+	assertEqual(t, "traces sample rate", options.TracesSampleRate, 0.2)
+	assertEqual(t, "release", options.Release, "udm-iptv@test")
+	assertEqual(t, "environment", options.Environment, "production")
+	assertEqual(t, "server name", options.ServerName, "udm-iptv")
+	assertPrivacyFilters(t, options)
 }
 
 func TestDisabledDoesNotInitializeSDK(t *testing.T) {
@@ -114,7 +236,8 @@ func TestDisabledDoesNotInitializeSDK(t *testing.T) {
 	called := false
 	_ = r.Run(context.Background(), "install", func(context.Context) error {
 		called = true
-		return errors.New("secret")
+
+		return errSecret
 	})
 	r.Gauge(context.Background(), "daemon.uptime", 1)
 	r.Close()
@@ -123,70 +246,57 @@ func TestDisabledDoesNotInitializeSDK(t *testing.T) {
 	}
 }
 
-func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
-	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), transport)
-	if err != nil {
-		t.Fatal(err)
+type exceptionRelations struct {
+	groups  int
+	parents int
+}
+
+func relationsOf(t *testing.T, exceptions []sentry.Exception) exceptionRelations {
+	t.Helper()
+	ids := map[int]bool{}
+	for _, exception := range exceptions {
+		if exception.Mechanism == nil {
+			t.Fatal("missing relationship")
+		}
+		ids[exception.Mechanism.ExceptionID] = true
 	}
-	cause := fmt.Errorf("secret wrapper: %w", errors.Join(errors.New("secret first"), &os.PathError{Op: "open", Path: "/secret/path", Err: os.ErrPermission}))
+	var result exceptionRelations
+	for _, exception := range exceptions {
+		if exception.Mechanism.IsExceptionGroup {
+			result.groups++
+		}
+		parent := exception.Mechanism.ParentID
+		if parent == nil {
+			continue
+		}
+		result.parents++
+		if !ids[*parent] {
+			t.Fatal("dangling parent")
+		}
+	}
+
+	return result
+}
+
+func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
+	cause := fmt.Errorf("secret wrapper: %w", errors.Join(errSecretFirst, &os.PathError{Op: "open", Path: "/secret/path", Err: os.ErrPermission}))
 	if err := r.Run(context.Background(), "install", func(context.Context) error { return cause }); !errors.Is(err, cause) {
 		t.Fatal("local error changed")
 	}
 	r.Close()
-	var failures int
-	for _, event := range transport.events {
-		if len(event.Exception) == 0 {
-			continue
-		}
-		failures++
-		if len(event.Exception) != 5 {
-			t.Fatalf("lost error chain: %+v", event.Exception)
-		}
-		ids := map[int]bool{}
-		groups, parents := 0, 0
-		for _, exception := range event.Exception {
-			if exception.Mechanism == nil {
-				t.Fatal("missing relationship")
-			}
-			ids[exception.Mechanism.ExceptionID] = true
-			if exception.Mechanism.IsExceptionGroup {
-				groups++
-			}
-		}
-		for _, exception := range event.Exception {
-			if parent := exception.Mechanism.ParentID; parent != nil {
-				parents++
-				if !ids[*parent] {
-					t.Fatal("dangling parent")
-				}
-			}
-		}
-		if groups != 1 || parents != 4 {
-			t.Fatalf("groups=%d parents=%d", groups, parents)
-		}
-		data, err := json.Marshal(event)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(data), "secret") {
-			t.Fatalf("private data leaked: %s", data)
-		}
-	}
-	if failures != 1 {
-		t.Fatalf("expected one grouped event, got %d", failures)
-	}
+	failures := failureEvents(transport.events)
+	assertEqual(t, "grouped events", len(failures), 1)
+	assertEqual(t, "error chain length", len(failures[0].Exception), 5)
+	assertEqual(t, "exception relationships", relationsOf(t, failures[0].Exception), exceptionRelations{groups: 1, parents: 4})
+	assertNoLeaks(t, failures, "secret")
 }
 
 func TestAllProductsAndPrivacy(t *testing.T) {
-	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), transport)
-	if err != nil {
-		t.Fatal(err)
-	}
+	r, transport := newRecordingReporter(t, testSettings())
 	r.SetMetadata("UDMPRO", "5.1.31", "improxy", "kpn")
-	secret := "password=supersecret 192.0.2.55 /home/private-router/config.json"
-	err = r.Run(context.Background(), "install", func(context.Context) error { return errors.New(secret) })
+	secret := errLeakyPayload.Error()
+	err := r.Run(context.Background(), "install", func(context.Context) error { return errLeakyPayload })
 	if err == nil || err.Error() != secret {
 		t.Fatal("local error was changed")
 	}
@@ -194,121 +304,126 @@ func TestAllProductsAndPrivacy(t *testing.T) {
 	r.Close()
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
-	var errorsSeen, traces, logs, metrics int
-	for _, event := range transport.events {
-		if len(event.Exception) > 0 {
-			errorsSeen++
-		}
-		if event.Type == "transaction" {
-			traces++
-		}
-		logs += len(event.Logs)
-		metrics += len(event.Metrics)
-		for _, value := range []any{event, event.Logs, event.Metrics} {
-			data, err := json.Marshal(value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, forbidden := range []string{"supersecret", "192.0.2.55", "private-router", "sentry.server.address", "server_name"} {
-				if strings.Contains(string(data), forbidden) {
-					t.Fatalf("leaked %q: %s", forbidden, data)
-				}
-			}
-		}
-	}
-	if errorsSeen != 1 || traces != 1 || logs != 2 || metrics != 4 {
-		t.Fatalf("missing products: errors=%d traces=%d logs=%d metrics=%d", errorsSeen, traces, logs, metrics)
-	}
+	assertNoLeaks(t, transport.events, "supersecret", "192.0.2.55", "private-router", "sentry.server.address", "server_name")
+	assertEqual(t, "delivered products", countProducts(transport.events), productCounts{failures: 1, traces: 1, logs: 2, metrics: 4})
 }
 
-func TestFiltersDiscardUnknownData(t *testing.T) {
-	r, err := newTestReporter(testSettings(), &recordingTransport{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
+func noisyEvent() *sentry.Event {
 	event := &sentry.Event{Transaction: "install", ServerName: "secret-host", Message: "secret-message", User: sentry.User{IPAddress: "192.0.2.55"}}
 	event.Contexts = map[string]sentry.Context{"device": {"secret": "secret-context"}}
 	event.Contexts["trace"] = sentry.Context{"trace_id": sentry.TraceID{1}, "span_id": sentry.SpanID{2}, "secret": "secret-trace-data"}
 	event.Attachments = []*sentry.Attachment{{Filename: "secret-file", Payload: []byte("secret-config")}}
 	event.Exception = []sentry.Exception{{Type: "error", Value: "secret-error", Stacktrace: &sentry.Stacktrace{Frames: []sentry.Frame{{Filename: "/home/secret/file.go", AbsPath: "secret-path", Vars: map[string]any{"password": "secret"}, ContextLine: "secret-source", Function: "main.run", Lineno: 42}}}}}
 	event.Exception[0].Mechanism = &sentry.Mechanism{Type: "secret", Description: "secret", Source: "secret", HelpLink: "secret", Data: map[string]any{"secret": "secret"}}
-	clean := r.filterEvent(event, nil)
-	if clean.Exception[0].Value != "install failed" {
-		t.Fatalf("unexpected exception message: %q", clean.Exception[0].Value)
+
+	return event
+}
+
+func assertAttribute(t *testing.T, subject string, attributes map[string]attribute.Value, name, want string) {
+	t.Helper()
+	value, ok := attributes[name].AsInterface().(string)
+	if !ok || value != want {
+		t.Fatalf("%s attribute %s = %v, want %q", subject, name, attributes[name].AsInterface(), want)
 	}
+}
+
+func assertAbsentAttributes(t *testing.T, subject string, attributes map[string]attribute.Value, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		if _, kept := attributes[name]; kept {
+			t.Fatalf("%s kept %s", subject, name)
+		}
+	}
+}
+
+func assertEventFiltered(t *testing.T, r *Reporter) {
+	t.Helper()
+	clean := r.filterEvent(noisyEvent(), nil)
+	if clean == nil {
+		t.Fatal("allowed event dropped")
+	}
+	assertEqual(t, "exception message", clean.Exception[0].Value, "install failed")
+	assertEqual(t, "attachments", len(clean.Attachments), 0)
+	assertEqual(t, "diagnostic stack location", clean.Exception[0].Stacktrace.Frames[0].Lineno, 42)
 	data, err := json.Marshal(clean)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "secret") || len(clean.Attachments) != 0 {
-		t.Fatalf("unfiltered event: %s", data)
-	}
-	if clean.Exception[0].Stacktrace.Frames[0].Lineno != 42 {
-		t.Fatal("lost diagnostic stack location")
-	}
+	assertNoSecrets(t, string(data), "secret")
+}
+
+func assertLogsFiltered(t *testing.T, r *Reporter) {
+	t.Helper()
 	log := r.filterLog(&sentry.Log{Body: "install completed", Attributes: map[string]attribute.Value{"secret": attribute.StringValue("secret")}})
-	if _, exists := log.Attributes["secret"]; exists {
-		t.Fatal("log attributes leaked")
+	if log == nil {
+		t.Fatal("allowed log dropped")
 	}
+	assertAbsentAttributes(t, "log", log.Attributes, "secret")
 	if r.filterLog(&sentry.Log{Body: "password=secret"}) != nil {
 		t.Fatal("raw log accepted")
 	}
+}
+
+func assertMetricsFiltered(t *testing.T, r *Reporter) {
+	t.Helper()
 	wizard := r.filterMetric(&sentry.Metric{Name: "wizard.event", Attributes: map[string]attribute.Value{
 		"event": attribute.StringValue("help"), "question": attribute.StringValue("vlan"), "answer": attribute.StringValue("4"),
 	}})
-	if wizard == nil || wizard.Attributes["event"].AsInterface() != "help" || wizard.Attributes["question"].AsInterface() != "vlan" {
-		t.Fatalf("wizard metric lost its allowed attributes: %v", wizard)
+	if wizard == nil {
+		t.Fatal("wizard metric dropped instead of stripped")
 	}
-	if _, leaked := wizard.Attributes["answer"]; leaked {
-		t.Fatal("wizard metric forwarded an answer")
-	}
+	assertAttribute(t, "wizard metric", wizard.Attributes, "event", "help")
+	assertAttribute(t, "wizard metric", wizard.Attributes, "question", "vlan")
+	assertAbsentAttributes(t, "wizard metric", wizard.Attributes, "answer")
 	odd := r.filterMetric(&sentry.Metric{Name: "wizard.event", Attributes: map[string]attribute.Value{
 		"event": attribute.StringValue("typed"), "question": attribute.StringValue("10.0.0.1/24"),
 	}})
 	if odd == nil {
 		t.Fatal("wizard metric dropped instead of stripped")
 	}
-	for _, name := range []string{"event", "question"} {
-		if _, kept := odd.Attributes[name]; kept {
-			t.Fatalf("wizard metric kept unlisted %s", name)
-		}
-	}
+	assertAbsentAttributes(t, "wizard metric", odd.Attributes, "event", "question")
 	if r.filterMetric(&sentry.Metric{Name: "secret.address"}) != nil {
 		t.Fatal("unknown metric accepted")
 	}
 }
 
+func TestFiltersDiscardUnknownData(t *testing.T) {
+	r, _ := newRecordingReporter(t, testSettings())
+	defer r.Close()
+	assertEventFiltered(t, r)
+	assertLogsFiltered(t, r)
+	assertMetricsFiltered(t, r)
+}
+
+func assertOnlyProduct(t *testing.T, settings config.Telemetry, product string) {
+	t.Helper()
+	r, transport := newRecordingReporter(t, settings)
+	_ = r.Run(context.Background(), "install", func(context.Context) error { return errOperationFailed })
+	r.Close()
+	counts := countProducts(transport.events)
+	for name, total := range map[string]int{"errors": counts.failures, "logs": counts.logs, "metrics": counts.metrics, "tracing": counts.traces} {
+		if name == product {
+			if total == 0 {
+				t.Fatalf("enabled product %s sent nothing", name)
+			}
+
+			continue
+		}
+		assertEqual(t, "records for disabled product "+name, total, 0)
+	}
+}
+
 func TestProductSwitches(t *testing.T) {
-	for _, product := range []string{"errors", "logs", "metrics", "tracing"} {
-		t.Run(product, func(t *testing.T) {
-			settings := config.Telemetry{Enabled: true, TraceRate: 1}
-			switch product {
-			case "errors":
-				settings.Errors = true
-			case "logs":
-				settings.Logs = true
-			case "metrics":
-				settings.Metrics = true
-			case "tracing":
-				settings.Tracing = true
-			}
-			transport := &recordingTransport{}
-			r, err := newTestReporter(settings, transport)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_ = r.Run(context.Background(), "install", func(context.Context) error { return errors.New("failure") })
-			r.Close()
-			for _, event := range transport.events {
-				if (len(event.Exception) > 0 && product != "errors") || (len(event.Logs) > 0 && product != "logs") || (len(event.Metrics) > 0 && product != "metrics") || (event.Type == "transaction" && product != "tracing") {
-					t.Fatalf("disabled product sent: %s", event.Type)
-				}
-			}
-			if len(transport.events) == 0 {
-				t.Fatal("enabled product missing")
-			}
-		})
+	for _, test := range []struct {
+		name     string
+		settings config.Telemetry
+	}{
+		{"errors", config.Telemetry{Enabled: true, TraceRate: 1, Errors: true}},
+		{"logs", config.Telemetry{Enabled: true, TraceRate: 1, Logs: true}},
+		{"metrics", config.Telemetry{Enabled: true, TraceRate: 1, Metrics: true}},
+		{"tracing", config.Telemetry{Enabled: true, TraceRate: 1, Tracing: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) { assertOnlyProduct(t, test.settings, test.name) })
 	}
 }
 
@@ -320,40 +435,27 @@ func TestPersistentLimitsAndRevokedConsent(t *testing.T) {
 			t.Fatal("budget exhausted early")
 		}
 	}
-	if allowPersisted(dir, "errors", 5, now) {
-		t.Fatal("new process could bypass budget")
-	}
-	if allowPersisted(dir, "errors", 5, now.Add(-time.Hour)) {
-		t.Fatal("clock rollback reset budget")
-	}
-	if !allowPersisted(dir, "errors", 5, now.Add(time.Minute)) {
-		t.Fatal("budget did not renew")
-	}
+	assertEqual(t, "budget after exhaustion", allowPersisted(dir, "errors", 5, now), false)
+	assertEqual(t, "budget after clock rollback", allowPersisted(dir, "errors", 5, now.Add(-time.Hour)), false)
+	assertEqual(t, "budget in the next window", allowPersisted(dir, "errors", 5, now.Add(time.Minute)), true)
 	path := filepath.Join(dir, "config.json")
 	value := config.Default()
 	value.Telemetry = testSettings()
 	if err := config.Save(path, value); err != nil {
 		t.Fatal(err)
 	}
-	r, err := newTestReporter(value.Telemetry, &recordingTransport{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	r, _ := newRecordingReporter(t, value.Telemetry)
 	defer r.Close()
 	r.configPath = path
 	value.Telemetry.Enabled = false
 	if err := config.Save(path, value); err != nil {
 		t.Fatal(err)
 	}
-	if r.allow("logs", 30) {
-		t.Fatal("revoked consent ignored")
-	}
+	assertEqual(t, "reporting after revoked consent", r.allow("logs", 30), false)
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if r.allow("metrics", 60) {
-		t.Fatal("unreadable consent enabled reporting")
-	}
+	assertEqual(t, "reporting with unreadable consent", r.allow("metrics", 60), false)
 }
 
 func TestNestedTracesPreserveChildTimings(t *testing.T) {
@@ -384,41 +486,32 @@ func TestNestedTracesPreserveChildTimings(t *testing.T) {
 	}
 }
 
-func TestPanicIsReportedWithoutSwallowingOrLeakingValue(t *testing.T) {
-	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), transport)
-	if err != nil {
-		t.Fatal(err)
-	}
-	func() {
-		defer func() {
-			if recover() != "secret panic" {
-				t.Error("panic changed or swallowed")
-			}
-		}()
-		_ = r.Run(context.Background(), "daemon", func(context.Context) error { panic("secret panic") })
+func runPanickingOperation(t *testing.T, r *Reporter) {
+	t.Helper()
+	defer func() {
+		if recover() != "secret panic" {
+			t.Error("panic changed or swallowed")
+		}
 	}()
+	_ = r.Run(context.Background(), "daemon", func(context.Context) error { panic("secret panic") })
+}
+
+func assertUnhandledPanic(t *testing.T, event *sentry.Event) {
+	t.Helper()
+	mechanism := event.Exception[0].Mechanism
+	if mechanism == nil || mechanism.Handled == nil || *mechanism.Handled {
+		t.Fatal("panic was not marked unhandled")
+	}
+}
+
+func TestPanicIsReportedWithoutSwallowingOrLeakingValue(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
+	runPanickingOperation(t, r)
 	r.Close()
-	var failures int
-	for _, event := range transport.events {
-		if len(event.Exception) == 0 {
-			continue
-		}
-		failures++
-		if mechanism := event.Exception[0].Mechanism; mechanism == nil || mechanism.Handled == nil || *mechanism.Handled {
-			t.Fatal("panic was not marked unhandled")
-		}
-		data, err := json.Marshal(event)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(data), "secret panic") {
-			t.Fatal("panic value leaked")
-		}
-	}
-	if failures != 1 {
-		t.Fatalf("panic reports: %d", failures)
-	}
+	failures := failureEvents(transport.events)
+	assertEqual(t, "panic reports", len(failures), 1)
+	assertUnhandledPanic(t, failures[0])
+	assertNoLeaks(t, failures, "secret panic")
 }
 
 func TestZeroTraceRateSendsNoTraces(t *testing.T) {
@@ -438,12 +531,34 @@ func TestZeroTraceRateSendsNoTraces(t *testing.T) {
 	}
 }
 
-func TestErrorsAndLogsKeepActiveSpan(t *testing.T) {
-	transport := &recordingTransport{}
-	r, err := newTestReporter(testSettings(), transport)
-	if err != nil {
-		t.Fatal(err)
+func correlatedFailures(t *testing.T, event *sentry.Event, spans map[string]*sentry.Span) int {
+	t.Helper()
+	if len(event.Exception) == 0 {
+		return 0
 	}
+	span := spans[event.Transaction]
+	trace := event.Contexts["trace"]
+	if span == nil || trace["trace_id"] != span.TraceID || trace["span_id"] != span.SpanID {
+		t.Fatalf("error lost its active span: %+v", trace)
+	}
+
+	return 1
+}
+
+func correlatedLogs(t *testing.T, event *sentry.Event, spans map[string]*sentry.Span) int {
+	t.Helper()
+	for _, log := range event.Logs {
+		span := spans[strings.Fields(log.Body)[0]]
+		if span == nil || log.TraceID != span.TraceID || log.SpanID != span.SpanID {
+			t.Fatalf("log lost its active span: %+v", log)
+		}
+	}
+
+	return len(event.Logs)
+}
+
+func TestErrorsAndLogsKeepActiveSpan(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
 	spans := map[string]*sentry.Span{}
 	_ = r.Run(context.Background(), "install", func(ctx context.Context) error {
 		spans["install"] = sentry.SpanFromContext(ctx)
@@ -451,78 +566,59 @@ func TestErrorsAndLogsKeepActiveSpan(t *testing.T) {
 		return r.Run(ctx, "service.health", func(ctx context.Context) error {
 			spans["service.health"] = sentry.SpanFromContext(ctx)
 
-			return errors.New("private failure")
+			return errPrivateFailure
 		})
 	})
 	r.Close()
-	var failures, logs int
+	failures, logs := 0, 0
 	for _, event := range transport.events {
-		if len(event.Exception) > 0 {
-			failures++
-			span := spans[event.Transaction]
-			trace := event.Contexts["trace"]
-			if span == nil || trace["trace_id"] != span.TraceID || trace["span_id"] != span.SpanID {
-				t.Fatalf("error lost its active span: %+v", trace)
-			}
-		}
-		for _, log := range event.Logs {
-			logs++
-			span := spans[strings.Fields(log.Body)[0]]
-			if span == nil || log.TraceID != span.TraceID || log.SpanID != span.SpanID {
-				t.Fatalf("log lost its active span: %+v", log)
-			}
-		}
+		failures += correlatedFailures(t, event, spans)
+		logs += correlatedLogs(t, event, spans)
 	}
-	if failures != 2 || logs != 4 {
-		t.Fatalf("missing correlated records: errors=%d logs=%d", failures, logs)
+	assertEqual(t, "correlated errors", failures, 2)
+	assertEqual(t, "correlated logs", logs, 4)
+}
+
+type outcomeCase struct {
+	name      string
+	err       error
+	status    sentry.SpanStatus
+	failures  int
+	errorLogs int
+}
+
+func assertTraceStatus(t *testing.T, events []*sentry.Event, status sentry.SpanStatus) {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != "transaction" {
+			continue
+		}
+		if event.Contexts["trace"]["status"] != status {
+			t.Fatalf("wrong status: %+v", event.Contexts["trace"])
+		}
 	}
 }
 
+func assertOutcomeSignals(t *testing.T, test outcomeCase) {
+	t.Helper()
+	r, transport := newRecordingReporter(t, testSettings())
+	if err := r.Run(context.Background(), "install", func(context.Context) error { return test.err }); !errors.Is(err, test.err) {
+		t.Fatal("operation result changed")
+	}
+	r.Close()
+	counts := countProducts(transport.events)
+	assertEqual(t, "traces", counts.traces, 1)
+	assertEqual(t, "errors", counts.failures, test.failures)
+	assertEqual(t, "failed-operation metrics", countNamedMetric(transport.events, "operation.failed"), test.failures)
+	assertEqual(t, "error logs", countErrorLogs(transport.events), test.errorLogs)
+	assertTraceStatus(t, transport.events, test.status)
+}
+
 func TestCancellationAndDeadlineTraceStatus(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		err      error
-		status   sentry.SpanStatus
-		failures int
-	}{
-		{"cancelled", context.Canceled, sentry.SpanStatusCanceled, 0},
-		{"deadline", context.DeadlineExceeded, sentry.SpanStatusDeadlineExceeded, 1},
+	for _, test := range []outcomeCase{
+		{name: "cancelled", err: context.Canceled, status: sentry.SpanStatusCanceled, failures: 0, errorLogs: 0},
+		{name: "deadline", err: context.DeadlineExceeded, status: sentry.SpanStatusDeadlineExceeded, failures: 1, errorLogs: 1},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			transport := &recordingTransport{}
-			r, err := newTestReporter(testSettings(), transport)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := r.Run(context.Background(), "install", func(context.Context) error { return test.err }); !errors.Is(err, test.err) {
-				t.Fatal("operation result changed")
-			}
-			r.Close()
-			var traces, failures, failedMetrics int
-			for _, event := range transport.events {
-				if event.Type == "transaction" {
-					traces++
-					if event.Contexts["trace"]["status"] != test.status {
-						t.Fatalf("wrong status: %+v", event.Contexts["trace"])
-					}
-				}
-				if len(event.Exception) > 0 {
-					failures++
-				}
-				for _, metric := range event.Metrics {
-					if metric.Name == "operation.failed" {
-						failedMetrics++
-					}
-				}
-				for _, log := range event.Logs {
-					if test.failures == 0 && log.Level == sentry.LogLevelError {
-						t.Fatal("cancellation logged as error")
-					}
-				}
-			}
-			if traces != 1 || failures != test.failures || failedMetrics != test.failures {
-				t.Fatalf("unexpected signals: traces=%d errors=%d failed metrics=%d", traces, failures, failedMetrics)
-			}
-		})
+		t.Run(test.name, func(t *testing.T) { assertOutcomeSignals(t, test) })
 	}
 }

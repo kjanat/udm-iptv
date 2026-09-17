@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -14,13 +15,13 @@ func TestDownstreamMissingDataIsNotHealthy(t *testing.T) {
 		"class/net/br1/bridge/multicast_snooping": {Data: []byte("secret-unexpected-value")},
 	}
 	links := inspectDownstream(system, []string{"br0", "br1", "eth0.10"})
-	if links[0].Link != "up" || links[0].Snooping != "enabled" || links[0].Querier != "disabled" {
-		t.Fatalf("local bridge state: %+v", links[0])
+	want := []downstreamStatus{
+		{Interface: "br0", Link: "up", Snooping: "enabled", Querier: "disabled"},
+		{Interface: "br1", Link: notChecked, Snooping: notChecked, Querier: notChecked},
+		{Interface: "eth0.10", Link: notChecked, Snooping: notChecked, Querier: notChecked},
 	}
-	for _, link := range links[1:] {
-		if link.Snooping != "not checked" || link.Querier != "not checked" || link.Link != "not checked" {
-			t.Fatalf("unknown became healthy: %+v", link)
-		}
+	if !reflect.DeepEqual(links, want) {
+		t.Fatalf("unknown became healthy: %+v", links)
 	}
 	text := RenderSnapshot(Snapshot{Downstream: links})
 	for _, required := range []string{"Switch firmware/settings: not checked", "Native UniFi proxy: not checked", "TV playback: not checked"} {

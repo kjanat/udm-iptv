@@ -23,15 +23,15 @@ import (
 const binary = "/data/udm-iptv/bin/udm-iptv"
 
 type firmwareHarness struct {
-	t                                *testing.T
-	root, packagePath, data, overlay string
-	containers                       []string
-	engine                           *client.Client
-	artifact                         [sha256.Size]byte
+	t                                    *testing.T
+	root, packagePath, data, overlay, id string
+	containers                           []string
+	engine                               *client.Client
+	artifact                             [sha256.Size]byte
 }
 
-// The firmware build tag separates privileged lifecycle tests from unit tests.
-func TestFirmwareLifecycle(t *testing.T) {
+func firmwareImages(t *testing.T) (string, string) {
+	t.Helper()
 	if runtime.GOARCH != "arm64" {
 		t.Fatal("firmware tests require a native ARM64 runner")
 	}
@@ -39,6 +39,12 @@ func TestFirmwareLifecycle(t *testing.T) {
 	if from == "" || to == "" || from == to {
 		t.Fatal("two distinct firmware images are required")
 	}
+
+	return from, to
+}
+
+func newFirmwareHarness(t *testing.T) *firmwareHarness {
+	t.Helper()
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -62,12 +68,18 @@ func TestFirmwareLifecycle(t *testing.T) {
 	if _, err := os.Stat(h.packagePath); err != nil {
 		t.Fatal(err)
 	}
-	id := fmt.Sprintf("udm-iptv-firmware-%d-%d", os.Getpid(), time.Now().UnixNano())
-	h.data, h.overlay = id+"-data", id+"-etc"
+	h.id = fmt.Sprintf("udm-iptv-firmware-%d-%d", os.Getpid(), time.Now().UnixNano())
+	h.data, h.overlay = h.id+"-data", h.id+"-etc"
 	t.Cleanup(h.cleanup)
 	h.docker("volume", "create", h.data)
 	h.docker("volume", "create", h.overlay)
-	for _, image := range []string{from, to} {
+
+	return h
+}
+
+func (h *firmwareHarness) requirePersistenceContract(images ...string) {
+	h.t.Helper()
+	for _, image := range images {
 		if _, err := h.tryDocker("image", "inspect", image); err != nil {
 			h.docker("pull", image)
 		}
@@ -76,103 +88,140 @@ func TestFirmwareLifecycle(t *testing.T) {
 grep -Fq 'upperdir=${MNT_RWFS}/data' /usr/share/initramfs-tools/scripts/ubnt
 if grep -Eq '^etc/systemd/system/?$' /usr/share/initramfs-tools/scripts/ubnt; then exit 1; fi`)
 	}
-	first := id + "-from"
-	t.Log("Install the Debian package on the previous firmware")
-	h.boot(first, from, false)
+}
+
+func (h *firmwareHarness) installPreviousPackage(name, image string) {
+	h.t.Helper()
+	h.boot(name, image, false)
 	// Preconfigure a static test network with reporting disabled, using the
 	// real CLI. No background harness process supplies fake DHCP readiness.
-	h.inside(first, "dpkg-deb", "-x", "/package.deb", "/run/package")
-	h.inside(first, "/run/package"+binary, "configure", "--non-interactive", "--profile", "kpn",
+	h.inside(name, "dpkg-deb", "-x", "/package.deb", "/run/package")
+	h.inside(name, "/run/package"+binary, "configure", "--non-interactive", "--profile", "kpn",
 		"--wan-interface", "eth8", "--lan-interface", "br0", "--dhcp=false",
 		"--static-address", "198.51.100.2/24", "--telemetry=false")
-	h.inside(first, "apt-get", "update")
+	h.inside(name, "apt-get", "update")
 	// Exercise a package-version upgrade without depending on a past Go release.
-	h.inside(first, "sh", "-ec", `
+	h.inside(name, "sh", "-ec", `
 dpkg-deb -R /package.deb /run/previous-package
 sed -i '/^Version:/s/$/~firmware-test/' /run/previous-package/DEBIAN/control
 dpkg-deb -Zxz --root-owner-group -b /run/previous-package /run/previous.deb
 apt-get install -y /run/previous.deb`)
-	h.healthy(first)
-	t.Log("Upgrade to the current Debian package")
-	h.inside(first, "apt-get", "install", "-y", "/package.deb")
-	h.healthy(first)
-	version := strings.TrimSpace(h.inside(first, binary, "version"))
-	h.inside(first, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
-	originalConfig := h.readConfig(first)
-	h.inside(first, "bash", "-c", "source /etc/bash_completion.d/udm-iptv; complete -p udm-iptv")
-	h.capture(first)
-	t.Log("A failed service must fail installation")
-	h.inside(first, "sh", "-ec", `mkdir -p /run/systemd/system/udm-iptv.service.d
+	h.healthy(name)
+}
+
+func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
+	h.t.Helper()
+	h.inside(name, "apt-get", "install", "-y", "/package.deb")
+	h.healthy(name)
+	version := strings.TrimSpace(h.inside(name, binary, "version"))
+	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
+	config := h.readConfig(name)
+	h.inside(name, "bash", "-c", "source /etc/bash_completion.d/udm-iptv; complete -p udm-iptv")
+	h.capture(name)
+
+	return version, config
+}
+
+func (h *firmwareHarness) requireFailedServiceBlocksInstall(name string) {
+	h.t.Helper()
+	h.inside(name, "sh", "-ec", `mkdir -p /run/systemd/system/udm-iptv.service.d
 printf '[Service]\nExecStart=\nExecStart=/bin/false\n' > /run/systemd/system/udm-iptv.service.d/failure.conf
 systemctl daemon-reload`)
-	h.inside(first, "sh", "-ec", `if "$1" install --force --non-interactive > /run/install-failure.log 2>&1; then
+	h.inside(name, "sh", "-ec", `if "$1" install --force --non-interactive > /run/install-failure.log 2>&1; then
  cat /run/install-failure.log
  exit 1
 fi
 cat /run/install-failure.log
 if grep -q 'Automatic startup enabled' /run/install-failure.log; then exit 1; fi`, "failure-check", binary)
-	h.inside(first, "rm", "/run/systemd/system/udm-iptv.service.d/failure.conf")
-	h.inside(first, "systemctl", "daemon-reload")
-	h.inside(first, "systemctl", "reset-failed", "udm-iptv.service")
-	h.inside(first, binary, "restart")
-	h.healthy(first)
+	h.inside(name, "rm", "/run/systemd/system/udm-iptv.service.d/failure.conf")
+	h.inside(name, "systemctl", "daemon-reload")
+	h.inside(name, "systemctl", "reset-failed", "udm-iptv.service")
+	h.inside(name, binary, "restart")
+	h.healthy(name)
+}
+
+func (h *firmwareHarness) reboot(name string) {
+	h.t.Helper()
+	h.docker("stop", name)
+	h.docker("start", name)
+	h.waitBoot(name)
+}
+
+func (h *firmwareHarness) bootReplacement(name, image, version string, config []byte) {
+	h.t.Helper()
+	h.boot(name, image, true)
+	if got := strings.TrimSpace(h.docker("inspect", "-f", "{{.HostConfig.NetworkMode}}", name)); got != "none" {
+		h.t.Fatalf("firmware recovery has network access: %s", got)
+	}
+	h.inside(name, "test", "!", "-e", "/usr/share/udm-iptv/go-package")
+	h.inside(name, "sh", "-ec", "if command -v improxy; then exit 1; fi")
+	h.healthy(name)
+	h.assertConfig(name, config)
+	if got := strings.TrimSpace(h.inside(name, binary, "version")); got != version {
+		h.t.Fatalf("version changed: %s -> %s", version, got)
+	}
+	h.inside(name, "test", "-x", "/usr/local/bin/udm-iptv")
+	// Confirm the running process uses the saved runtime, not a substitute.
+	state := h.status(name)
+	executable := strings.TrimSpace(h.inside(name, "readlink", fmt.Sprintf("/proc/%d/exe", state.Service.ProxyPID)))
+	if !strings.HasPrefix(executable, "/data/udm-iptv/runtime/") {
+		h.t.Fatalf("proxy bypassed preserved runtime: %s", executable)
+	}
+	h.capture(name)
+}
+
+func (h *firmwareHarness) removeKeepingConfig(name string) {
+	h.t.Helper()
+	h.inside(name, binary, "uninstall", "--keep-config")
+	h.inside(name, "test", "-f", "/data/udm-iptv/config.json")
+	h.reboot(name)
+	h.inside(name, "test", "!", "-e", binary)
+	h.inside(name, "test", "!", "-e", "/etc/systemd/system/udm-iptv.service")
+}
+
+func (h *firmwareHarness) reinstallAndPurge(name string) {
+	h.t.Helper()
+	h.inside(name, "dpkg-deb", "-x", "/package.deb", "/run/package")
+	h.inside(name, "/run/package"+binary, "install", "--non-interactive")
+	h.healthy(name)
+	h.inside(name, binary, "uninstall")
+	h.reboot(name)
+	h.inside(name, "test", "!", "-e", "/data/udm-iptv")
+	h.inside(name, "test", "!", "-e", "/etc/systemd/system/udm-iptv.service")
+}
+
+// The firmware build tag separates privileged lifecycle tests from unit tests.
+func TestFirmwareLifecycle(t *testing.T) {
+	from, to := firmwareImages(t)
+	h := newFirmwareHarness(t)
+	h.requirePersistenceContract(from, to)
+	first, second := h.id+"-from", h.id+"-to"
+	t.Log("Install the Debian package on the previous firmware")
+	h.installPreviousPackage(first, from)
+	t.Log("Upgrade to the current Debian package")
+	version, originalConfig := h.upgradePackage(first)
+	t.Log("A failed service must fail installation")
+	h.requireFailedServiceBlocksInstall(first)
 
 	t.Log("Reboot without reinstalling or manually starting the service")
-	h.docker("stop", first)
-	h.docker("start", first)
-	h.waitBoot(first)
+	h.reboot(first)
 	h.healthy(first)
 	h.assertConfig(first, originalConfig)
 
 	t.Log("Swap firmware rootfs offline; erase the firmware proxy")
 	h.docker("stop", first)
-	second := id + "-to"
-	h.boot(second, to, true)
-	if got := strings.TrimSpace(h.docker("inspect", "-f", "{{.HostConfig.NetworkMode}}", second)); got != "none" {
-		t.Fatalf("firmware recovery has network access: %s", got)
-	}
-	h.inside(second, "test", "!", "-e", "/usr/share/udm-iptv/go-package")
-	h.inside(second, "sh", "-ec", "if command -v improxy; then exit 1; fi")
-	h.healthy(second)
-	h.assertConfig(second, originalConfig)
-	if got := strings.TrimSpace(h.inside(second, binary, "version")); got != version {
-		t.Fatalf("version changed: %s -> %s", version, got)
-	}
-	h.inside(second, "test", "-x", "/usr/local/bin/udm-iptv")
-	// Confirm the running process uses the saved runtime, not a substitute.
-	state := h.status(second)
-	executable := strings.TrimSpace(h.inside(second, "readlink", fmt.Sprintf("/proc/%d/exe", state.Service.ProxyPID)))
-	if !strings.HasPrefix(executable, "/data/udm-iptv/runtime/") {
-		t.Fatalf("proxy bypassed preserved runtime: %s", executable)
-	}
-	h.capture(second)
+	h.bootReplacement(second, to, version, originalConfig)
 
 	t.Log("Reboot the replacement firmware offline")
-	h.docker("stop", second)
-	h.docker("start", second)
-	h.waitBoot(second)
+	h.reboot(second)
 	h.healthy(second)
 	h.assertConfig(second, originalConfig)
 
 	t.Log("Remove while keeping configuration; reboot must stay removed")
-	h.inside(second, binary, "uninstall", "--keep-config")
-	h.inside(second, "test", "-f", "/data/udm-iptv/config.json")
-	h.docker("stop", second)
-	h.docker("start", second)
-	h.waitBoot(second)
-	h.inside(second, "test", "!", "-e", binary)
-	h.inside(second, "test", "!", "-e", "/etc/systemd/system/udm-iptv.service")
+	h.removeKeepingConfig(second)
 
 	t.Log("Reinstall standalone using the preserved proxy; then purge")
-	h.inside(second, "dpkg-deb", "-x", "/package.deb", "/run/package")
-	h.inside(second, "/run/package"+binary, "install", "--non-interactive")
-	h.healthy(second)
-	h.inside(second, binary, "uninstall")
-	h.docker("stop", second)
-	h.docker("start", second)
-	h.waitBoot(second)
-	h.inside(second, "test", "!", "-e", "/data/udm-iptv")
-	h.inside(second, "test", "!", "-e", "/etc/systemd/system/udm-iptv.service")
+	h.reinstallAndPurge(second)
 }
 
 func (h *firmwareHarness) docker(args ...string) string {
@@ -333,9 +382,7 @@ func (h *firmwareHarness) assertArtifact(name string) {
 	}
 }
 
-func (h *firmwareHarness) capture(name string) {
-	h.t.Helper()
-	output := h.inside(name, binary, "diagnose", "--capture", "5s", "--format", "both")
+func capturePaths(output string) (string, string) {
 	var textPath, jsonPath string
 	for line := range strings.SplitSeq(output, "\n") {
 		if value, ok := strings.CutPrefix(line, "Share-ready text: "); ok {
@@ -345,6 +392,31 @@ func (h *firmwareHarness) capture(name string) {
 			jsonPath = value
 		}
 	}
+
+	return textPath, jsonPath
+}
+
+func (h *firmwareHarness) assertCaptureCompleted(name, jsonPath string) {
+	h.t.Helper()
+	lines := strings.Split(strings.TrimSpace(h.inside(name, "cat", jsonPath)), "\n")
+	var last struct {
+		Type string `json:"type"`
+	}
+	for _, line := range lines {
+		err := json.Unmarshal([]byte(line), &last)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	if last.Type != "completed" {
+		h.t.Fatalf("incomplete capture: %s", last.Type)
+	}
+}
+
+func (h *firmwareHarness) capture(name string) {
+	h.t.Helper()
+	output := h.inside(name, binary, "diagnose", "--capture", "5s", "--format", "both")
+	textPath, jsonPath := capturePaths(output)
 	if textPath == "" || jsonPath == "" || !strings.Contains(output, "Expected completion:") {
 		h.t.Fatalf("missing capture instructions: %s", output)
 	}
@@ -359,19 +431,7 @@ exit 1`, "capture", textPath)
 			h.t.Fatalf("capture mode: %s", mode)
 		}
 	}
-	lines := strings.Split(strings.TrimSpace(h.inside(name, "cat", jsonPath)), "\n")
-	var last struct {
-		Type string `json:"type"`
-	}
-	for _, line := range lines {
-		err := json.Unmarshal([]byte(line), &last)
-		if err != nil {
-			h.t.Fatal(err)
-		}
-	}
-	if last.Type != "completed" {
-		h.t.Fatalf("incomplete capture: %s", last.Type)
-	}
+	h.assertCaptureCompleted(name, jsonPath)
 }
 
 func (h *firmwareHarness) cleanup() {

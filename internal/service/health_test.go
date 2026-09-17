@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+var (
+	errDBusUnavailable = errors.New("D-Bus unavailable")
+	errStartWaiting    = errors.New("start waiting")
+	errServiceMasked   = errors.New("service is masked")
+)
+
 func healthyProperties() map[string]any {
 	return map[string]any{
 		"LoadState": "loaded", "UnitFileState": "enabled", "ActiveState": "active",
@@ -47,43 +53,60 @@ func TestHealthRequiresEnabledUnmaskedRunningService(t *testing.T) {
 	}
 }
 
+// healthScenario is what a second reading of the service reports.
+type healthScenario struct {
+	name      string
+	property  string
+	value     any
+	proxyExit bool
+	proxyPID  int
+	readError bool
+	healthy   bool
+}
+
+func (scenario healthScenario) read() (healthSample, error) {
+	if scenario.readError {
+		return healthSample{}, errDBusUnavailable
+	}
+	properties := healthyProperties()
+	if scenario.property != "" {
+		properties[scenario.property] = scenario.value
+	}
+	state := RuntimeState{ProxyPID: 101}
+	if scenario.proxyPID != 0 {
+		state.ProxyPID = scenario.proxyPID
+	}
+
+	return checkedHealthSample(properties, state, !scenario.proxyExit)
+}
+
 func TestHealthRechecksBeforeSuccess(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"healthy", "disabled", "masked", "inactive", "proxy-exit", "proxy-restart", "daemon-restart", "restart-counter", "read-error"} {
-		t.Run(scenario, func(t *testing.T) {
+	for _, test := range []healthScenario{
+		{name: "healthy", healthy: true},
+		{name: "disabled", property: "UnitFileState", value: "disabled"},
+		{name: "masked", property: "LoadState", value: "masked"},
+		{name: "inactive", property: "ActiveState", value: "inactive"},
+		{name: "proxy-exit", proxyExit: true},
+		{name: "proxy-restart", proxyPID: 102},
+		{name: "daemon-restart", property: "MainPID", value: uint32(200)},
+		{name: "restart-counter", property: "NRestarts", value: uint32(3)},
+		{name: "read-error", readError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			calls := 0
 			err := observeServiceHealth(context.Background(), time.Second, 0, time.Millisecond, func(context.Context) (healthSample, error) {
 				calls++
-				properties := healthyProperties()
-				state := RuntimeState{ProxyPID: 101}
-				alive := true
-				if calls > 1 {
-					switch scenario {
-					case "disabled":
-						properties["UnitFileState"] = "disabled"
-					case "masked":
-						properties["LoadState"] = "masked"
-					case "inactive":
-						properties["ActiveState"] = "inactive"
-					case "proxy-exit":
-						alive = false
-					case "proxy-restart":
-						state.ProxyPID++
-					case "daemon-restart":
-						properties["MainPID"] = uint32(200)
-					case "restart-counter":
-						properties["NRestarts"] = uint32(3)
-					case "read-error":
-						return healthSample{}, errors.New("D-Bus unavailable")
-					}
+				if calls == 1 {
+					return checkedHealthSample(healthyProperties(), RuntimeState{ProxyPID: 101}, true)
 				}
 
-				return checkedHealthSample(properties, state, alive)
+				return test.read()
 			})
 			if calls != 2 {
 				t.Fatalf("expected final recheck, got %d reads", calls)
 			}
-			if (err == nil) != (scenario == "healthy") {
+			if (err == nil) != test.healthy {
 				t.Fatalf("unexpected result: %v", err)
 			}
 		})
@@ -98,7 +121,7 @@ func TestHealthWaitsForStartupAndObservation(t *testing.T) {
 	err := observeServiceHealth(context.Background(), time.Second, stable, time.Millisecond, func(context.Context) (healthSample, error) {
 		calls++
 		if calls == 1 {
-			return healthSample{}, errors.New("start waiting")
+			return healthSample{}, errStartWaiting
 		}
 
 		return checkedHealthSample(healthyProperties(), RuntimeState{ProxyPID: 101}, true)
@@ -111,7 +134,7 @@ func TestHealthWaitsForStartupAndObservation(t *testing.T) {
 func TestHealthTimeoutIncludesReason(t *testing.T) {
 	t.Parallel()
 	err := observeServiceHealth(context.Background(), 0, 0, time.Millisecond, func(context.Context) (healthSample, error) {
-		return healthSample{}, errors.New("service is masked")
+		return healthSample{}, errServiceMasked
 	})
 	if err == nil || !strings.Contains(err.Error(), "masked") {
 		t.Fatalf("missing failure reason: %v", err)

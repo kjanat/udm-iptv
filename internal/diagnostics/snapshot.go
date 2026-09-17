@@ -86,58 +86,95 @@ const ipMRCachePacketsColumn = 3
 func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	value, err := config.Load(application.ConfigPath)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, fmt.Errorf("load configuration for snapshot: %w", err)
 	}
 	result := Snapshot{
-		Timestamp: time.Now().UTC(), Version: application.Version, Config: configSummary{
-			Profile: value.Profile, WANInterface: value.WAN.Interface, VLAN: value.WAN.VLAN, IPTVInterface: value.WAN.VLANInterface,
-			CustomMAC: value.WAN.VLANMAC != "", DHCP: value.WAN.DHCP, DHCPOptions: len(value.WAN.DHCPOptions) > 0, StaticAddress: value.WAN.StaticAddress != "",
-			AllowDefaultRoute: value.WAN.AllowDefaultRoute, NATDestinations: sanitizePrefixes(value.WAN.NATDestinations),
-			LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion,
-			QuickLeave: value.Proxy.QuickLeave, Debug: value.Proxy.Debug, ProxySourceRanges: sanitizePrefixes(value.Proxy.SourceRanges),
-		},
+		Timestamp:  time.Now().UTC(),
+		Version:    application.Version,
+		Config:     summarizeConfig(value),
+		Service:    inspectService(ctx),
 		Network:    inspectLink(network.Target(value)),
+		Multicast:  multicastUsage(),
+		NAT:        managedNATRules(),
 		Downstream: inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces),
 	}
 	result.Switches, result.NativeProxy, result.Playback = notChecked, notChecked, notChecked
-	if state, stateErr := service.ReadRuntimeState(); stateErr == nil {
-		result.Service.Proxy = state.Proxy
-		result.Service.ProxyPID = state.ProxyPID
+
+	return result, nil
+}
+
+func summarizeConfig(value config.Config) configSummary {
+	return configSummary{
+		Profile: value.Profile, WANInterface: value.WAN.Interface, VLAN: value.WAN.VLAN, IPTVInterface: value.WAN.VLANInterface,
+		CustomMAC: value.WAN.VLANMAC != "", DHCP: value.WAN.DHCP, DHCPOptions: len(value.WAN.DHCPOptions) > 0, StaticAddress: value.WAN.StaticAddress != "",
+		AllowDefaultRoute: value.WAN.AllowDefaultRoute, NATDestinations: sanitizePrefixes(value.WAN.NATDestinations),
+		LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion,
+		QuickLeave: value.Proxy.QuickLeave, Debug: value.Proxy.Debug, ProxySourceRanges: sanitizePrefixes(value.Proxy.SourceRanges),
 	}
-	if connection, connectionErr := systemd.NewSystemConnectionContext(ctx); connectionErr == nil {
-		defer connection.Close()
-		if properties, propertyErr := connection.GetAllPropertiesContext(ctx, "udm-iptv.service"); propertyErr == nil {
-			result.Service.LoadState, _ = properties["LoadState"].(string)
-			result.Service.ActiveState, _ = properties["ActiveState"].(string)
-			result.Service.SubState, _ = properties["SubState"].(string)
-			result.Service.UnitFile, _ = properties["UnitFileState"].(string)
-			result.Service.Restarts = service.ParseCounter(properties["NRestarts"])
-		}
+}
+
+func inspectService(ctx context.Context) serviceStatus {
+	var status serviceStatus
+	if state, err := service.ReadRuntimeState(); err == nil {
+		status.Proxy = state.Proxy
+		status.ProxyPID = state.ProxyPID
 	}
-	if data, readErr := os.ReadFile("/proc/net/ip_mr_cache"); readErr == nil {
-		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(lines) > 1 {
-			result.Multicast.Routes = len(lines) - 1
-			for _, line := range lines[1:] {
-				fields := strings.Fields(line)
-				if len(fields) > ipMRCachePacketsColumn {
-					packets, _ := strconv.ParseUint(fields[ipMRCachePacketsColumn], 0, 64)
-					result.Multicast.Packets += packets
-				}
-			}
-		}
+	connection, err := systemd.NewSystemConnectionContext(ctx)
+	if err != nil {
+		return status
 	}
-	if table, tableErr := iptables.NewWithProtocol(iptables.ProtocolIPv4); tableErr == nil {
-		if rules, ruleErr := table.ListWithCounters("nat", "POSTROUTING"); ruleErr == nil {
-			for _, rule := range rules {
-				if strings.Contains(rule, "udm-iptv") {
-					result.NAT = append(result.NAT, sanitize(rule))
-				}
-			}
+	defer connection.Close()
+	properties, err := connection.GetAllPropertiesContext(ctx, "udm-iptv.service")
+	if err != nil {
+		return status
+	}
+	status.LoadState, _ = properties["LoadState"].(string)
+	status.ActiveState, _ = properties["ActiveState"].(string)
+	status.SubState, _ = properties["SubState"].(string)
+	status.UnitFile, _ = properties["UnitFileState"].(string)
+	status.Restarts = service.ParseCounter(properties["NRestarts"])
+
+	return status
+}
+
+func multicastUsage() multicastInfo {
+	data, err := os.ReadFile("/proc/net/ip_mr_cache")
+	if err != nil {
+		return multicastInfo{}
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) <= 1 {
+		return multicastInfo{}
+	}
+	usage := multicastInfo{Routes: len(lines) - 1}
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) > ipMRCachePacketsColumn {
+			packets, _ := strconv.ParseUint(fields[ipMRCachePacketsColumn], 0, 64)
+			usage.Packets += packets
 		}
 	}
 
-	return result, nil
+	return usage
+}
+
+func managedNATRules() []string {
+	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	if err != nil {
+		return nil
+	}
+	rules, err := table.ListWithCounters("nat", "POSTROUTING")
+	if err != nil {
+		return nil
+	}
+	var managed []string
+	for _, rule := range rules {
+		if strings.Contains(rule, "udm-iptv") {
+			managed = append(managed, sanitize(rule))
+		}
+	}
+
+	return managed
 }
 
 func inspectLink(target string) networkStatus {

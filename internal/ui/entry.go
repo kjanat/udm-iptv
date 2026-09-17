@@ -79,37 +79,61 @@ func (frame *Frame) answerEntry(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case msg.Code == tea.KeyEscape:
 		frame.closeEntry()
-	case msg.Code == tea.KeyUp && len(choices) > 0:
-		frame.entryCursor = (frame.entryCursor + len(choices) - 1) % len(choices)
-	case msg.Code == tea.KeyDown && len(choices) > 0:
-		frame.entryCursor = (frame.entryCursor + 1) % len(choices)
+	case msg.Code == tea.KeyUp:
+		frame.moveEntryCursor(-1, len(choices))
+	case msg.Code == tea.KeyDown:
+		frame.moveEntryCursor(1, len(choices))
 	case msg.Code == tea.KeyEnter:
-		if len(choices) == 0 {
-			return nil
-		}
-		choice := choices[min(frame.entryCursor, len(choices)-1)]
-		if choice.typed {
-			for _, name := range choice.values {
-				if err := frame.entry.validate(name); err != nil {
-					frame.entryErr = err
-
-					return nil
-				}
-			}
-		}
-		frame.entry.accept(frame.wizard.Form.GetFocusedField(), choice.values)
-		frame.closeEntry()
-
-		return frame.forward(searchChangedMsg{})
+		return frame.acceptEntry(choices)
 	case msg.Code == tea.KeyBackspace:
-		runes := []rune(frame.entryText)
-		if len(runes) > 0 {
-			frame.entryText = string(runes[:len(runes)-1])
-		}
-		frame.entryCursor, frame.entryErr = 0, nil
+		frame.eraseEntryRune()
 	case entryText(msg.Text):
 		frame.entryText += msg.Text
 		frame.entryCursor, frame.entryErr = 0, nil
+	}
+
+	return nil
+}
+
+func (frame *Frame) moveEntryCursor(delta, count int) {
+	if count == 0 {
+		return
+	}
+	frame.entryCursor = (frame.entryCursor + delta + count) % count
+}
+
+func (frame *Frame) eraseEntryRune() {
+	runes := []rune(frame.entryText)
+	if len(runes) > 0 {
+		frame.entryText = string(runes[:len(runes)-1])
+	}
+	frame.entryCursor, frame.entryErr = 0, nil
+}
+
+func (frame *Frame) acceptEntry(choices []entryChoice) tea.Cmd {
+	if len(choices) == 0 {
+		return nil
+	}
+	choice := choices[min(frame.entryCursor, len(choices)-1)]
+	if err := frame.validateChoice(choice); err != nil {
+		frame.entryErr = err
+
+		return nil
+	}
+	frame.entry.accept(frame.wizard.Form.GetFocusedField(), choice.values)
+	frame.closeEntry()
+
+	return frame.forward(searchChangedMsg{})
+}
+
+func (frame *Frame) validateChoice(choice entryChoice) error {
+	if !choice.typed {
+		return nil
+	}
+	for _, name := range choice.values {
+		if err := frame.entry.validate(name); err != nil {
+			return err
+		}
 	}
 
 	return nil

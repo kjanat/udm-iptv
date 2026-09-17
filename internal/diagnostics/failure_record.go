@@ -11,6 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var errNotRegularFile = errors.New("report must be a regular file")
+
 // RecordFailure attempts both outputs, preserving every failure for stderr.
 func RecordFailure(options Options, cause error) error {
 	if cause == nil {
@@ -29,8 +31,7 @@ func RecordFailure(options Options, cause error) error {
 			if output.json {
 				return json.NewEncoder(writer).Encode(Event{Time: time.Now().UTC(), Type: "failed", Message: message})
 			}
-			_, err := fmt.Fprintf(writer, "\nCapture failed: %s\n", message)
-			return err
+			return writef(writer, "\nCapture failed: %s\n", message)
 		})
 		if err != nil {
 			result = errors.Join(result, fmt.Errorf("record capture failure in %s: %w", output.path, err))
@@ -64,7 +65,7 @@ func openReport(path string) (*os.File, error) {
 		return nil, errors.Join(fmt.Errorf("inspect report: %w", err), file.Close())
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.Join(errors.New("report must be a regular file"), file.Close())
+		return nil, errors.Join(errNotRegularFile, file.Close())
 	}
 	return file, nil
 }

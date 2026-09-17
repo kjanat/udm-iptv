@@ -3,6 +3,7 @@ package installer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,94 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
+
+var (
+	errInjectedStep        = errors.New("injected")
+	errInjectedHealthCheck = errors.New("health check failed")
+)
+
+type upgradeRecorder struct {
+	t        *testing.T
+	calls    []string
+	files    map[string]string
+	failures map[string]error
+	restarts int
+}
+
+func newUpgradeRecorder(t *testing.T, fail []string) *upgradeRecorder {
+	t.Helper()
+	recorder := &upgradeRecorder{t: t, files: map[string]string{"source": "new", "target": "old"}, failures: make(map[string]error)}
+	for _, name := range fail {
+		recorder.failures[name] = fmt.Errorf("%w %s", errInjectedStep, name)
+	}
+
+	return recorder
+}
+
+func (r *upgradeRecorder) step(name string) error {
+	r.calls = append(r.calls, name)
+
+	return r.failures[name]
+}
+
+func (r *upgradeRecorder) backup(target string) (string, error) {
+	if err := r.step("backup"); err != nil {
+		return "", err
+	}
+	r.files["backup"] = r.files[target]
+
+	return "backup", nil
+}
+
+func (r *upgradeRecorder) copy(source, target string) error {
+	name := "install"
+	if source == "backup" {
+		name = "restore"
+	}
+	if err := r.step(name); err != nil {
+		return err
+	}
+	r.files[target] = r.files[source]
+
+	return nil
+}
+
+func (r *upgradeRecorder) restart(_ context.Context, healthy bool) error {
+	if !healthy {
+		r.t.Fatal("restart omitted health verification")
+	}
+	r.restarts++
+	if r.restarts == 1 {
+		return r.step("activate")
+	}
+
+	return r.step("recover")
+}
+
+func (r *upgradeRecorder) remove(name string) error {
+	if err := r.step("cleanup"); err != nil {
+		return err
+	}
+	delete(r.files, name)
+
+	return nil
+}
+
+func (r *upgradeRecorder) actions() upgradeActions {
+	return upgradeActions{backup: r.backup, copy: r.copy, restart: r.restart, remove: r.remove}
+}
+
+func (r *upgradeRecorder) assertCauses(err error) {
+	r.t.Helper()
+	for _, cause := range r.failures {
+		if !errors.Is(err, cause) {
+			r.t.Fatalf("lost cause %v: %v", cause, err)
+		}
+	}
+	if len(r.failures) == 0 && err != nil {
+		r.t.Fatal(err)
+	}
+}
 
 func TestUpgradeFailureBoundaries(t *testing.T) {
 	for _, test := range []struct {
@@ -30,67 +119,13 @@ func TestUpgradeFailureBoundaries(t *testing.T) {
 		{"cleanup", []string{"cleanup"}, []string{"backup", "install", "activate", "cleanup"}, true, "new"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			files := map[string]string{"source": "new", "target": "old"}
-			var calls []string
-			failures := make(map[string]error)
-			for _, name := range test.fail {
-				failures[name] = errors.New("injected " + name)
+			recorder := newUpgradeRecorder(t, test.fail)
+			err := activateUpgrade(t.Context(), "source", "target", "next", recorder.actions())
+			recorder.assertCauses(err)
+			if !reflect.DeepEqual(recorder.calls, test.want) || recorder.files["target"] != test.target {
+				t.Fatalf("calls=%v files=%v", recorder.calls, recorder.files)
 			}
-			step := func(name string) error {
-				calls = append(calls, name)
-				return failures[name]
-			}
-			restarts := 0
-			actions := upgradeActions{
-				backup: func(target string) (string, error) {
-					if err := step("backup"); err != nil {
-						return "", err
-					}
-					files["backup"] = files[target]
-					return "backup", nil
-				},
-				copy: func(source, target string) error {
-					name := "install"
-					if source == "backup" {
-						name = "restore"
-					}
-					if err := step(name); err != nil {
-						return err
-					}
-					files[target] = files[source]
-					return nil
-				},
-				restart: func(_ context.Context, healthy bool) error {
-					if !healthy {
-						t.Fatal("restart omitted health verification")
-					}
-					restarts++
-					if restarts == 1 {
-						return step("activate")
-					}
-					return step("recover")
-				},
-				remove: func(name string) error {
-					if err := step("cleanup"); err != nil {
-						return err
-					}
-					delete(files, name)
-					return nil
-				},
-			}
-			err := activateUpgrade(t.Context(), "source", "target", "next", actions)
-			for _, cause := range failures {
-				if !errors.Is(err, cause) {
-					t.Fatalf("lost cause %v: %v", cause, err)
-				}
-			}
-			if len(failures) == 0 && err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(calls, test.want) || files["target"] != test.target {
-				t.Fatalf("calls=%v files=%v", calls, files)
-			}
-			_, retained := files["backup"]
+			_, retained := recorder.files["backup"]
 			if retained != test.backup {
 				t.Fatalf("backup retained=%t, want %t", retained, test.backup)
 			}
@@ -168,49 +203,61 @@ func TestCancelledUpgradeRetainsCompletedBackup(t *testing.T) {
 	}
 }
 
+func upgradeFixture(t *testing.T) (string, string, string) {
+	t.Helper()
+	directory := t.TempDir()
+	source, target := filepath.Join(directory, "download"), filepath.Join(directory, "udm-iptv")
+	for name, content := range map[string]string{source: "new", target: "old"} {
+		if err := atomicfile.Write(name, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return directory, source, target
+}
+
+func assertContent(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != want {
+		t.Fatalf("%s holds %q, want %q: %v", path, data, want, err)
+	}
+}
+
 func TestActivationWithFilesystem(t *testing.T) {
-	for _, outcome := range []string{"healthy", "rollback", "recovery-failure"} {
-		t.Run(outcome, func(t *testing.T) {
-			directory := t.TempDir()
-			source, target := filepath.Join(directory, "download"), filepath.Join(directory, "udm-iptv")
-			for name, content := range map[string]string{source: "new", target: "old"} {
-				if err := atomicfile.Write(name, []byte(content), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
+	for _, test := range []struct {
+		name                    string
+		failFirst, failRecovery bool
+		fails                   bool
+		installed               string
+		backups                 int
+	}{
+		{"healthy", false, false, false, "new", 0},
+		{"rollback", true, false, true, "old", 0},
+		{"recovery-failure", true, true, true, "old", 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory, source, target := upgradeFixture(t)
 			restarts := 0
 			actions := systemUpgradeActions(func(context.Context, bool) error {
 				restarts++
-				if outcome == "recovery-failure" || (outcome == "rollback" && restarts == 1) {
-					return errors.New("health check failed")
+				if restarts == 1 && test.failFirst || restarts > 1 && test.failRecovery {
+					return errInjectedHealthCheck
 				}
+
 				return nil
 			})
 			err := activateUpgrade(t.Context(), source, target, "next", actions)
-			if (err == nil) != (outcome == "healthy") {
+			if (err != nil) != test.fails {
 				t.Fatalf("activation outcome: %v", err)
 			}
-			want := "old"
-			if outcome == "healthy" {
-				want = "new"
-			}
-			data, err := os.ReadFile(target)
-			if err != nil || string(data) != want {
-				t.Fatalf("installed content: %q: %v", data, err)
-			}
+			assertContent(t, target, test.installed)
 			backups, err := filepath.Glob(filepath.Join(directory, ".udm-iptv.previous-*"))
-			wantBackups := 0
-			if outcome == "recovery-failure" {
-				wantBackups = 1
-			}
-			if err != nil || len(backups) != wantBackups {
+			if err != nil || len(backups) != test.backups {
 				t.Fatalf("recovery copies: %v: %v", backups, err)
 			}
 			for _, backup := range backups {
-				data, err := os.ReadFile(backup)
-				if err != nil || string(data) != "old" {
-					t.Fatalf("retained backup: %q: %v", data, err)
-				}
+				assertContent(t, backup, "old")
 			}
 		})
 	}

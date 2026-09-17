@@ -25,6 +25,19 @@ const (
 	dhcpBaseMetric = 200
 )
 
+var (
+	errInterfaceNotVLAN        = errors.New("interface already exists and is not a VLAN")
+	errInvalidRouteMetric      = errors.New("invalid route metric")
+	errMissingDHCPInterface    = errors.New("udhcpc did not provide an interface")
+	errLeaseAddressNotIPv4     = errors.New("DHCP lease address must be IPv4")
+	errBroadcastNotIPv4        = errors.New("DHCP broadcast address must be IPv4")
+	errInvalidClasslessRoutes  = errors.New("invalid RFC3442 classless route option")
+	errNegativeRouteMetric     = errors.New("DHCP route metric must not be negative")
+	errRouteDestinationNotIPv4 = errors.New("DHCP route destination must be IPv4")
+	errInvalidRouteGateway     = errors.New("invalid IPv4 route gateway")
+	errInvalidSubnetMask       = errors.New("invalid subnet mask")
+)
+
 // Target returns the interface IPTV traffic flows through: the VLAN
 // sub-interface when tagged, otherwise the WAN interface itself.
 func Target(value config.Config) string {
@@ -37,31 +50,24 @@ func Target(value config.Config) string {
 
 // EnsureLink brings up the WAN interface, creating the VLAN sub-interface when tagged.
 func EnsureLink(value config.Config) (netlink.Link, error) {
-	if value.WAN.VLAN == 0 {
-		link, err := netlink.LinkByName(value.WAN.Interface)
-		if err != nil {
-			return nil, fmt.Errorf("find WAN interface %s: %w", value.WAN.Interface, err)
-		}
-
-		return link, netlink.LinkSetUp(link)
-	}
 	parent, err := netlink.LinkByName(value.WAN.Interface)
 	if err != nil {
 		return nil, fmt.Errorf("find WAN interface %s: %w", value.WAN.Interface, err)
 	}
-	existing, lookupErr := netlink.LinkByName(value.WAN.VLANInterface)
-	if lookupErr == nil {
-		if _, ok := existing.(*netlink.Vlan); !ok {
-			return nil, fmt.Errorf("interface %s already exists and is not a VLAN", value.WAN.VLANInterface)
+	if value.WAN.VLAN == 0 {
+		if err := netlink.LinkSetUp(parent); err != nil {
+			return nil, fmt.Errorf("bring up WAN interface %s: %w", value.WAN.Interface, err)
 		}
-		err := netlink.LinkDel(existing)
-		if err != nil {
-			return nil, fmt.Errorf("replace managed VLAN interface %s: %w", value.WAN.VLANInterface, err)
-		}
-	} else {
-		if _, ok := errors.AsType[netlink.LinkNotFoundError](lookupErr); !ok {
-			return nil, fmt.Errorf("inspect VLAN interface %s: %w", value.WAN.VLANInterface, lookupErr)
-		}
+
+		return parent, nil
+	}
+
+	return ensureVLAN(value, parent)
+}
+
+func ensureVLAN(value config.Config, parent netlink.Link) (netlink.Link, error) {
+	if err := removeManagedVLAN(value.WAN.VLANInterface); err != nil {
+		return nil, err
 	}
 	attributes := netlink.NewLinkAttrs()
 	attributes.Name = value.WAN.VLANInterface
@@ -70,18 +76,43 @@ func EnsureLink(value config.Config) (netlink.Link, error) {
 	if err := netlink.LinkAdd(vlan); err != nil {
 		return nil, fmt.Errorf("create VLAN interface: %w", err)
 	}
-	if err := applyMAC(vlan, value.WAN.VLANMAC); err != nil {
-		_ = netlink.LinkDel(vlan)
-
-		return nil, err
-	}
-	if err := netlink.LinkSetUp(vlan); err != nil {
+	if err := startVLAN(vlan, value.WAN.VLANMAC); err != nil {
 		_ = netlink.LinkDel(vlan)
 
 		return nil, err
 	}
 
 	return vlan, nil
+}
+
+func removeManagedVLAN(name string) error {
+	existing, err := netlink.LinkByName(name)
+	if err != nil {
+		if _, ok := errors.AsType[netlink.LinkNotFoundError](err); !ok {
+			return fmt.Errorf("inspect VLAN interface %s: %w", name, err)
+		}
+
+		return nil
+	}
+	if _, ok := existing.(*netlink.Vlan); !ok {
+		return fmt.Errorf("%w: %s", errInterfaceNotVLAN, name)
+	}
+	if err := netlink.LinkDel(existing); err != nil {
+		return fmt.Errorf("replace managed VLAN interface %s: %w", name, err)
+	}
+
+	return nil
+}
+
+func startVLAN(vlan netlink.Link, address string) error {
+	if err := applyMAC(vlan, address); err != nil {
+		return err
+	}
+	if err := netlink.LinkSetUp(vlan); err != nil {
+		return fmt.Errorf("bring up VLAN interface %s: %w", vlan.Attrs().Name, err)
+	}
+
+	return nil
 }
 
 func applyMAC(link netlink.Link, address string) error {
@@ -92,15 +123,18 @@ func applyMAC(link netlink.Link, address string) error {
 	if err != nil {
 		return fmt.Errorf("parse VLAN MAC: %w", err)
 	}
+	if err := netlink.LinkSetHardwareAddr(link, mac); err != nil {
+		return fmt.Errorf("set VLAN MAC %s: %w", address, err)
+	}
 
-	return netlink.LinkSetHardwareAddr(link, mac)
+	return nil
 }
 
 // EnsureNAT adds MASQUERADE rules for value's NAT destinations, if not already present.
 func EnsureNAT(value config.Config) error {
 	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
-		return err
+		return fmt.Errorf("open the iptables NAT table: %w", err)
 	}
 	for _, destination := range value.WAN.NATDestinations {
 		rule := []string{"-d", destination, "-o", Target(value), "-j", "MASQUERADE", "-m", "comment", "--comment", "udm-iptv"}
@@ -117,7 +151,7 @@ func EnsureNAT(value config.Config) error {
 func RemoveNAT(value config.Config) error {
 	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
-		return err
+		return fmt.Errorf("open the iptables NAT table: %w", err)
 	}
 	var joined error
 	for _, destination := range value.WAN.NATDestinations {
@@ -137,20 +171,20 @@ func ApplyStatic(value config.Config, link netlink.Link) error {
 	if value.WAN.StaticAddress != "" {
 		address, err := netlink.ParseAddr(value.WAN.StaticAddress)
 		if err != nil {
-			return err
+			return fmt.Errorf("parse static address %s: %w", value.WAN.StaticAddress, err)
 		}
 		if err := netlink.AddrReplace(link, address); err != nil {
-			return err
+			return fmt.Errorf("apply static address %s: %w", value.WAN.StaticAddress, err)
 		}
 	}
 	for _, raw := range value.WAN.StaticRoutes {
 		prefix, err := netip.ParsePrefix(raw)
 		if err != nil {
-			return err
+			return fmt.Errorf("parse static route %s: %w", raw, err)
 		}
 		destination := &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), ipv4HostBits)}
 		if err := netlink.RouteReplace(&netlink.Route{LinkIndex: link.Attrs().Index, Dst: destination, Protocol: unix.RTPROT_STATIC}); err != nil {
-			return err
+			return fmt.Errorf("apply static route %s: %w", raw, err)
 		}
 	}
 
@@ -185,7 +219,7 @@ func LeaseFromEnvironment(action string) (Lease, error) {
 	if raw := first(os.Getenv("IF_METRIC"), os.Getenv("metric")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil {
-			return Lease{}, fmt.Errorf("invalid route metric %q", raw)
+			return Lease{}, fmt.Errorf("%w %q", errInvalidRouteMetric, raw)
 		}
 		metric = parsed
 	}
@@ -195,7 +229,7 @@ func LeaseFromEnvironment(action string) (Lease, error) {
 		Routers: strings.Fields(os.Getenv("router")), StaticRoutes: strings.Fields(os.Getenv("staticroutes")), Metric: metric,
 	}
 	if lease.Interface == "" {
-		return Lease{}, errors.New("udhcpc did not provide an interface")
+		return Lease{}, errMissingDHCPInterface
 	}
 
 	return lease, nil
@@ -265,12 +299,12 @@ func leaseAddress(lease Lease) (*netlink.Addr, int, error) {
 		return nil, 0, fmt.Errorf("parse DHCP address: %w", err)
 	}
 	if address.IP.To4() == nil {
-		return nil, 0, errors.New("DHCP lease address must be IPv4")
+		return nil, 0, errLeaseAddressNotIPv4
 	}
 	if lease.Broadcast != "" {
 		address.Broadcast = net.ParseIP(lease.Broadcast).To4()
 		if address.Broadcast == nil {
-			return nil, 0, errors.New("DHCP broadcast address must be IPv4")
+			return nil, 0, errBroadcastNotIPv4
 		}
 	}
 	return address, prefixLength, nil
@@ -307,7 +341,7 @@ func installLease(link netlink.Link, address *netlink.Addr, routes []netlink.Rou
 // host route over the on-link gateway before adding the route itself.
 func addStaticRoutes(add func(destination, gateway string, priority int) error, staticRoutes []string, prefixLength, metric int) error {
 	if len(staticRoutes)%2 != 0 {
-		return errors.New("invalid RFC3442 classless route option")
+		return errInvalidClasslessRoutes
 	}
 	for index := 0; index < len(staticRoutes); index += 2 {
 		if prefixLength == ipv4HostBits && staticRoutes[index+1] != "0.0.0.0" {
@@ -323,13 +357,27 @@ func addStaticRoutes(add func(destination, gateway string, priority int) error, 
 	return nil
 }
 
-func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute bool) ([]netlink.Route, error) {
-	metric := lease.Metric
-	if metric < 0 {
-		return nil, errors.New("DHCP route metric must not be negative")
+// addRouterRoutes adds a default route per advertised router, preferring a
+// host route over an off-subnet router before the default route itself.
+func addRouterRoutes(add func(destination, gateway string, priority int) error, routers []string, prefixLength, metric int) error {
+	for index, gateway := range routers {
+		if prefixLength == ipv4HostBits {
+			if err := add(gateway+"/32", "0.0.0.0", metric); err != nil {
+				return err
+			}
+		}
+		if err := add("0.0.0.0/0", gateway, metric+index); err != nil {
+			return err
+		}
 	}
-	if metric == 0 {
-		metric = dhcpBaseMetric + linkIndex
+
+	return nil
+}
+
+func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute bool) ([]netlink.Route, error) {
+	metric, err := leaseMetric(lease.Metric, linkIndex)
+	if err != nil {
+		return nil, err
 	}
 	var routes []netlink.Route
 	add := func(destination, gateway string, priority int) error {
@@ -348,21 +396,23 @@ func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute boo
 		return routes, nil
 	}
 	if allowDefaultRoute {
-		for index, gateway := range lease.Routers {
-			if prefixLength == ipv4HostBits {
-				err := add(gateway+"/32", "0.0.0.0", metric)
-				if err != nil {
-					return nil, err
-				}
-			}
-			err := add("0.0.0.0/0", gateway, metric+index)
-			if err != nil {
-				return nil, err
-			}
+		if err := addRouterRoutes(add, lease.Routers, prefixLength, metric); err != nil {
+			return nil, err
 		}
 	}
 
 	return routes, nil
+}
+
+func leaseMetric(metric, linkIndex int) (int, error) {
+	if metric < 0 {
+		return 0, errNegativeRouteMetric
+	}
+	if metric == 0 {
+		return dhcpBaseMetric + linkIndex, nil
+	}
+
+	return metric, nil
 }
 
 func sameAddress(left, right netlink.Addr) bool {
@@ -378,13 +428,13 @@ func sameAddress(left, right netlink.Addr) bool {
 func flushDHCPRoutes(linkIndex int) error {
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{LinkIndex: linkIndex}, netlink.RT_FILTER_OIF)
 	if err != nil {
-		return err
+		return fmt.Errorf("list DHCP routes: %w", err)
 	}
 	for _, route := range routes {
 		if int(route.Protocol) == routeProtocolDHCP {
 			err := netlink.RouteDel(&route)
 			if err != nil {
-				return err
+				return fmt.Errorf("remove DHCP route %s: %w", route.Dst, err)
 			}
 		}
 	}
@@ -395,12 +445,12 @@ func flushDHCPRoutes(linkIndex int) error {
 func flushAddresses(link netlink.Link) error {
 	addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
 	if err != nil {
-		return err
+		return fmt.Errorf("list addresses on %s: %w", link.Attrs().Name, err)
 	}
 	for _, address := range addresses {
 		err := netlink.AddrDel(link, &address)
 		if err != nil {
-			return err
+			return fmt.Errorf("remove address %s: %w", address.IPNet, err)
 		}
 	}
 
@@ -413,7 +463,7 @@ func dhcpRoute(linkIndex int, destination, gateway string, metric int) (netlink.
 		return netlink.Route{}, fmt.Errorf("invalid route destination %q: %w", destination, err)
 	}
 	if !prefix.Addr().Is4() {
-		return netlink.Route{}, errors.New("DHCP route destination must be IPv4")
+		return netlink.Route{}, errRouteDestinationNotIPv4
 	}
 	prefix = prefix.Masked()
 	route := netlink.Route{
@@ -427,7 +477,7 @@ func dhcpRoute(linkIndex int, destination, gateway string, metric int) (netlink.
 	if gateway != "" && gateway != "0.0.0.0" {
 		route.Gw = net.ParseIP(gateway).To4()
 		if route.Gw == nil {
-			return netlink.Route{}, fmt.Errorf("invalid IPv4 route gateway %q", gateway)
+			return netlink.Route{}, fmt.Errorf("%w %q", errInvalidRouteGateway, gateway)
 		}
 		route.Scope = netlink.SCOPE_UNIVERSE
 	}
@@ -441,11 +491,11 @@ func maskBits(mask string) (int, error) {
 	}
 	parsed := net.ParseIP(mask)
 	if parsed == nil {
-		return 0, fmt.Errorf("invalid subnet mask %q", mask)
+		return 0, fmt.Errorf("%w %q", errInvalidSubnetMask, mask)
 	}
 	ones, bits := net.IPMask(parsed.To4()).Size()
 	if bits != 32 || ones < 0 {
-		return 0, fmt.Errorf("invalid subnet mask %q", mask)
+		return 0, fmt.Errorf("%w %q", errInvalidSubnetMask, mask)
 	}
 
 	return ones, nil

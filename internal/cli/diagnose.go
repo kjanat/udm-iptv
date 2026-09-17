@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -27,29 +29,135 @@ const (
 	formatBoth  = "both"
 )
 
+const (
+	minCaptureWindow = time.Second
+	maxCaptureWindow = 24 * time.Hour
+)
+
+var (
+	captureFormats     = []string{formatText, formatJSONL, formatBoth}
+	captureVerbosities = []string{"summary", "normal", "debug"}
+)
+
+var (
+	errCaptureWindowRange     = errors.New("capture duration must be between 1s and 24h")
+	errCaptureWindowTooShort  = errors.New("capture duration must be at least 1s")
+	errUnknownFormat          = errors.New("unknown format")
+	errUnknownVerbosity       = errors.New("unknown verbosity")
+	errFollowNeedsCapture     = errors.New("--follow requires --capture")
+	errBothFormatsNeedCapture = errors.New("--format both requires --capture")
+	errFollowFileStandsAlone  = errors.New("--follow-file cannot be combined with --capture or --follow")
+	errCapturePathNotRegular  = errors.New("capture path must be a regular file")
+)
+
+// diagnoseRule reports why an invocation of diagnose is not runnable.
+type diagnoseRule func(*cobra.Command, diagnostics.Options) error
+
+var diagnoseRules = []diagnoseRule{
+	captureWindowInRange,
+	formatIsKnown,
+	verbosityIsKnown,
+	followNeedsCapture,
+	bothFormatsNeedCapture,
+	followFileStandsAlone,
+	followFileIsRegular,
+}
+
+func captureWindowInRange(_ *cobra.Command, options diagnostics.Options) error {
+	if options.Capture < 0 || options.Capture > maxCaptureWindow {
+		return errCaptureWindowRange
+	}
+	if options.Capture > 0 && options.Capture < minCaptureWindow {
+		return errCaptureWindowTooShort
+	}
+
+	return nil
+}
+
+func formatIsKnown(_ *cobra.Command, options diagnostics.Options) error {
+	if !slices.Contains(captureFormats, options.Format) {
+		return fmt.Errorf("%w %q", errUnknownFormat, options.Format)
+	}
+
+	return nil
+}
+
+func verbosityIsKnown(_ *cobra.Command, options diagnostics.Options) error {
+	if !slices.Contains(captureVerbosities, options.Verbosity) {
+		return fmt.Errorf("%w %q", errUnknownVerbosity, options.Verbosity)
+	}
+
+	return nil
+}
+
+func followNeedsCapture(_ *cobra.Command, options diagnostics.Options) error {
+	if options.Follow && options.Capture == 0 {
+		return errFollowNeedsCapture
+	}
+
+	return nil
+}
+
+func bothFormatsNeedCapture(_ *cobra.Command, options diagnostics.Options) error {
+	if options.Capture == 0 && options.Format == formatBoth {
+		return errBothFormatsNeedCapture
+	}
+
+	return nil
+}
+
+func followFileStandsAlone(command *cobra.Command, options diagnostics.Options) error {
+	if options.FollowFile == "" {
+		return nil
+	}
+	if command.Flags().Changed("capture") || options.Follow {
+		return errFollowFileStandsAlone
+	}
+
+	return nil
+}
+
+func followFileIsRegular(_ *cobra.Command, options diagnostics.Options) error {
+	if options.FollowFile == "" {
+		return nil
+	}
+	info, err := os.Stat(options.FollowFile)
+	if err != nil {
+		return fmt.Errorf("open capture: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errCapturePathNotRegular
+	}
+
+	return nil
+}
+
+func checkDiagnoseOptions(command *cobra.Command, options diagnostics.Options) error {
+	for _, rule := range diagnoseRules {
+		if err := rule(command, options); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (application *Application) diagnoseCommand() *cobra.Command {
 	options := diagnostics.Options{Format: formatText, Verbosity: "normal"}
 	command := &cobra.Command{
 		Use: "diagnose", Short: "Collect privacy-conscious IPTV diagnostics", Args: cobra.NoArgs,
+		PreRunE: func(command *cobra.Command, _ []string) error {
+			return checkDiagnoseOptions(command, options)
+		},
 		RunE: func(command *cobra.Command, _ []string) error {
-			if options.FollowFile != "" {
-				_, err := tea.NewProgram(ui.NewCaptureModel(options.FollowFile, time.Time{}, 0)).Run()
-
-				return err
+			switch {
+			case options.FollowFile != "":
+				return followCapture(options.FollowFile, time.Time{}, 0)
+			case options.Capture == 0:
+				return application.reportSnapshot(command.Context(), options.Format)
+			default:
+				return application.startCapture(command.Context(), options)
 			}
-			if options.Capture == 0 {
-				value, err := application.collector().Snapshot(command.Context())
-				if err != nil {
-					return err
-				}
-				if options.Format == formatJSONL {
-					return json.NewEncoder(application.Out).Encode(diagnostics.Event{Time: value.Timestamp, Type: "snapshot", Snapshot: &value})
-				}
-
-				return writeString(application.Out, diagnostics.RenderSnapshot(value))
-			}
-
-			return application.startCapture(options)
 		},
 	}
 	flags := command.Flags()
@@ -59,72 +167,106 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 	flags.BoolVar(&options.Follow, "follow", false, "follow the capture in an interactive terminal view")
 	flags.StringVar(&options.FollowFile, "follow-file", "", "follow an existing text capture")
 	_ = flags.MarkHidden("follow-file")
-	command.PreRunE = func(command *cobra.Command, _ []string) error {
-		if options.Capture < 0 || options.Capture > 24*time.Hour {
-			return errors.New("capture duration must be between 1s and 24h")
-		}
-		if options.Capture > 0 && options.Capture < time.Second {
-			return errors.New("capture duration must be at least 1s")
-		}
-		if options.Format != formatText && options.Format != formatJSONL && options.Format != formatBoth {
-			return fmt.Errorf("unknown format %q", options.Format)
-		}
-		if options.Verbosity != "summary" && options.Verbosity != "normal" && options.Verbosity != "debug" {
-			return fmt.Errorf("unknown verbosity %q", options.Verbosity)
-		}
-		if options.Follow && options.Capture == 0 {
-			return errors.New("--follow requires --capture")
-		}
-		if options.Capture == 0 && options.Format == formatBoth {
-			return errors.New("--format both requires --capture")
-		}
-		if options.FollowFile != "" && (command.Flags().Changed("capture") || options.Follow) {
-			return errors.New("--follow-file cannot be combined with --capture or --follow")
-		}
-		if options.FollowFile != "" {
-			if info, err := os.Stat(options.FollowFile); err != nil {
-				return fmt.Errorf("open capture: %w", err)
-			} else if !info.Mode().IsRegular() {
-				return errors.New("capture path must be a regular file")
-			}
-		}
-
-		return nil
-	}
 	_ = command.RegisterFlagCompletionFunc("format", completeValues("text\tshare-ready report", "jsonl\tstructured events", "both\tcapture formats"))
 	_ = command.RegisterFlagCompletionFunc("verbosity", completeValues("summary\tsample every 2 minutes", "normal\tsample every 15 seconds", "debug\tsample every 5 seconds"))
 
 	return command
 }
 
-func (application *Application) startCapture(options diagnostics.Options) error {
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	directory := filepath.Join(application.StateDir, "diagnostics")
-	if err := os.MkdirAll(directory, filemode.PrivateDir); err != nil {
-		return err
+func (application *Application) reportSnapshot(ctx context.Context, format string) error {
+	value, err := application.collector().Snapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("collect diagnostics: %w", err)
 	}
-	base := filepath.Join(directory, "udm-iptv-"+stamp+"-"+strconv.Itoa(os.Getpid()))
-	var paths []string
-	if options.Format == formatText || options.Format == formatBoth {
-		options.TextPath = base + ".txt"
-		paths = append(paths, options.TextPath)
-	}
-	if options.Format == formatJSONL || options.Format == formatBoth {
-		options.JSONPath = base + ".jsonl"
-		paths = append(paths, options.JSONPath)
-	}
-	for _, path := range paths {
-		err := atomicfile.Write(path, nil, filemode.PrivateFile)
-		if err != nil {
-			return err
+	if format == formatJSONL {
+		event := diagnostics.Event{Time: value.Timestamp, Type: "snapshot", Snapshot: &value}
+		if err := json.NewEncoder(application.Out).Encode(event); err != nil {
+			return fmt.Errorf("encode snapshot: %w", err)
 		}
+
+		return nil
 	}
-	executable, err := os.Executable()
+
+	return writeString(application.Out, diagnostics.RenderSnapshot(value))
+}
+
+func followCapture(path string, completion time.Time, pid int) error {
+	if _, err := tea.NewProgram(ui.NewCaptureModel(path, completion, pid)).Run(); err != nil {
+		return fmt.Errorf("follow capture %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func wantsText(format string) bool { return format == formatText || format == formatBoth }
+
+func wantsJSON(format string) bool { return format == formatJSONL || format == formatBoth }
+
+func captureFollowPath(options diagnostics.Options) string {
+	if options.TextPath != "" {
+		return options.TextPath
+	}
+
+	return options.JSONPath
+}
+
+func (application *Application) startCapture(ctx context.Context, options diagnostics.Options) error {
+	options, directory, err := application.prepareCaptureFiles(options)
 	if err != nil {
 		return err
 	}
-	// The worker intentionally outlives this command and its SSH session.
-	worker := exec.Command(executable, "diagnose-worker", //nolint:noctx // Detached capture owns its deadline.
+	errorLog, err := os.CreateTemp(directory, "capture-errors-*.log")
+	if err != nil {
+		return fmt.Errorf("create capture error log: %w", err)
+	}
+	defer closeIgnoringError(errorLog)
+	pid, err := application.startCaptureWorker(ctx, options, errorLog)
+	if err != nil {
+		return err
+	}
+	completion := time.Now().Add(options.Capture).UTC()
+	if err := application.reportCaptureStarted(options, pid, errorLog.Name(), completion); err != nil {
+		return err
+	}
+	if options.Follow {
+		return followCapture(captureFollowPath(options), completion, pid)
+	}
+
+	return writef(application.Out, "Follow it with: udm-iptv diagnose --follow-file %s\n", captureFollowPath(options))
+}
+
+func (application *Application) prepareCaptureFiles(options diagnostics.Options) (diagnostics.Options, string, error) {
+	directory := filepath.Join(application.StateDir, "diagnostics")
+	if err := os.MkdirAll(directory, filemode.PrivateDir); err != nil {
+		return options, "", fmt.Errorf("create diagnostics directory %s: %w", directory, err)
+	}
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	base := filepath.Join(directory, "udm-iptv-"+stamp+"-"+strconv.Itoa(os.Getpid()))
+	if wantsText(options.Format) {
+		options.TextPath = base + ".txt"
+	}
+	if wantsJSON(options.Format) {
+		options.JSONPath = base + ".jsonl"
+	}
+	for _, path := range []string{options.TextPath, options.JSONPath} {
+		if path == "" {
+			continue
+		}
+		if err := atomicfile.Write(path, nil, filemode.PrivateFile); err != nil {
+			return options, "", fmt.Errorf("create capture file %s: %w", path, err)
+		}
+	}
+
+	return options, directory, nil
+}
+
+// The worker intentionally outlives this command and its SSH session.
+func (application *Application) startCaptureWorker(ctx context.Context, options diagnostics.Options, errorLog *os.File) (int, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("locate the running executable: %w", err)
+	}
+	worker := exec.CommandContext(context.WithoutCancel(ctx), executable, "diagnose-worker",
 		"--config", application.ConfigPath,
 		"--duration", options.Capture.String(),
 		"--verbosity", options.Verbosity,
@@ -133,57 +275,37 @@ func (application *Application) startCapture(options diagnostics.Options) error 
 		"--jsonl", options.JSONPath,
 	)
 	worker.Stdin = nil
-	errorLog, err := os.CreateTemp(filepath.Dir(paths[0]), "capture-errors-*.log")
-	if err != nil {
-		return fmt.Errorf("create capture error log: %w", err)
-	}
-	defer closeIgnoringError(errorLog)
 	worker.Stdout, worker.Stderr = io.Discard, errorLog
 	worker.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := worker.Start(); err != nil {
-		return errors.Join(fmt.Errorf("start capture worker: %w", err), os.Remove(errorLog.Name()))
+		return 0, errors.Join(fmt.Errorf("start capture worker: %w", err), os.Remove(errorLog.Name()))
 	}
 	if err := worker.Process.Release(); err != nil {
-		return err
+		return 0, fmt.Errorf("detach capture worker: %w", err)
 	}
-	completion := time.Now().Add(options.Capture).UTC()
-	if err := writef(application.Out, "Diagnostics capture started (PID %d).\n", worker.Process.Pid); err != nil {
-		return err
+
+	return worker.Process.Pid, nil
+}
+
+func (application *Application) reportCaptureStarted(options diagnostics.Options, pid int, logPath string, completion time.Time) error {
+	lines := []string{
+		fmt.Sprintf("Diagnostics capture started (PID %d).\n", pid),
+		fmt.Sprintf("Local worker errors: %s\n", logPath),
+		fmt.Sprintf("Expected completion: %s (%s from now).\n", completion.Format(time.RFC3339), options.Capture.Round(time.Second)),
 	}
-	if err := writef(application.Out, "Local worker errors: %s\n", errorLog.Name()); err != nil {
-		return err
+	if options.TextPath != "" {
+		lines = append(lines, fmt.Sprintf("Share-ready text: %s\n", options.TextPath))
 	}
-	if err := writef(application.Out, "Expected completion: %s (%s from now).\n", completion.Format(time.RFC3339), options.Capture.Round(time.Second)); err != nil {
-		return err
+	if options.JSONPath != "" {
+		lines = append(lines, fmt.Sprintf("Structured JSON Lines: %s\n", options.JSONPath))
 	}
-	if options.Format == formatText || options.Format == formatBoth {
-		err := writef(application.Out, "Share-ready text: %s\n", options.TextPath)
-		if err != nil {
+	for _, line := range lines {
+		if err := writeString(application.Out, line); err != nil {
 			return err
 		}
 	}
-	if options.Format == formatJSONL || options.Format == formatBoth {
-		err := writef(application.Out, "Structured JSON Lines: %s\n", options.JSONPath)
-		if err != nil {
-			return err
-		}
-	}
-	if options.Follow {
-		followPath := options.TextPath
-		if followPath == "" {
-			followPath = options.JSONPath
-		}
-		model := ui.NewCaptureModel(followPath, completion, worker.Process.Pid)
-		_, err := tea.NewProgram(model).Run()
 
-		return err
-	}
-	followPath := options.TextPath
-	if followPath == "" {
-		followPath = options.JSONPath
-	}
-
-	return writef(application.Out, "Follow it with: udm-iptv diagnose --follow-file %s\n", followPath)
+	return nil
 }
 
 func (application *Application) diagnoseWorkerCommand() *cobra.Command {
@@ -192,6 +314,7 @@ func (application *Application) diagnoseWorkerCommand() *cobra.Command {
 		Use: "diagnose-worker", Hidden: true, Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			err := application.collector().Capture(command.Context(), options)
+
 			return errors.Join(err, diagnostics.RecordFailure(options, err))
 		},
 	}

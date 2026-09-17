@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+var errDiskFailure = errors.New("disk failure")
+
 type countingOutput struct {
 	bytes.Buffer
 
@@ -40,7 +42,7 @@ func TestJournalBatchSyncsOncePerOutput(t *testing.T) {
 	if bytes.Count(json.Bytes(), []byte("\n")) != 10_001 {
 		t.Fatal("lost JSON events")
 	}
-	text.failure = errors.New("disk failure")
+	text.failure = errDiskFailure
 	err = writer.flush()
 	if !errors.Is(err, text.failure) {
 		t.Fatal("sync failure discarded")

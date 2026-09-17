@@ -11,18 +11,65 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
+var errInjectedPlanStep = errors.New("injected failure")
+
 type recordingBackend struct {
-	actions []Action
-	fail    Action
+	actions []string
+	fail    string
 }
 
-func (b *recordingBackend) Apply(_ context.Context, action Action, _ Plan) error {
+func (b *recordingBackend) record(action string) error {
 	b.actions = append(b.actions, action)
 	if action == b.fail {
-		return errors.New("injected failure")
+		return errInjectedPlanStep
 	}
 
 	return nil
+}
+
+func (b *recordingBackend) Preflight(context.Context, Plan) error {
+	return b.record("Check installation prerequisites")
+}
+
+func (b *recordingBackend) PreserveRuntime(context.Context, Plan) error {
+	return b.record("Preserve the proxy and shared libraries offline")
+}
+
+func (b *recordingBackend) SaveConfig(context.Context, Plan) error {
+	return b.record("Save configuration")
+}
+
+func (b *recordingBackend) RemoveLegacy(context.Context, Plan) error {
+	return b.record("Remove legacy Debian package if installed")
+}
+
+func (b *recordingBackend) CopyBinary(context.Context, Plan) error {
+	return b.record("Install persistent executable")
+}
+
+func (b *recordingBackend) WriteFiles(context.Context, Plan) error {
+	return b.record("Write service, links, tmpfiles rule and shell completion")
+}
+
+func (b *recordingBackend) Activate(context.Context, Plan) error {
+	return b.record("Reload systemd, enable and restart service")
+}
+
+func (b *recordingBackend) CheckHealth(context.Context, Plan) error {
+	return b.record("Wait for stable proxy readiness")
+}
+
+func (b *recordingBackend) Cleanup(context.Context, Plan) error {
+	return b.record("Remove obsolete legacy recovery files after health verification")
+}
+
+func stepNames(p Plan) []string {
+	names := make([]string, 0, len(p.steps()))
+	for _, stage := range p.steps() {
+		names = append(names, stage.name)
+	}
+
+	return names
 }
 
 func testPlan() Plan {
@@ -31,15 +78,25 @@ func testPlan() Plan {
 
 func TestExecutionOrderAndEveryFailureBoundary(t *testing.T) {
 	p := testPlan()
-	want := []Action{Preflight, PreserveRuntime, SaveConfig, RemoveLegacy, CopyBinary, WriteFiles, Activate, CheckHealth, Cleanup}
-	if !reflect.DeepEqual(p.Actions(), want) {
+	want := []string{
+		"Check installation prerequisites",
+		"Preserve the proxy and shared libraries offline",
+		"Save configuration",
+		"Remove legacy Debian package if installed",
+		"Install persistent executable",
+		"Write service, links, tmpfiles rule and shell completion",
+		"Reload systemd, enable and restart service",
+		"Wait for stable proxy readiness",
+		"Remove obsolete legacy recovery files after health verification",
+	}
+	if !reflect.DeepEqual(stepNames(p), want) {
 		t.Fatal("unexpected plan order")
 	}
 	for i, action := range want {
-		t.Run(string(action), func(t *testing.T) {
+		t.Run(action, func(t *testing.T) {
 			backend := &recordingBackend{fail: action}
 			err := p.Execute(context.Background(), backend)
-			if err == nil || !strings.Contains(err.Error(), string(action)) {
+			if err == nil || !strings.Contains(err.Error(), action) {
 				t.Fatalf("missing action failure: %v", err)
 			}
 			if !reflect.DeepEqual(backend.actions, want[:i+1]) {
@@ -88,8 +145,8 @@ func TestPreviewDoesNotPrintConfiguration(t *testing.T) {
 		t.Fatal(output.String())
 	}
 	p.SaveConfig = false
-	for _, action := range p.Actions() {
-		if action == SaveConfig {
+	for _, name := range stepNames(p) {
+		if name == "Save configuration" {
 			t.Fatal("existing config would be rewritten")
 		}
 	}

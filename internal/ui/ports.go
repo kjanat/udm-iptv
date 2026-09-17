@@ -7,6 +7,13 @@ import (
 	"strings"
 
 	"charm.land/huh/v2"
+
+	"github.com/kjanat/udm-iptv/internal/config"
+)
+
+var (
+	errManualPortNeedsEntry = errors.New("press Enter on that row to type a port name")
+	errNoNetworkSelected    = errors.New("select at least one network")
 )
 
 // Port describes an interface discovered by the caller; the UI never probes it.
@@ -79,7 +86,7 @@ func wanGroups(current *string, ports []Port) ([]*page, *string) {
 		description: "Pick a known interface, or type the router's name for the port as UniFi or ip link shows it.",
 		placeholder: "eth8",
 		candidates:  unlistedPorts(ports, options),
-		validate:    validateInterface,
+		validate:    config.ValidateInterfaceName,
 		accept: func(field huh.Field, names []string) {
 			list, ok := field.(*huh.Select[string])
 			if !ok || len(names) == 0 {
@@ -101,7 +108,7 @@ func wanGroups(current *string, ports []Port) ([]*page, *string) {
 			Options(withManual(options)...).Height(listHeight(options)).
 			Validate(func(value string) error {
 				if value == manualPort {
-					return errors.New("press Enter on that row to type a port name")
+					return errManualPortNeedsEntry
 				}
 
 				return nil
@@ -148,7 +155,7 @@ func lanGroups(current []string, ports []Port) ([]*page, *[]string) {
 		description: "Pick an interface the router knows, or type a name as UniFi or ip link shows it. Separate several names with spaces or commas.",
 		placeholder: "br4",
 		candidates:  unlistedPorts(ports, options),
-		validate:    validateInterface,
+		validate:    config.ValidateInterfaceName,
 		accept: func(field huh.Field, names []string) {
 			list, ok := field.(*huh.MultiSelect[string])
 			if !ok {
@@ -173,7 +180,7 @@ func lanGroups(current []string, ports []Port) ([]*page, *[]string) {
 			Value(&selected).
 			Validate(func(values []string) error {
 				if len(resolveLAN(values)) == 0 {
-					return errors.New("select at least one network")
+					return errNoNetworkSelected
 				}
 
 				return nil

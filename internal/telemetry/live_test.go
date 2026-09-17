@@ -16,6 +16,11 @@ import (
 	"github.com/getsentry/sentry-go"
 )
 
+var (
+	errSyntheticFailure      = errors.New("synthetic verification failure")
+	errNonReplayableEnvelope = errors.New("verification needs a replayable envelope")
+)
+
 // Explicitly opt in: UDM_IPTV_SENTRY_VERIFY=1 go test -tags sentrylive
 // ./internal/telemetry -run '^TestLiveSentryDelivery$' -count=1 -v
 // Supply the intended DSN using -ldflags '-X github.com/kjanat/udm-iptv/internal/telemetry.DSN=<dsn>'.
@@ -35,7 +40,7 @@ func TestLiveSentryDelivery(t *testing.T) {
 	// No router inspection, device metadata or real operation is performed.
 	err = reporter.Run(context.Background(), "install", func(ctx context.Context) error {
 		return reporter.Run(ctx, "service.health", func(context.Context) error {
-			return errors.New("synthetic verification failure")
+			return errSyntheticFailure
 		})
 	})
 	if err == nil {
@@ -80,11 +85,11 @@ func (transport *verificationTransport) Configure(options sentry.ClientOptions) 
 
 func (transport *verificationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.GetBody == nil {
-		return nil, errors.New("verification needs a replayable envelope")
+		return nil, errNonReplayableEnvelope
 	}
 	body, err := request.GetBody()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("replay verification envelope: %w", err)
 	}
 	decoder := json.NewDecoder(body)
 	var envelope map[string]any
@@ -99,7 +104,7 @@ func (transport *verificationTransport) RoundTrip(request *http.Request) (*http.
 	if err != nil {
 		return nil, fmt.Errorf("decode verification envelope: %w", err)
 	}
-	response, err := http.DefaultTransport.RoundTrip(request)
+	response, roundTripErr := http.DefaultTransport.RoundTrip(request)
 	status := 0
 	if response != nil {
 		status = response.StatusCode
@@ -110,6 +115,9 @@ func (transport *verificationTransport) RoundTrip(request *http.Request) (*http.
 		status int
 	}{item.Type, status})
 	transport.mu.Unlock()
+	if roundTripErr != nil {
+		return response, fmt.Errorf("deliver verification envelope: %w", roundTripErr)
+	}
 
-	return response, err
+	return response, nil
 }

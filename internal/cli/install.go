@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -53,6 +54,51 @@ func promptForInstall(ctx context.Context, deps installDependencies, out io.Writ
 	return deps.prompt(ctx, value)
 }
 
+type installSource struct {
+	value config.Config
+	save  bool
+	fresh bool
+}
+
+func selectInstallConfig(deps installDependencies) (installSource, error) {
+	value, err := deps.load()
+	if err == nil {
+		return installSource{value: value}, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return installSource{}, err
+	}
+	legacy, found, err := deps.legacy()
+	if err != nil {
+		return installSource{}, err
+	}
+	if found {
+		return installSource{value: legacy, save: true}, nil
+	}
+
+	return installSource{value: deps.defaults(), save: true, fresh: true}, nil
+}
+
+func (application *Application) installPlan(deps installDependencies, source installSource, replace bool) (installer.Plan, error) {
+	executable, err := deps.executable()
+	if err != nil {
+		return installer.Plan{}, err
+	}
+	configPath, err := filepath.Abs(application.ConfigPath)
+	if err != nil {
+		return installer.Plan{}, fmt.Errorf("resolve configuration path %s: %w", application.ConfigPath, err)
+	}
+	stateDir, err := filepath.Abs(application.StateDir)
+	if err != nil {
+		return installer.Plan{}, fmt.Errorf("resolve state directory %s: %w", application.StateDir, err)
+	}
+
+	return installer.Plan{
+		Config: source.value, ConfigPath: configPath, StateDir: stateDir,
+		Executable: executable, SaveConfig: source.save, Replace: replace,
+	}, nil
+}
+
 // Read-only discovery, interactive input and host mutation are separate seams.
 type installDependencies struct {
 	load        func() (config.Config, error)
@@ -65,73 +111,77 @@ type installDependencies struct {
 	backend     installer.Backend
 }
 
+type installOptions struct {
+	nonInteractive bool
+	replace        bool
+	dryRun         bool
+}
+
 func (application *Application) installCommandWith(deps installDependencies) *cobra.Command {
-	var nonInteractive, replace, dryRun bool
+	var options installOptions
 	command := &cobra.Command{
 		Use:   commandInstall,
 		Short: "Install the persistent service on this console",
 		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			application.providerSuggestion = ""
-			if !dryRun {
-				err := deps.requireRoot()
-				if err != nil {
-					return err
-				}
-			}
-			value, err := deps.load()
-			save := false
-			fresh := false
-			if err != nil {
-				if !errors.Is(err, os.ErrNotExist) {
-					return err
-				}
-				legacy, found, legacyErr := deps.legacy()
-				if legacyErr != nil {
-					return legacyErr
-				}
-				if found {
-					value = legacy
-				} else {
-					value = deps.defaults()
-					fresh = true
-				}
-				save = true
-			}
-			if !nonInteractive && (save || dryRun) {
-				if err := promptForInstall(command.Context(), deps, application.Out, &value, fresh, dryRun); err != nil {
-					return err
-				}
-				save = true
-			}
-			executable, err := deps.executable()
-			if err != nil {
-				return err
-			}
-			configPath, err := filepath.Abs(application.ConfigPath)
-			if err != nil {
-				return err
-			}
-			stateDir, err := filepath.Abs(application.StateDir)
-			if err != nil {
-				return err
-			}
-			plan := installer.Plan{Config: value, ConfigPath: configPath, StateDir: stateDir, Executable: executable, SaveConfig: save, Replace: replace}
-			if dryRun {
-				return plan.Preview(application.Out)
-			}
-			if err := plan.Execute(command.Context(), deps.backend); err != nil {
-				return err
-			}
-
-			return writef(application.Out, "udm-iptv %s has started. Automatic startup enabled.\nInstalled: %s\n", application.Version, application.StateDir)
-		},
+		RunE: application.reportingSaved(commandInstall, previewOnly, func(command *cobra.Command, _ []string) error {
+			return application.runInstall(command, deps, options)
+		}),
 	}
-	command.Flags().BoolVar(&replace, "force", false, "replace an existing persistent installation")
-	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "install using the existing, imported, or detected configuration")
-	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview without system changes, service checks or telemetry")
+	command.Flags().BoolVar(&options.replace, "force", false, "replace an existing persistent installation")
+	command.Flags().BoolVar(&options.nonInteractive, "non-interactive", false, "install using the existing, imported, or detected configuration")
+	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "preview without system changes, service checks or telemetry")
 
 	return command
+}
+
+func (application *Application) runInstall(command *cobra.Command, deps installDependencies, options installOptions) error {
+	application.providerSuggestion = ""
+	source, err := application.prepareInstall(command, deps, options)
+	if err != nil {
+		return err
+	}
+	plan, err := application.installPlan(deps, source, options.replace)
+	if err != nil {
+		return err
+	}
+
+	return application.applyInstall(command, deps, plan, options)
+}
+
+func (application *Application) prepareInstall(command *cobra.Command, deps installDependencies, options installOptions) (installSource, error) {
+	if !options.dryRun {
+		if err := deps.requireRoot(); err != nil {
+			return installSource{}, err
+		}
+	}
+	source, err := selectInstallConfig(deps)
+	if err != nil {
+		return installSource{}, err
+	}
+	if options.nonInteractive || !source.save && !options.dryRun {
+		return source, nil
+	}
+	if err := promptForInstall(command.Context(), deps, application.Out, &source.value, source.fresh, options.dryRun); err != nil {
+		return installSource{}, err
+	}
+	source.save = true
+
+	return source, nil
+}
+
+func (application *Application) applyInstall(command *cobra.Command, deps installDependencies, plan installer.Plan, options installOptions) error {
+	if options.dryRun {
+		if err := plan.Preview(application.Out); err != nil {
+			return fmt.Errorf("preview the installation plan: %w", err)
+		}
+
+		return nil
+	}
+	if err := plan.Execute(command.Context(), deps.backend); err != nil {
+		return fmt.Errorf("apply the installation plan: %w", err)
+	}
+
+	return writef(application.Out, "udm-iptv %s has started. Automatic startup enabled.\nInstalled: %s\n", application.Version, application.StateDir)
 }
 
 func (application *Application) uninstallCommand() *cobra.Command {
@@ -140,18 +190,18 @@ func (application *Application) uninstallCommand() *cobra.Command {
 		Use:   "uninstall",
 		Short: "Remove udm-iptv from this console",
 		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
+		RunE: application.reporting("uninstall", func(command *cobra.Command, _ []string) error {
 			err := requireRoot()
 			if err != nil {
 				return err
 			}
 			err = installer.Uninstall(command.Context(), application.ConfigPath, application.StateDir, keepConfig)
 			if err != nil {
-				return err
+				return fmt.Errorf("remove the installation in %s: %w", application.StateDir, err)
 			}
 
 			return writeString(application.Out, "udm-iptv removed.\n")
-		},
+		}),
 	}
 	command.Flags().BoolVar(&keepConfig, "keep-config", false, "retain the configuration in /data")
 
@@ -161,18 +211,20 @@ func (application *Application) uninstallCommand() *cobra.Command {
 func (application *Application) restartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use: "restart", Short: "Restart the IPTV service", Args: cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error { return application.restart(command.Context(), true) },
+		RunE: application.reporting("restart", func(command *cobra.Command, _ []string) error {
+			return application.restart(command.Context(), true)
+		}),
 	}
 }
 
 func (application *Application) restart(ctx context.Context, verify bool) error {
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("connect to systemd: %w", err)
 	}
 	defer connection.Close()
 	if err := service.Restart(ctx, connection, "udm-iptv.service"); err != nil {
-		return err
+		return fmt.Errorf("restart udm-iptv.service: %w", err)
 	}
 	if verify {
 		err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
@@ -195,7 +247,7 @@ func (application *Application) installBackend() installer.Backend {
 
 			return output.Bytes(), err
 		},
-		CheckHealth: func(ctx context.Context) error {
+		Health: func(ctx context.Context) error {
 			err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
 			if err != nil {
 				return errors.Join(err, application.collector().ReportFailure(ctx, application.Err))

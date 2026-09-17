@@ -14,6 +14,12 @@ type Port struct {
 	AddressesKnown    bool
 }
 
+const (
+	rankRoute = iota
+	rankCandidate
+	rankOther
+)
+
 // Ports returns a list of locally observed network interfaces,
 // sorted by relevance to WAN connectivity.
 func Ports() []Port {
@@ -28,50 +34,64 @@ func Ports() []Port {
 		if iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		description := "link status unknown"
-		if data, err := os.ReadFile("/sys/class/net/" + iface.Name + "/carrier"); err == nil {
-			switch strings.TrimSpace(string(data)) {
-			case "1":
-				description = "connected"
-			case "0":
-				description = "disconnected"
-			}
-		}
-		if iface.Name == route {
-			description += ", Internet route"
-		}
-		if slicesContain(candidates, iface.Name) {
-			description += ", WAN candidate"
-		}
-		port := Port{Name: iface.Name, Description: description}
-		addresses, err := iface.Addrs()
-		if err == nil {
-			port.AddressesKnown = true
-			for _, address := range addresses {
-				port.Addresses = append(port.Addresses, address.String())
-			}
-		}
+		port := Port{Name: iface.Name, Description: describePort(iface.Name, route, candidates)}
+		port.Addresses, port.AddressesKnown = interfaceAddresses(iface)
 		ports = append(ports, port)
 	}
-	const (
-		rankRoute = iota
-		rankCandidate
-		rankOther
-	)
 	sort.SliceStable(ports, func(i, j int) bool {
-		rank := func(name string) int {
-			if name == route {
-				return rankRoute
-			}
-			if slicesContain(candidates, name) {
-				return rankCandidate
-			}
-
-			return rankOther
-		}
-
-		return rank(ports[i].Name) < rank(ports[j].Name)
+		return wanRank(ports[i].Name, route, candidates) < wanRank(ports[j].Name, route, candidates)
 	})
 
 	return ports
+}
+
+func carrierState(name string) string {
+	data, err := os.ReadFile("/sys/class/net/" + name + "/carrier")
+	if err != nil {
+		return "link status unknown"
+	}
+	switch strings.TrimSpace(string(data)) {
+	case "1":
+		return "connected"
+	case "0":
+		return "disconnected"
+	default:
+		return "link status unknown"
+	}
+}
+
+func describePort(name, route string, candidates []string) string {
+	description := carrierState(name)
+	if name == route {
+		description += ", Internet route"
+	}
+	if slicesContain(candidates, name) {
+		description += ", WAN candidate"
+	}
+
+	return description
+}
+
+func interfaceAddresses(iface net.Interface) ([]string, bool) {
+	addresses, err := iface.Addrs()
+	if err != nil {
+		return nil, false
+	}
+	var result []string
+	for _, address := range addresses {
+		result = append(result, address.String())
+	}
+
+	return result, true
+}
+
+func wanRank(name, route string, candidates []string) int {
+	switch {
+	case name == route:
+		return rankRoute
+	case slicesContain(candidates, name):
+		return rankCandidate
+	default:
+		return rankOther
+	}
 }

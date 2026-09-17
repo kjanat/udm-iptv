@@ -15,70 +15,97 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
-func TestConfigureProfileSwitch(t *testing.T) {
-	for _, cancel := range []bool{false, true} {
-		t.Run(map[bool]string{false: "accept", true: "cancel"}[cancel], func(t *testing.T) {
-			value := config.DefaultKPN()
-			value.Telemetry.Enabled = true
-			original := clone(value)
-			selected, _ := config.FromProfile("tweak", value)
-			selected.WAN.Interface = "example9"
-			catalog := config.Catalog{
-				Countries: []config.Country{{Code: "NL", Name: "Netherlands", LocalName: "Nederland"}},
-				Providers: []config.Provider{
-					{ID: "kpn", Name: "KPN", Countries: []string{"NL"}, Profiles: []string{"kpn"}},
-					{ID: "tweak", Name: "Tweak", Countries: []string{"NL"}, Profiles: []string{"tweak"}},
-				},
-				Profiles: []config.Profile{
-					{ID: "kpn", Name: "KPN", Config: value},
-					{ID: "tweak", Name: "Tweak", Config: selected},
-				},
-			}
-			calls := 0
-			aborted := errors.New("cancelled")
-			err := Configure(context.Background(), &value, catalog, func(_ context.Context, wizard *Wizard) error {
-				form := wizard.Form
-				calls++
-				if calls == 2 {
-					field := form.GetFocusedField()
-					if field.GetKey() != "provider" {
-						t.Fatalf("second form asks %q", field.GetKey())
-					}
-					field.Focus()
-					_, _ = field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-					_, _ = field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				} else if cancel && calls > 2 {
-					return aborted
-				}
+var errProfileSwitchAborted = errors.New("cancelled")
 
-				return nil
-			})
-			wantCalls := 4
-			if cancel {
-				wantCalls = 3
-			}
-			if calls != wantCalls {
-				t.Fatalf("forms = %d", calls)
-			}
-			if cancel {
-				if !errors.Is(err, aborted) || !reflect.DeepEqual(value, original) {
-					t.Fatalf("cancel modified input: %v", err)
-				}
-
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if value.Profile != "tweak" || value.WAN.Interface != "example9" || !value.Telemetry.Enabled {
-				t.Fatalf("wrong selection: %+v", value)
-			}
-			value.WAN.NATDestinations[0] = "changed"
-			if selected.WAN.NATDestinations[0] != "0.0.0.0/0" {
-				t.Fatal("profile data aliased")
-			}
-		})
+func assertEqual[T comparable](t *testing.T, name string, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s = %v, want %v", name, got, want)
 	}
+}
+
+type profileSwitchResult struct {
+	value, before, selected config.Config
+	err                     error
+	calls                   int
+}
+
+func twoProfileCatalog(t *testing.T) (config.Config, config.Config, config.Catalog) {
+	t.Helper()
+	value := config.DefaultKPN()
+	value.Telemetry.Enabled = true
+	selected, err := config.FromProfile("tweak", value)
+	if err != nil {
+		t.Fatalf("FromProfile(tweak): %v", err)
+	}
+	selected.WAN.Interface = "example9"
+
+	return value, selected, config.Catalog{
+		Countries: []config.Country{{Code: "NL", Name: "Netherlands", LocalName: "Nederland"}},
+		Providers: []config.Provider{
+			{ID: "kpn", Name: "KPN", Countries: []string{"NL"}, Profiles: []string{"kpn"}},
+			{ID: "tweak", Name: "Tweak", Countries: []string{"NL"}, Profiles: []string{"tweak"}},
+		},
+		Profiles: []config.Profile{
+			{ID: "kpn", Name: "KPN", Config: value},
+			{ID: "tweak", Name: "Tweak", Config: selected},
+		},
+	}
+}
+
+func pickNextProvider(t *testing.T, wizard *Wizard) {
+	t.Helper()
+	field := wizard.Form.GetFocusedField()
+	assertEqual(t, "second form question", field.GetKey(), "provider")
+	field.Focus()
+	_, _ = field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	_, _ = field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
+func runProfileSwitch(t *testing.T, cancelAfter int, abort error) profileSwitchResult {
+	t.Helper()
+	value, selected, catalog := twoProfileCatalog(t)
+	result := profileSwitchResult{before: clone(value), selected: selected}
+	result.err = Configure(context.Background(), &value, catalog, func(_ context.Context, wizard *Wizard) error {
+		result.calls++
+		switch {
+		case result.calls == 2:
+			pickNextProvider(t, wizard)
+		case cancelAfter > 0 && result.calls > cancelAfter:
+			return abort
+		}
+
+		return nil
+	})
+	result.value = value
+
+	return result
+}
+
+func TestConfigureProfileSwitch(t *testing.T) {
+	t.Run("accept", func(t *testing.T) {
+		result := runProfileSwitch(t, 0, nil)
+		assertEqual(t, "forms", result.calls, 4)
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		assertEqual(t, "profile", result.value.Profile, "tweak")
+		assertEqual(t, "WAN interface", result.value.WAN.Interface, "example9")
+		assertEqual(t, "telemetry enabled", result.value.Telemetry.Enabled, true)
+		result.value.WAN.NATDestinations[0] = "changed"
+		assertEqual(t, "profile NAT destination", result.selected.WAN.NATDestinations[0], "0.0.0.0/0")
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		result := runProfileSwitch(t, 2, errProfileSwitchAborted)
+		assertEqual(t, "forms", result.calls, 3)
+		if !errors.Is(result.err, errProfileSwitchAborted) {
+			t.Fatalf("cancel returned %v, want %v", result.err, errProfileSwitchAborted)
+		}
+		if !reflect.DeepEqual(result.value, result.before) {
+			t.Fatal("cancel modified input")
+		}
+	})
 }
 
 func TestConfigurationPagesFollowAnswers(t *testing.T) {
@@ -129,7 +156,12 @@ func TestConfigurationPagesFollowAnswers(t *testing.T) {
 	}
 }
 
-func TestConfigurationPageFits(t *testing.T) {
+type pageBox struct {
+	lines                          []string
+	top, bottom, left, right, rows int
+}
+
+func previewFrame(width, height int) *Frame {
 	value := config.Default()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, []Port{
@@ -139,8 +171,63 @@ func TestConfigurationPageFits(t *testing.T) {
 	}, "IPTV DNS servers: 177.16.30.67 and 177.16.30.7.", &fields)
 	frame := NewFrame(wizardForm(groups...), "Preview")
 	frame.Init()
-	frame.Update(tea.WindowSizeMsg{Width: 180, Height: 45})
-	boxRows := 0
+	frame.Update(tea.WindowSizeMsg{Width: width, Height: height})
+
+	return frame
+}
+
+func measureBox(t *testing.T, content string, width, height int) pageBox {
+	t.Helper()
+	lines := strings.Split(content, "\n")
+	if len(lines) != height || lipgloss.Width(content) != width {
+		t.Fatalf("page is %dx%d, terminal is %dx%d", lipgloss.Width(content), len(lines), width, height)
+	}
+	top, bottom := boxBounds(content)
+	if top < 0 || bottom < 0 {
+		t.Fatal("page has no box")
+	}
+
+	return pageBox{
+		lines:  lines,
+		top:    top,
+		bottom: bottom,
+		left:   len(lines[top]) - len(strings.TrimLeft(lines[top], " ")),
+		right:  width - lipgloss.Width(strings.TrimRight(lines[top], " ")),
+		rows:   bottom - top,
+	}
+}
+
+func assertCentered(t *testing.T, box pageBox, height int) {
+	t.Helper()
+	if above, below := box.top-1, height-1-box.bottom; above < 3 || below < 3 || above-below > 2 || below-above > 2 {
+		t.Fatalf("box is not vertically centered: %d rows above the header, %d below", above, below)
+	}
+	if box.left < 20 || box.right < 20 || box.left-box.right > 2 || box.right-box.left > 2 {
+		t.Fatalf("box is not horizontally centered: %d left, %d right", box.left, box.right)
+	}
+}
+
+func assertBadgeRow(t *testing.T, box pageBox, badge string) {
+	t.Helper()
+	row := box.lines[box.top-1]
+	if !strings.Contains(row, badge) || !strings.Contains(row, closeLabel) || strings.Index(row, badge) > strings.Index(row, closeLabel) {
+		t.Fatalf("badge and close button missing from the row above the box: %q", row)
+	}
+}
+
+func assertTitlesKeepTheirDescriptions(t *testing.T, content string) {
+	t.Helper()
+	for _, jammed := range []string{"quickleave?Off", "logs?Temporary", "address?Most"} {
+		if strings.Contains(content, jammed) {
+			t.Fatalf("confirm title ate its description: %q", jammed)
+		}
+	}
+}
+
+func TestConfigurationPageFits(t *testing.T) {
+	const width, height = 180, 45
+	frame := previewFrame(width, height)
+	wantRows := 0
 	for range 12 {
 		if frame.wizard.Form.State == huh.StateCompleted {
 			return
@@ -149,43 +236,14 @@ func TestConfigurationPageFits(t *testing.T) {
 		if !view.AltScreen {
 			t.Fatal("wizard left the alternate screen")
 		}
-		lines := strings.Split(view.Content, "\n")
-		if len(lines) != 45 || lipgloss.Width(view.Content) != 180 {
-			t.Fatalf("page is %dx%d, terminal is 180x45", lipgloss.Width(view.Content), len(lines))
+		box := measureBox(t, view.Content, width, height)
+		assertCentered(t, box, height)
+		assertBadgeRow(t, box, "PREVIEW")
+		assertTitlesKeepTheirDescriptions(t, view.Content)
+		if wantRows == 0 {
+			wantRows = box.rows
 		}
-		top, bottom, left := -1, -1, -1
-		for i, line := range lines {
-			switch {
-			case strings.Contains(line, "╭"):
-				top, left = i, len(line)-len(strings.TrimLeft(line, " "))
-			case strings.Contains(line, "╰"):
-				bottom = i
-			}
-		}
-		if top < 0 || bottom < 0 {
-			t.Fatal("page has no box")
-		}
-		if above, below := top-1, 44-bottom; above < 3 || below < 3 || above-below > 2 || below-above > 2 {
-			t.Fatalf("box is not vertically centered: %d rows above the header, %d below", above, below)
-		}
-		right := 180 - lipgloss.Width(strings.TrimRight(lines[top], " "))
-		if left < 20 || right < 20 || left-right > 2 || right-left > 2 {
-			t.Fatalf("box is not horizontally centered: %d left, %d right", left, right)
-		}
-		if boxRows == 0 {
-			boxRows = bottom - top
-		}
-		if bottom-top != boxRows {
-			t.Fatalf("box height changed between pages: %d rows, then %d", boxRows, bottom-top)
-		}
-		if row := lines[top-1]; !strings.Contains(row, "PREVIEW") || !strings.Contains(row, closeLabel) || strings.Index(row, "PREVIEW") > strings.Index(row, closeLabel) {
-			t.Fatalf("badge and close button missing from the row above the box: %q", row)
-		}
-		for _, jammed := range []string{"quickleave?Off", "logs?Temporary", "address?Most"} {
-			if strings.Contains(view.Content, jammed) {
-				t.Fatalf("confirm title ate its description: %q", jammed)
-			}
-		}
+		assertEqual(t, "box height", box.rows, wantRows)
 		frame.wizard.Form.NextGroup()
 	}
 	t.Fatal("form did not finish")

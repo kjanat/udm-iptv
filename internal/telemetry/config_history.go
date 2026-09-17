@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 	"os"
@@ -31,6 +32,17 @@ const (
 	// researchTransaction tags the Sentry event a research report rides on;
 	// filterResearch and filterEvent both branch on it.
 	researchTransaction = "installation.report"
+)
+
+var (
+	errInvalidResearchConfig = errors.New("invalid research configuration")
+	errFeedbackAnswer        = errors.New("choose working, problems or not-using")
+	errUnknownProvider       = errors.New("unknown provider; use a provider or profile ID")
+	errResearchUnavailable   = errors.New("preset research is disabled or unavailable")
+	errFeedbackNotQueued     = errors.New("feedback was not queued: reporting disabled or rate limit reached")
+	errStateTooLarge         = errors.New("telemetry state exceeds size limit")
+	errInvalidIdentity       = errors.New("invalid telemetry identity")
+	errMissingStateDir       = errors.New("telemetry state directory is missing")
 )
 
 // SettingsSnapshot deliberately excludes interface names, addresses, MACs,
@@ -165,6 +177,72 @@ func (r *Reporter) researchEnabled() bool {
 // ResearchEnabled checks the saved master switch before each observation.
 func (r *Reporter) ResearchEnabled() bool { return r.researchEnabled() }
 
+// The full fingerprint stays local, is keyed per installation and excludes
+// telemetry preferences. It detects changes to omitted settings safely.
+func reportable(value config.Config) config.Config {
+	value.Telemetry = config.Telemetry{}
+	value.WAN.NATDestinations = sorted(value.WAN.NATDestinations)
+	value.Proxy.SourceRanges = sorted(value.Proxy.SourceRanges)
+	value.LAN.Interfaces = sorted(value.LAN.Interfaces)
+	value.WAN.StaticRoutes = sorted(value.WAN.StaticRoutes)
+
+	return value
+}
+
+func fingerprintConfig(id string, value config.Config) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("encode configuration fingerprint: %w", err)
+	}
+	hash := hmac.New(sha256.New, []byte(id))
+	_, _ = hash.Write(data)
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func changedFields(before, after SettingsSnapshot) []string {
+	oldFields, newFields := reflect.ValueOf(before), reflect.ValueOf(after)
+	changed := []string{}
+	for i := range oldFields.NumField() {
+		if !reflect.DeepEqual(oldFields.Field(i).Interface(), newFields.Field(i).Interface()) {
+			changed = append(changed, oldFields.Type().Field(i).Tag.Get("json"))
+		}
+	}
+	if len(changed) == 0 {
+		return []string{"unreported_settings"}
+	}
+
+	return changed
+}
+
+func (state *researchState) recordSave(current SettingsSnapshot, fingerprint string) []string {
+	if fingerprint == state.Fingerprint {
+		return []string{}
+	}
+	changed := changedFields(state.Settings, current)
+	state.Revision++
+	state.Changed = time.Now().UTC()
+	state.Settings, state.Fingerprint = current, fingerprint
+
+	return changed
+}
+
+func (state *researchState) recordApply(fingerprint string) {
+	if state.AppliedFingerprint != fingerprint {
+		state.AppliedChanged = time.Now().UTC()
+		state.AppliedFingerprint = fingerprint
+	}
+	state.AppliedRevision = state.Revision
+}
+
+func (r *Reporter) attachNetwork(ctx context.Context, report *researchReport, lookup func(context.Context) NetworkIdentity) {
+	if lookup == nil || !r.networkEnabled() || !r.allow("network", 1) {
+		return
+	}
+	identity := lookup(ctx)
+	report.Network = &identity
+}
+
 // RecordConfiguration records only saved settings; applied means the caller has
 // also completed its service health check. Merely reopening a form is not a change.
 func (r *Reporter) RecordConfiguration(ctx context.Context, value config.Config, applied bool, lookup func(context.Context) NetworkIdentity) error {
@@ -172,47 +250,19 @@ func (r *Reporter) RecordConfiguration(ctx context.Context, value config.Config,
 		return nil
 	}
 	if err := value.Validate(); err != nil {
-		return errors.New("invalid research configuration")
+		return errInvalidResearchConfig
 	}
 	var report researchReport
 	err := withResearchState(r.stateDir, func(state *researchState) error {
 		before := state.Revision
-		// The full fingerprint stays local, is keyed per installation and excludes
-		// telemetry preferences. It detects changes to omitted settings safely.
-		value.Telemetry = config.Telemetry{}
-		value.WAN.NATDestinations = sorted(value.WAN.NATDestinations)
-		value.Proxy.SourceRanges = sorted(value.Proxy.SourceRanges)
-		value.LAN.Interfaces = sorted(value.LAN.Interfaces)
-		value.WAN.StaticRoutes = sorted(value.WAN.StaticRoutes)
-		data, err := json.Marshal(value)
+		current := reportable(value)
+		fingerprint, err := fingerprintConfig(state.ID, current)
 		if err != nil {
 			return err
 		}
-		hash := hmac.New(sha256.New, []byte(state.ID))
-		_, _ = hash.Write(data)
-		fingerprint := hex.EncodeToString(hash.Sum(nil))
-		current := snapshot(value)
-		changed := []string{}
-		if fingerprint != state.Fingerprint {
-			oldFields, newFields := reflect.ValueOf(state.Settings), reflect.ValueOf(current)
-			for i := range oldFields.NumField() {
-				if !reflect.DeepEqual(oldFields.Field(i).Interface(), newFields.Field(i).Interface()) {
-					changed = append(changed, oldFields.Type().Field(i).Tag.Get("json"))
-				}
-			}
-			if len(changed) == 0 {
-				changed = append(changed, "unreported_settings")
-			}
-			state.Revision++
-			state.Changed = time.Now().UTC()
-			state.Settings, state.Fingerprint = current, fingerprint
-		}
-		if applied && state.AppliedFingerprint != fingerprint {
-			state.AppliedChanged = time.Now().UTC()
-			state.AppliedFingerprint = fingerprint
-		}
+		changed := state.recordSave(snapshot(current), fingerprint)
 		if applied {
-			state.AppliedRevision = state.Revision
+			state.recordApply(fingerprint)
 		}
 		report = reportFromState(*state, "configuration")
 		report.PreviousRevision, report.ChangedFields, report.Applied = before, changed, applied
@@ -222,10 +272,7 @@ func (r *Reporter) RecordConfiguration(ctx context.Context, value config.Config,
 	if err != nil {
 		return err
 	}
-	if lookup != nil && r.networkEnabled() && r.allow("network", 1) {
-		identity := lookup(ctx)
-		report.Network = &identity
-	}
+	r.attachNetwork(ctx, &report, lookup)
 	r.sendResearch(report)
 
 	return nil
@@ -269,20 +316,30 @@ func (r *Reporter) RecordObservation(observation Observation) error {
 	return nil
 }
 
+var feedbackAnswers = map[string]bool{"working": true, "problems": true, "not-using": true}
+
+func knownProvider(provider string) bool {
+	if provider == "" {
+		return true
+	}
+	if _, ok := config.ProfileByID(provider); ok {
+		return true
+	}
+	_, ok := config.DefaultCatalog().ProviderByID(provider)
+
+	return ok
+}
+
 // Feedback records the user's answer to the confirmed-provider prompt.
 func (r *Reporter) Feedback(answer, provider string) error {
-	if answer != "working" && answer != "problems" && answer != "not-using" {
-		return errors.New("choose working, problems or not-using")
+	if !feedbackAnswers[answer] {
+		return errFeedbackAnswer
 	}
-	if provider != "" {
-		_, isProfile := config.ProfileByID(provider)
-		_, isProvider := config.DefaultCatalog().ProviderByID(provider)
-		if !isProfile && !isProvider {
-			return errors.New("unknown provider; use a provider or profile ID")
-		}
+	if !knownProvider(provider) {
+		return errUnknownProvider
 	}
 	if !r.researchEnabled() {
-		return errors.New("preset research is disabled or unavailable")
+		return errResearchUnavailable
 	}
 	var report researchReport
 	err := withResearchState(r.stateDir, func(state *researchState) error {
@@ -299,7 +356,7 @@ func (r *Reporter) Feedback(answer, provider string) error {
 		return err
 	}
 	if !r.sendResearch(report) {
-		return errors.New("feedback was not queued: reporting disabled or rate limit reached")
+		return errFeedbackNotQueued
 	}
 
 	return nil
@@ -348,101 +405,147 @@ func (r *Reporter) installationID() string {
 	if err := json.NewDecoder(io.LimitReader(file, researchStateLimit)).Decode(&state); err != nil {
 		return ""
 	}
-	id, err := hex.DecodeString(state.ID)
-	if err != nil || len(id) != researchIdentitySize {
+	if !validIdentity(state.ID) {
 		return ""
 	}
 
 	return state.ID
 }
 
+func validIdentity(value string) bool {
+	id, err := hex.DecodeString(value)
+
+	return err == nil && len(id) == researchIdentitySize
+}
+
+func newResearchState() (researchState, error) {
+	id := make([]byte, researchIdentitySize)
+	if _, err := rand.Read(id); err != nil {
+		return researchState{}, fmt.Errorf("generate telemetry installation identity: %w", err)
+	}
+
+	return researchState{ID: hex.EncodeToString(id)}, nil
+}
+
 // ResetIdentity starts a new local history. It cannot delete already sent events.
 func ResetIdentity(directory string) error {
 	return withResearchState(directory, func(state *researchState) error {
-		id := make([]byte, researchIdentitySize)
-		if _, err := rand.Read(id); err != nil {
+		fresh, err := newResearchState()
+		if err != nil {
 			return err
 		}
-		*state = researchState{ID: hex.EncodeToString(id)}
+		*state = fresh
 
 		return nil
 	})
 }
 
+type researchLock struct {
+	fd   int
+	file *os.File
+}
+
 // A separate stable lock protects atomic replacement across CLI/daemon processes.
-// Corruption fails closed; it must not silently manufacture a second installation.
-func withResearchState(directory string, update func(*researchState) error) error {
-	if directory == "" {
-		return errors.New("telemetry state directory is missing")
-	}
-	if err := os.MkdirAll(directory, filemode.PrivateDir); err != nil {
-		return err
-	}
+func acquireResearchLock(directory string) (researchLock, error) {
 	fd, err := unix.Open(filepath.Join(directory, "telemetry-research.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, filemode.PrivateFile)
 	if err != nil {
-		return err
+		return researchLock{}, fmt.Errorf("open telemetry state lock: %w", err)
 	}
-	lock := os.NewFile(uintptr(fd), "research-lock")
-	defer func() { _ = lock.Close() }()
+	file := os.NewFile(uintptr(fd), "research-lock")
 	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return err
+		_ = file.Close()
+
+		return researchLock{}, fmt.Errorf("lock telemetry state: %w", err)
 	}
-	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
-	state := researchState{}
-	path := filepath.Join(directory, "telemetry-research.json")
-	fd, err = unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+
+	return researchLock{fd: fd, file: file}, nil
+}
+
+func (l researchLock) release() {
+	_ = unix.Flock(l.fd, unix.LOCK_UN)
+	_ = l.file.Close()
+}
+
+// Corruption fails closed; it must not silently manufacture a second installation.
+func loadResearchState(path string) (researchState, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	switch {
 	case err == nil:
-		file := os.NewFile(uintptr(fd), "research-state")
-		data, readErr := io.ReadAll(io.LimitReader(file, researchStateLimit+1))
-		_ = file.Close()
-		if readErr != nil {
-			return readErr
-		}
-		if len(data) > researchStateLimit {
-			return errors.New("telemetry state exceeds size limit")
-		}
-		if err := json.Unmarshal(data, &state); err != nil {
-			return err
-		}
-		id, err := hex.DecodeString(state.ID)
-		if err != nil || len(id) != researchIdentitySize {
-			return errors.New("invalid telemetry identity")
-		}
-	case !errors.Is(err, os.ErrNotExist):
-		return err
+	case errors.Is(err, os.ErrNotExist):
+		return newResearchState()
 	default:
-		id := make([]byte, researchIdentitySize)
-		if _, err := rand.Read(id); err != nil {
-			return err
-		}
-		state.ID = hex.EncodeToString(id)
+		return researchState{}, fmt.Errorf("open telemetry state: %w", err)
 	}
-	if err := update(&state); err != nil {
-		return err
+	file := os.NewFile(uintptr(fd), "research-state")
+	data, readErr := io.ReadAll(io.LimitReader(file, researchStateLimit+1))
+	_ = file.Close()
+	if readErr != nil {
+		return researchState{}, fmt.Errorf("read telemetry state: %w", readErr)
 	}
+	if len(data) > researchStateLimit {
+		return researchState{}, errStateTooLarge
+	}
+	var state researchState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return researchState{}, fmt.Errorf("parse telemetry state: %w", err)
+	}
+	if !validIdentity(state.ID) {
+		return researchState{}, errInvalidIdentity
+	}
+
+	return state, nil
+}
+
+func writeResearchState(directory, path string, state researchState) error {
 	data, err := json.Marshal(state)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode telemetry state: %w", err)
 	}
 	file, err := os.CreateTemp(directory, ".telemetry-research-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create telemetry state file: %w", err)
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()
 
-		return err
+		return fmt.Errorf("write telemetry state: %w", err)
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
 
-		return err
+		return fmt.Errorf("sync telemetry state: %w", err)
 	}
 	if err := file.Close(); err != nil {
+		return fmt.Errorf("close telemetry state: %w", err)
+	}
+	if err := os.Rename(file.Name(), path); err != nil {
+		return fmt.Errorf("replace telemetry state: %w", err)
+	}
+
+	return nil
+}
+
+func withResearchState(directory string, update func(*researchState) error) error {
+	if directory == "" {
+		return errMissingStateDir
+	}
+	if err := os.MkdirAll(directory, filemode.PrivateDir); err != nil {
+		return fmt.Errorf("create telemetry state directory: %w", err)
+	}
+	lock, err := acquireResearchLock(directory)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	path := filepath.Join(directory, "telemetry-research.json")
+	state, err := loadResearchState(path)
+	if err != nil {
+		return err
+	}
+	if err := update(&state); err != nil {
 		return err
 	}
 
-	return os.Rename(file.Name(), path)
+	return writeResearchState(directory, path, state)
 }

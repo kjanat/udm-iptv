@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 )
@@ -57,31 +58,12 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	if err != nil {
 		return fmt.Errorf("observe device addresses: %w", err)
 	}
-	var jsonFile *os.File
-	if options.JSONPath != "" {
-		jsonFile, err = openReport(options.JSONPath)
-		if err != nil {
-			return fmt.Errorf("open JSON capture output: %w", err)
-		}
-		defer func() { resultErr = errors.Join(resultErr, jsonFile.Close()) }()
+	output, err := openCaptureOutput(options)
+	if err != nil {
+		return err
 	}
-	var textFile *os.File
-	if options.TextPath != "" {
-		textFile, err = openReport(options.TextPath)
-		if err != nil {
-			return fmt.Errorf("open text capture output: %w", err)
-		}
-		defer func() { resultErr = errors.Join(resultErr, textFile.Close()) }()
-	}
-	writer := diagnosticWriter{}
-	if jsonFile != nil {
-		writer.json = jsonFile
-	}
-	if textFile != nil {
-		writer.text = textFile
-	}
-	defer func() { resultErr = errors.Join(resultErr, writer.flush()) }()
-	write := writer.write
+	defer func() { resultErr = errors.Join(resultErr, output.close()) }()
+	write := output.writer.write
 	started := startedAt.UTC()
 	ends := endsAt.UTC()
 	if err := write(Event{Time: started, Type: "started", Message: "Capture started; expected completion " + ends.Format(time.RFC3339)}); err != nil {
@@ -99,55 +81,30 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	if err := write(Event{Time: initial.Timestamp, Type: "initial", Snapshot: &initial}); err != nil {
 		return err
 	}
-	interval := normalSampleInterval
-	switch options.Verbosity {
-	case "summary":
-		interval = summarySampleInterval
-	case "debug":
-		interval = debugSampleInterval
+	if err := application.sampleSnapshots(ctx, options, endsAt, sanitizer, addressFailures, write); err != nil {
+		return err
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	reserve := min(finalizeReserve, options.Capture/finalizeReserveDivisor)
-	finalize := time.NewTimer(time.Until(endsAt.Add(-reserve)))
-	defer finalize.Stop()
-	loop := true
-	for loop {
-		select {
-		case <-ctx.Done():
-			loop = false
-		case addressErr := <-addressFailures:
-			return fmt.Errorf("observe device addresses: %w", addressErr)
-		case <-finalize.C:
-			loop = false
-		case <-ticker.C:
-			sanitizer.refresh()
-			current, snapshotErr := application.snapshotWithin(ctx)
-			if snapshotErr != nil {
-				if ctx.Err() != nil {
-					loop = false
-
-					continue
-				}
-				err := write(Event{Time: time.Now().UTC(), Type: "error", Message: sanitizer.sanitize(snapshotErr.Error())})
-				if err != nil {
-					return err
-				}
-
-				continue
-			}
-			err := write(Event{Time: current.Timestamp, Type: "sample", Snapshot: &current})
-			if err != nil {
-				return err
-			}
-		}
-	}
-	if signalContext.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if stoppedBySignal(signalContext, ctx) {
 		return write(Event{Time: time.Now().UTC(), Type: "completed", Message: "Capture stopped by signal."})
 	}
+
+	return application.finalizeCapture(ctx, cursor, sanitizer, addressFailures, write)
+}
+
+func stoppedBySignal(signalContext, ctx context.Context) bool {
+	return signalContext.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
+}
+
+// expired reports whether the capture window already closed.
+func expired(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
+// finalizeCapture records the closing snapshot and the journal within
+// whatever remains of the capture window.
+func (application *Collector) finalizeCapture(ctx context.Context, cursor string, sanitizer *diagnosticSanitizer, addressFailures <-chan error, write func(Event) error) error {
 	if final, finalErr := application.snapshotWithin(ctx); finalErr == nil {
-		err := write(Event{Time: final.Timestamp, Type: "final", Snapshot: &final})
-		if err != nil {
+		if err := write(Event{Time: final.Timestamp, Type: "final", Snapshot: &final}); err != nil {
 			return err
 		}
 	}
@@ -157,20 +114,119 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	default:
 	}
 	sanitizer.refresh()
-	for _, line := range journalLines(ctx, cursor, journalLineLimit) {
-		if ctx.Err() != nil {
-			break
-		}
-		err := write(Event{Time: time.Now().UTC(), Type: "log", Log: sanitizer.sanitize(line)})
-		if err != nil {
-			return err
-		}
+	if err := writeJournal(ctx, cursor, sanitizer, write); err != nil {
+		return err
 	}
-	if ctx.Err() != nil {
+	if expired(ctx) {
 		return write(Event{Time: time.Now().UTC(), Type: "timeout", Message: "Capture deadline reached; a collector may have stalled."})
 	}
 
 	return write(Event{Time: time.Now().UTC(), Type: "completed", Message: "Capture finished within its deadline."})
+}
+
+type captureOutput struct {
+	writer diagnosticWriter
+	files  []*os.File
+}
+
+func openCaptureOutput(options Options) (*captureOutput, error) {
+	output := &captureOutput{}
+	for _, target := range []struct {
+		path string
+		kind string
+		into *syncingWriter
+	}{
+		{options.JSONPath, "JSON", &output.writer.json},
+		{options.TextPath, "text", &output.writer.text},
+	} {
+		if target.path == "" {
+			continue
+		}
+		file, err := openReport(target.path)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("open %s capture output: %w", target.kind, err), output.closeFiles())
+		}
+		*target.into = file
+		output.files = append(output.files, file)
+	}
+
+	return output, nil
+}
+
+func (output *captureOutput) close() error {
+	return errors.Join(output.writer.flush(), output.closeFiles())
+}
+
+func (output *captureOutput) closeFiles() error {
+	var result error
+	for _, file := range slices.Backward(output.files) {
+		result = errors.Join(result, file.Close())
+	}
+
+	return result
+}
+
+func sampleInterval(verbosity string) time.Duration {
+	switch verbosity {
+	case "summary":
+		return summarySampleInterval
+	case "debug":
+		return debugSampleInterval
+	}
+
+	return normalSampleInterval
+}
+
+// sampleSnapshots records periodic snapshots until the capture must be
+// finalized, reserving time for the final snapshot and the journal.
+func (application *Collector) sampleSnapshots(ctx context.Context, options Options, endsAt time.Time, sanitizer *diagnosticSanitizer, addressFailures <-chan error, write func(Event) error) error {
+	ticker := time.NewTicker(sampleInterval(options.Verbosity))
+	defer ticker.Stop()
+	reserve := min(finalizeReserve, options.Capture/finalizeReserveDivisor)
+	finalize := time.NewTimer(time.Until(endsAt.Add(-reserve)))
+	defer finalize.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case addressErr := <-addressFailures:
+			return fmt.Errorf("observe device addresses: %w", addressErr)
+		case <-finalize.C:
+			return nil
+		case <-ticker.C:
+			finished, err := application.writeSample(ctx, sanitizer, write)
+			if err != nil || finished {
+				return err
+			}
+		}
+	}
+}
+
+// writeSample reports whether the capture deadline ended the sample.
+func (application *Collector) writeSample(ctx context.Context, sanitizer *diagnosticSanitizer, write func(Event) error) (bool, error) {
+	sanitizer.refresh()
+	current, err := application.snapshotWithin(ctx)
+	if err == nil {
+		return false, write(Event{Time: current.Timestamp, Type: "sample", Snapshot: &current})
+	}
+	if expired(ctx) {
+		return true, nil
+	}
+
+	return false, write(Event{Time: time.Now().UTC(), Type: "error", Message: sanitizer.sanitize(err.Error())})
+}
+
+func writeJournal(ctx context.Context, cursor string, sanitizer *diagnosticSanitizer, write func(Event) error) error {
+	for _, line := range journalLines(ctx, cursor, journalLineLimit) {
+		if expired(ctx) {
+			break
+		}
+		if err := write(Event{Time: time.Now().UTC(), Type: "log", Log: sanitizer.sanitize(line)}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 type collectedValue[T any] struct {
@@ -188,7 +244,7 @@ func collectWithin[T any](ctx context.Context, collect func() (T, error)) (T, er
 	case <-ctx.Done():
 		var zero T
 
-		return zero, ctx.Err()
+		return zero, fmt.Errorf("wait for diagnostics collection: %w", ctx.Err())
 	case value := <-result:
 		return value.value, value.err
 	}

@@ -60,7 +60,10 @@ const (
 	profileLegacy = "legacy"
 )
 
-var errCatalogReference = errors.New("catalog reference")
+var (
+	errCatalogReference = errors.New("catalog reference")
+	errUnknownProfile   = errors.New("unknown provider profile")
+)
 
 type catalogDocument struct {
 	Schema        string                        `json:"$schema"`
@@ -324,7 +327,7 @@ func (catalog Catalog) Apply(id string, current Config) (Config, error) {
 	}
 	profile, found := catalog.Profile(id)
 	if !found {
-		return Config{}, fmt.Errorf("unknown provider profile %q", id)
+		return Config{}, fmt.Errorf("%w %q", errUnknownProfile, id)
 	}
 	value := profile.Config.Clone()
 	value.Telemetry = current.Telemetry

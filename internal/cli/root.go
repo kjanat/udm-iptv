@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -11,6 +12,11 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
+)
+
+var (
+	errNeedsRoot  = errors.New("this command must be run as root")
+	errNeedsLinux = errors.New("this command requires Linux")
 )
 
 // Application holds the shared state the udm-iptv CLI commands operate on.
@@ -39,10 +45,12 @@ func Execute(version string) error {
 		Err:             os.Stderr,
 		networkIdentity: telemetry.LookupNetwork,
 	}
-	root := application.root()
-	application.instrumentCommands(root)
+	executed, err := application.root().ExecuteC()
+	if err != nil {
+		return fmt.Errorf("%s: %w", executed.CommandPath(), err)
+	}
 
-	return root.Execute()
+	return nil
 }
 
 func (application *Application) root() *cobra.Command {
@@ -101,10 +109,10 @@ func env(name, fallback string) string {
 
 func requireRoot() error {
 	if os.Geteuid() != 0 {
-		return errors.New("this command must be run as root")
+		return errNeedsRoot
 	}
 	if runtime.GOOS != "linux" {
-		return errors.New("this command requires Linux")
+		return errNeedsLinux
 	}
 
 	return nil
