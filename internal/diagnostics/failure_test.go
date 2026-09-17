@@ -27,14 +27,17 @@ func TestJournalOutputBound(t *testing.T) {
 	if n, err := output.Write([]byte("123456")); n != 6 || err != nil {
 		t.Fatal(n, err)
 	}
-	if n, err := output.Write([]byte("78901234")); n != 2 || !errors.Is(err, io.ErrShortBuffer) {
+	if n, err := output.Write([]byte("78901234")); n != 8 || err != nil {
 		t.Fatal(n, err)
 	}
-	if output.String() != "12345678" {
-		t.Fatal("journal exceeded memory limit")
+	if output.String() != "78901234" {
+		t.Fatal(output.String())
 	}
-	if n, err := output.Write([]byte("more")); n != 0 || !errors.Is(err, io.ErrShortBuffer) {
+	if n, err := output.Write([]byte("more")); n != 4 || err != nil {
 		t.Fatal(n, err)
+	}
+	if output.String() != "1234more" {
+		t.Fatal(output.String())
 	}
 }
 

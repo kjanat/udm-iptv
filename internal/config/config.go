@@ -57,6 +57,44 @@ type Config struct {
 	Telemetry Telemetry `json:"telemetry"`
 }
 
+type configJSON struct {
+	Profile   string          `json:"profile"`
+	WAN       WAN             `json:"wan"`
+	LAN       LAN             `json:"lan"`
+	Proxy     Proxy           `json:"proxy"`
+	Telemetry json.RawMessage `json:"telemetry"`
+}
+
+func decodeConfig(data []byte) (Config, error) {
+	var parsed configJSON
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return Config{}, fmt.Errorf("parse configuration: %w", err)
+	}
+	value := Config{Profile: parsed.Profile, WAN: parsed.WAN, LAN: parsed.LAN, Proxy: parsed.Proxy}
+	if len(parsed.Telemetry) == 0 || string(parsed.Telemetry) == "null" {
+		value.Telemetry = defaultTelemetry()
+
+		return value, nil
+	}
+	telemetry, err := decodeTelemetry(parsed.Telemetry)
+	if err != nil {
+		return Config{}, err
+	}
+	value.Telemetry = telemetry
+
+	return value, nil
+}
+
+func decodeTelemetry(data []byte) (Telemetry, error) {
+	value := defaultTelemetry()
+	type raw Telemetry
+	if err := json.Unmarshal(data, (*raw)(&value)); err != nil {
+		return Telemetry{}, fmt.Errorf("parse configuration: %w", err)
+	}
+
+	return value, nil
+}
+
 // Telemetry holds the configuration for telemetry collection and reporting.
 type Telemetry struct {
 	Presets         bool    `json:"presets"`
@@ -108,8 +146,12 @@ func genericBase() Config {
 		WAN:       WAN{Interface: "eth8", VLANInterface: "iptv"},
 		LAN:       LAN{Interfaces: []string{"br0"}},
 		Proxy:     Proxy{Program: "improxy", IGMPVersion: DefaultIGMPVersion},
-		Telemetry: Telemetry{Enabled: true, Errors: true, Logs: true, Metrics: true, Tracing: true, TraceRate: DefaultTraceRate, Presets: true, NetworkIdentity: true},
+		Telemetry: defaultTelemetry(),
 	}
+}
+
+func defaultTelemetry() Telemetry {
+	return Telemetry{Enabled: true, Errors: true, Logs: true, Metrics: true, Tracing: true, TraceRate: DefaultTraceRate, Presets: true, NetworkIdentity: true}
 }
 
 // Default is a configuration with no provider in it: the interface names and
@@ -137,8 +179,8 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read configuration: %w", err)
 	}
-	var value Config
-	if err := json.Unmarshal(data, &value); err != nil {
+	value, err := decodeConfig(data)
+	if err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if err := value.Validate(); err != nil {

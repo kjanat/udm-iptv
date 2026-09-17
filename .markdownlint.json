@@ -1,0 +1,5 @@
+{
+	"$schema": "https://cdn.jsdelivr.net/gh/DavidAnson/markdownlint/schema/markdownlint-config-schema.json",
+	"line-length": false,
+	"link-image-reference-definitions": false
+}

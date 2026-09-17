@@ -69,11 +69,20 @@ func (s *searchable) keystroke(text string, backspace, escape bool) bool {
 	default:
 		return false
 	}
-	if s.filter != "" && s.value != nil {
-		*s.value = s.matching(s.filter)[0].Value
-	}
+	s.pinFirstMatch()
 
 	return true
+}
+
+func (s *searchable) pinFirstMatch() {
+	if s.filter == "" || s.value == nil {
+		return
+	}
+	matches := s.matching(s.filter)
+	if len(matches) == 0 {
+		return
+	}
+	*s.value = matches[0].Value
 }
 
 func searchText(text string) bool {

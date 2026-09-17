@@ -27,19 +27,21 @@ func Ports() []Port {
 	if err != nil {
 		return nil
 	}
-	route := defaultRouteInterfaceFromSystem()
-	candidates := wanInterfacesForBoard(Board())
+	ethernet := listEthernet()
+	internet := defaultRouteInterfaceFromSystem()
+	route := walkToEthernet(internet, sysLower)
+	candidates := wanCandidateList(ethernet, skippedLinks(ethernet), wanHints(Board()))
 	var ports []Port
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		port := Port{Name: iface.Name, Description: describePort(iface.Name, route, candidates)}
+		port := Port{Name: iface.Name, Description: describePort(iface.Name, internet, route, candidates)}
 		port.Addresses, port.AddressesKnown = interfaceAddresses(iface)
 		ports = append(ports, port)
 	}
 	sort.SliceStable(ports, func(i, j int) bool {
-		return wanRank(ports[i].Name, route, candidates) < wanRank(ports[j].Name, route, candidates)
+		return wanRank(ports[i].Name, internet, route, candidates) < wanRank(ports[j].Name, internet, route, candidates)
 	})
 
 	return ports
@@ -60,9 +62,9 @@ func carrierState(name string) string {
 	}
 }
 
-func describePort(name, route string, candidates []string) string {
+func describePort(name, internet, route string, candidates []string) string {
 	description := carrierState(name)
-	if name == route {
+	if name == internet || name == route {
 		description += ", Internet route"
 	}
 	if slicesContain(candidates, name) {
@@ -85,9 +87,9 @@ func interfaceAddresses(iface net.Interface) ([]string, bool) {
 	return result, true
 }
 
-func wanRank(name, route string, candidates []string) int {
+func wanRank(name, internet, route string, candidates []string) int {
 	switch {
-	case name == route:
+	case name == internet || name == route:
 		return rankRoute
 	case slicesContain(candidates, name):
 		return rankCandidate

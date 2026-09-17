@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -219,6 +220,8 @@ func TestSDKConfigurationPreservesPrivacyAndSampling(t *testing.T) {
 	assertEqual(t, "tracing", options.EnableTracing, true)
 	assertEqual(t, "traces sample rate", options.TracesSampleRate, 0.2)
 	assertEqual(t, "release", options.Release, "udm-iptv@test")
+	stamp := vcsStamp(debug.ReadBuildInfo())
+	assertEqual(t, "dist", options.Dist, stamp.revision)
 	assertEqual(t, "environment", options.Environment, "production")
 	assertEqual(t, "server name", options.ServerName, "udm-iptv")
 	assertPrivacyFilters(t, options)
@@ -292,9 +295,26 @@ func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
 	assertNoLeaks(t, failures, "secret")
 }
 
+func TestSetMetadataAllowlist(t *testing.T) {
+	t.Parallel()
+	r, _ := newRecordingReporter(t, testSettings())
+	r.SetMetadata("UDR7", "5.1.31", "UDMPRO.al324.v5.1.31.5acc35d.260819.1714", "0xea15", "improxy", "kpn")
+	assertEqual(t, "model", r.metadata["model"], "UDR7")
+	assertEqual(t, "firmware", r.metadata["firmware"], "5.1.31")
+	assertEqual(t, "firmware_discovery", r.metadata["firmware_discovery"], "UDMPRO.al324.v5.1.31.5acc35d.260819.1714")
+	assertEqual(t, "sysid", r.metadata["sysid"], "ea15")
+	r.SetMetadata("UDM-Pro", "latest", "UDMPRO.al324.v5.1.31.5acc35d.260819.1714 extra", "78:45:58:f8:ed:4f", "dnsmasq", "nope")
+	if len(r.metadata) != 0 {
+		t.Fatalf("rejected values kept: %+v", r.metadata)
+	}
+}
+
 func TestAllProductsAndPrivacy(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
-	r.SetMetadata("UDMPRO", "5.1.31", "improxy", "kpn")
+	r.SetMetadata("UDMPRO", "5.1.31", "UDMPRO.al324.v5.1.31.5acc35d.260819.1714", "ea15", "improxy", "kpn")
+	if r.dist != "" && r.eventTags()["vcs.revision"] != r.dist {
+		t.Fatal("device metadata replaced the build revision")
+	}
 	secret := errLeakyPayload.Error()
 	err := r.Run(context.Background(), "install", func(context.Context) error { return errLeakyPayload })
 	if err == nil || err.Error() != secret {
@@ -343,6 +363,10 @@ func assertEventFiltered(t *testing.T, r *Reporter) {
 		t.Fatal("allowed event dropped")
 	}
 	assertEqual(t, "exception message", clean.Exception[0].Value, "install failed")
+	assertEqual(t, "dist", clean.Dist, r.dist)
+	if r.dist != "" {
+		assertEqual(t, "vcs.revision", clean.Tags["vcs.revision"], r.dist)
+	}
 	assertEqual(t, "attachments", len(clean.Attachments), 0)
 	assertEqual(t, "diagnostic stack location", clean.Exception[0].Stacktrace.Frames[0].Lineno, 42)
 	data, err := json.Marshal(clean)

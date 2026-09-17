@@ -1,10 +1,8 @@
 package diagnostics
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -19,23 +17,34 @@ const (
 )
 
 type boundedJournal struct {
-	bytes.Buffer
-
+	buf   []byte
 	limit int
 }
 
 func (output *boundedJournal) Write(data []byte) (int, error) {
-	remaining := output.limit - output.Len()
-	if len(data) > remaining {
-		n, _ := output.Buffer.Write(data[:remaining])
-		return n, io.ErrShortBuffer
+	if output.limit <= 0 {
+		output.buf = output.buf[:0]
+		return len(data), nil
 	}
-	n, err := output.Buffer.Write(data)
-	if err != nil {
-		return n, fmt.Errorf("buffer journal output: %w", err)
+	if len(data) >= output.limit {
+		output.buf = append(output.buf[:0], data[len(data)-output.limit:]...)
+		return len(data), nil
 	}
+	total := len(output.buf) + len(data)
+	if total > output.limit {
+		output.buf = append(output.buf[total-output.limit:], data...)
+		return len(data), nil
+	}
+	output.buf = append(output.buf, data...)
+	return len(data), nil
+}
 
-	return n, nil
+func (output *boundedJournal) Bytes() []byte {
+	return output.buf
+}
+
+func (output *boundedJournal) String() string {
+	return string(output.buf)
 }
 
 func journalOutput(ctx context.Context, limit int, arguments ...string) ([]byte, error) {

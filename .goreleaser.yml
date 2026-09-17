@@ -10,7 +10,7 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [linux]
     goarch: [arm64]
-    flags: [-trimpath]
+    flags: [-trimpath, -buildvcs=true]
     ldflags: ['-s -w -X main.version={{ .Version }} -X github.com/kjanat/udm-iptv/internal/telemetry.DSN={{ index .Env "SENTRY_DSN" }}']
 
 archives:

@@ -7,9 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"path/filepath"
-	"regexp"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/getsentry/sentry-go/attribute"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/device"
 )
 
 // DSN is injected into official releases using -ldflags -X. Unstamped builds
@@ -50,16 +52,19 @@ const (
 // Reporter sends bounded telemetry events to Sentry.
 // It is safe to call its methods concurrently.
 type Reporter struct {
-	client     *sentry.Client
-	hub        *sentry.Hub
-	settings   config.Telemetry
-	configPath string
-	stateDir   string
-	release    string
-	mu         sync.Mutex
-	window     time.Time
-	counts     map[string]int
-	metadata   map[string]string
+	client      *sentry.Client
+	hub         *sentry.Hub
+	settings    config.Telemetry
+	configPath  string
+	stateDir    string
+	release     string
+	dist        string
+	vcsModified string
+	goVersion   string
+	mu          sync.Mutex
+	window      time.Time
+	counts      map[string]int
+	metadata    map[string]string
 }
 
 // New returns a Reporter that sends events to Sentry, or
@@ -77,7 +82,11 @@ func New(settings config.Telemetry, version, configPath, stateDir string) (*Repo
 }
 
 func newReporter(settings config.Telemetry, version string, transport sentry.Transport, dsn string) (*Reporter, error) {
-	r := &Reporter{settings: settings, release: "udm-iptv@" + version, counts: make(map[string]int)}
+	stamp := vcsStamp(debug.ReadBuildInfo())
+	r := &Reporter{
+		settings: settings, release: "udm-iptv@" + version, counts: make(map[string]int),
+		dist: stamp.revision, vcsModified: stamp.modified, goVersion: stamp.toolchain,
+	}
 	if !settings.Enabled || (!settings.Errors && !settings.Logs && !settings.Metrics && !settings.Tracing && !settings.Presets && !settings.NetworkIdentity) {
 		return r, nil
 	}
@@ -85,7 +94,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 		return nil, errNoTelemetryEndpoint
 	}
 	client, err := sentry.NewClient(sentry.ClientOptions{
-		Dsn: dsn, Release: r.release, Environment: "production", ServerName: "udm-iptv",
+		Dsn: dsn, Release: r.release, Dist: r.dist, Environment: "production", ServerName: "udm-iptv",
 		Transport: transport, HTTPClient: &http.Client{Timeout: sentryRequestTimeout},
 		EnableTracing: settings.Tracing, TracesSampleRate: settings.TraceRate,
 		DataCollection: &sentry.DataCollection{
@@ -155,18 +164,20 @@ var operations = map[string]bool{
 	"dhcp.acquire": true, "service.health": true,
 }
 
-var firmwareVersion = regexp.MustCompile(`^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$`)
-
-// SetMetadata accepts only known hardware/profile names and numeric firmware.
-// It must be called before running operations or starting metric collection.
-func (r *Reporter) SetMetadata(model, firmware, proxy, profile string) {
+// SetMetadata stores allowlisted board, firmware, proxy and profile tags.
+func (r *Reporter) SetMetadata(model, firmware, discovery, sysid, proxy, profile string) {
 	r.metadata = make(map[string]string)
-	switch model {
-	case "UDM", "UDMPRO", "UDMPROSE", "UDMPROMAX", "UDMEA4C", "UXGPRO", "UXG":
+	if device.KnownBoard(model) {
 		r.metadata["model"] = model
 	}
-	if firmwareVersion.MatchString(firmware) {
+	if device.ValidFirmware(firmware) {
 		r.metadata["firmware"] = firmware
+	}
+	if device.ValidDiscovery(discovery) {
+		r.metadata["firmware_discovery"] = discovery
+	}
+	if id := device.NormalizeSysID(sysid); id != "" {
+		r.metadata["sysid"] = id
 	}
 	if proxy == "improxy" || proxy == "igmpproxy" {
 		r.metadata["proxy"] = proxy
@@ -370,10 +381,10 @@ func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry
 		return nil
 	}
 	clean := &sentry.Event{
-		EventID: event.EventID, Timestamp: event.Timestamp, Platform: "go", Release: r.release,
+		EventID: event.EventID, Timestamp: event.Timestamp, Platform: "go", Release: r.release, Dist: r.dist,
 		Level: event.Level, Transaction: event.Transaction, Type: event.Type, StartTime: event.StartTime,
 	}
-	clean.Tags = r.metadata
+	clean.Tags = r.eventTags()
 	clean.User = sentry.User{ID: r.installationID()}
 	clean.Contexts = cleanTraceContext(event.Contexts)
 	if event.Type == "transaction" {
@@ -418,12 +429,31 @@ func cleanExceptions(exceptions []sentry.Exception, transaction string) []sentry
 	return result
 }
 
+func (r *Reporter) eventTags() map[string]string {
+	tags := make(map[string]string, len(r.metadata))
+	maps.Copy(tags, r.metadata)
+	if r.dist != "" {
+		tags["vcs.revision"] = r.dist
+	}
+	if r.vcsModified != "" {
+		tags["vcs.modified"] = r.vcsModified
+	}
+	if r.goVersion != "" {
+		tags["go"] = r.goVersion
+	}
+	if len(tags) == 0 {
+		return nil
+	}
+
+	return tags
+}
+
 func (r *Reporter) attributes() map[string]attribute.Value {
 	result := map[string]attribute.Value{"sentry.release": attribute.StringValue(r.release)}
 	if id := r.installationID(); id != "" {
 		result["installation_id"] = attribute.StringValue(id)
 	}
-	for key, value := range r.metadata {
+	for key, value := range r.eventTags() {
 		result[key] = attribute.StringValue(value)
 	}
 
