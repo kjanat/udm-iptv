@@ -13,9 +13,10 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
-// Defaults returns config.Default with WAN and LAN interfaces detected for this board.
+// Defaults seeds a fresh installation, before the wizard asks for a provider,
+// with the KPN profile and the WAN and LAN interfaces detected for this board.
 func Defaults() config.Config {
-	return WithInterfaces(config.Default())
+	return WithInterfaces(config.DefaultKPN())
 }
 
 // WithInterfaces replaces value's WAN and LAN interfaces with ones detected for this board.

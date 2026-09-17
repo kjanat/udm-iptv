@@ -8,12 +8,14 @@ import (
 	"testing"
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state", "config.json")
-	want := Default()
+	// A provider config exercises every omitempty slice on the way out.
+	want := DefaultKPN()
 	want.WAN.AllowDefaultRoute = true
 	want.Proxy.SourceRanges = []string{"195.121.0.0/16"}
 	if err := Save(path, want); err != nil {
@@ -30,8 +32,15 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("config mode = %o, want 600", info.Mode().Perm())
+	if info.Mode().Perm() != filemode.PrivateFile {
+		t.Fatalf("config mode = %o, want %o", info.Mode().Perm(), filemode.PrivateFile)
+	}
+	directory, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if directory.Mode().Perm() != filemode.PrivateDir {
+		t.Fatalf("configuration directory mode = %o, want %o", directory.Mode().Perm(), filemode.PrivateDir)
 	}
 }
 
@@ -146,7 +155,12 @@ func TestMagentaTVDoesNotRunDHCPOnPPPInterface(t *testing.T) {
 
 func TestNATAndProxyRangesAreIndependent(t *testing.T) {
 	t.Parallel()
-	value := Default()
+	// A provider config starts with both lists populated, so this proves they
+	// are separate storage rather than comparing against an empty slice.
+	value := DefaultKPN()
+	if len(value.WAN.NATDestinations) == 0 || len(value.Proxy.SourceRanges) == 0 {
+		t.Fatal("provider profile lost its prefixes")
+	}
 	value.Proxy.SourceRanges = []string{"198.51.100.0/24"}
 	if reflect.DeepEqual(value.WAN.NATDestinations, value.Proxy.SourceRanges) {
 		t.Fatal("NAT destinations and proxy sources must be independent")
