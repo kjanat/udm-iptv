@@ -52,5 +52,5 @@ nfpms:
       fields: { Bugs: https://github.com/kjanat/udm-iptv/issues }
 
 checksum: { name_template: SHA256SUMS }
-changelog: { use: github-native }
+changelog: { disable: true }
 release: { draft: true, name_template: "udm-iptv {{ .Tag }}" }
