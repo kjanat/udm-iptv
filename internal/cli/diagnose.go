@@ -280,11 +280,13 @@ func (application *Application) startCaptureWorker(ctx context.Context, options 
 	if err := worker.Start(); err != nil {
 		return 0, errors.Join(fmt.Errorf("start capture worker: %w", err), os.Remove(errorLog.Name()))
 	}
+	// Release invalidates the handle, so the reported id is read first.
+	pid := worker.Process.Pid
 	if err := worker.Process.Release(); err != nil {
 		return 0, fmt.Errorf("detach capture worker: %w", err)
 	}
 
-	return worker.Process.Pid, nil
+	return pid, nil
 }
 
 func (application *Application) reportCaptureStarted(options diagnostics.Options, pid int, logPath string, completion time.Time) error {
