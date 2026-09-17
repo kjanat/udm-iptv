@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,41 @@ const (
 	presetsPerMinute = 5
 )
 
+const (
+	envProduction  = "production"
+	envPreview     = "preview"
+	envDevelopment = "development"
+)
+
+var previewIdentifiers = map[string]bool{"preview": true, "rc": true, "alpha": true, "beta": true}
+
+func environmentFor(version string) string {
+	v := strings.ToLower(version)
+	switch {
+	case v == "" || v == "dev" || strings.Contains(v, "snapshot") || strings.Contains(v, "-next"):
+		return envDevelopment
+	case hasPreviewIdentifier(v):
+		return envPreview
+	default:
+		return envProduction
+	}
+}
+
+func hasPreviewIdentifier(version string) bool {
+	_, prerelease, ok := strings.Cut(version, "-")
+	if !ok {
+		return false
+	}
+	prerelease, _, _ = strings.Cut(prerelease, "+")
+	for identifier := range strings.SplitSeq(prerelease, ".") {
+		if previewIdentifiers[strings.TrimRight(identifier, "0123456789")] {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Reporter sends bounded telemetry events to Sentry.
 // It is safe to call its methods concurrently.
 type Reporter struct {
@@ -58,6 +94,7 @@ type Reporter struct {
 	configPath  string
 	stateDir    string
 	release     string
+	environment string
 	dist        string
 	vcsModified string
 	goVersion   string
@@ -84,8 +121,9 @@ func New(settings config.Telemetry, version, configPath, stateDir string) (*Repo
 func newReporter(settings config.Telemetry, version string, transport sentry.Transport, dsn string) (*Reporter, error) {
 	stamp := vcsStamp(debug.ReadBuildInfo())
 	r := &Reporter{
-		settings: settings, release: "udm-iptv@" + version, counts: make(map[string]int),
-		dist: stamp.revision, vcsModified: stamp.modified, goVersion: stamp.toolchain,
+		settings: settings, release: "udm-iptv@" + version, environment: environmentFor(version),
+		counts: make(map[string]int),
+		dist:   stamp.revision, vcsModified: stamp.modified, goVersion: stamp.toolchain,
 	}
 	if !settings.Enabled || (!settings.Errors && !settings.Logs && !settings.Metrics && !settings.Tracing && !settings.Presets && !settings.NetworkIdentity) {
 		return r, nil
@@ -94,7 +132,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 		return nil, errNoTelemetryEndpoint
 	}
 	client, err := sentry.NewClient(sentry.ClientOptions{
-		Dsn: dsn, Release: r.release, Dist: r.dist, Environment: "production", ServerName: "udm-iptv",
+		Dsn: dsn, Release: r.release, Dist: r.dist, Environment: r.environment, ServerName: "udm-iptv",
 		Transport: transport, HTTPClient: &http.Client{Timeout: sentryRequestTimeout},
 		EnableTracing: settings.Tracing, TracesSampleRate: settings.TraceRate,
 		DataCollection: &sentry.DataCollection{
@@ -375,13 +413,14 @@ func cleanTraceContext(contexts map[string]sentry.Context) map[string]sentry.Con
 
 func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	if event.Transaction == researchTransaction {
-		return r.filterResearch(event)
+		return nil
 	}
 	if !operations[event.Transaction] || !r.allowsEvent(event) {
 		return nil
 	}
 	clean := &sentry.Event{
 		EventID: event.EventID, Timestamp: event.Timestamp, Platform: "go", Release: r.release, Dist: r.dist,
+		Environment: r.environment, Sdk: sentry.SdkInfo{Name: "sentry.go", Version: sentry.SDKVersion},
 		Level: event.Level, Transaction: event.Transaction, Type: event.Type, StartTime: event.StartTime,
 	}
 	clean.Tags = r.eventTags()
@@ -461,6 +500,9 @@ func (r *Reporter) attributes() map[string]attribute.Value {
 }
 
 func (r *Reporter) filterLog(log *sentry.Log) *sentry.Log {
+	if researchLog(log.Body) {
+		return r.filterResearchLog(log)
+	}
 	if !r.settings.Logs {
 		return nil
 	}
@@ -477,6 +519,10 @@ func (r *Reporter) filterLog(log *sentry.Log) *sentry.Log {
 	}
 
 	return &sentry.Log{Timestamp: log.Timestamp, TraceID: log.TraceID, SpanID: log.SpanID, Level: log.Level, Severity: log.Severity, Body: log.Body, Attributes: r.attributes()}
+}
+
+func researchLog(body string) bool {
+	return body == "installation configuration" || body == "installation observation" || body == "installation feedback"
 }
 
 var metricNames = map[string]bool{

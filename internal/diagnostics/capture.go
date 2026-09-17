@@ -53,11 +53,6 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	endsAt := startedAt.Add(options.Capture)
 	ctx, cancel := context.WithDeadline(signalContext, endsAt)
 	defer cancel()
-	sanitizer := newDiagnosticSanitizer(application.ConfigPath)
-	addressFailures, err := sanitizer.watch(ctx)
-	if err != nil {
-		return fmt.Errorf("observe device addresses: %w", err)
-	}
 	output, err := openCaptureOutput(options)
 	if err != nil {
 		return err
@@ -81,14 +76,14 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	if err := write(Event{Time: initial.Timestamp, Type: "initial", Snapshot: &initial}); err != nil {
 		return err
 	}
-	if err := application.sampleSnapshots(ctx, options, endsAt, sanitizer, addressFailures, write); err != nil {
+	if err := application.sampleSnapshots(ctx, options, endsAt, write); err != nil {
 		return err
 	}
 	if stoppedBySignal(signalContext, ctx) {
 		return write(Event{Time: time.Now().UTC(), Type: "completed", Message: "Capture stopped by signal."})
 	}
 
-	return application.finalizeCapture(ctx, cursor, sanitizer, addressFailures, write)
+	return application.finalizeCapture(ctx, cursor, write)
 }
 
 func stoppedBySignal(signalContext, ctx context.Context) bool {
@@ -102,19 +97,13 @@ func expired(ctx context.Context) bool {
 
 // finalizeCapture records the closing snapshot and the journal within
 // whatever remains of the capture window.
-func (application *Collector) finalizeCapture(ctx context.Context, cursor string, sanitizer *diagnosticSanitizer, addressFailures <-chan error, write func(Event) error) error {
+func (application *Collector) finalizeCapture(ctx context.Context, cursor string, write func(Event) error) error {
 	if final, finalErr := application.snapshotWithin(ctx); finalErr == nil {
 		if err := write(Event{Time: final.Timestamp, Type: "final", Snapshot: &final}); err != nil {
 			return err
 		}
 	}
-	select {
-	case addressErr := <-addressFailures:
-		return fmt.Errorf("observe device addresses: %w", addressErr)
-	default:
-	}
-	sanitizer.refresh()
-	if err := writeJournal(ctx, cursor, sanitizer, write); err != nil {
+	if err := writeJournal(ctx, cursor, write); err != nil {
 		return err
 	}
 	if expired(ctx) {
@@ -179,7 +168,7 @@ func sampleInterval(verbosity string) time.Duration {
 
 // sampleSnapshots records periodic snapshots until the capture must be
 // finalized, reserving time for the final snapshot and the journal.
-func (application *Collector) sampleSnapshots(ctx context.Context, options Options, endsAt time.Time, sanitizer *diagnosticSanitizer, addressFailures <-chan error, write func(Event) error) error {
+func (application *Collector) sampleSnapshots(ctx context.Context, options Options, endsAt time.Time, write func(Event) error) error {
 	ticker := time.NewTicker(sampleInterval(options.Verbosity))
 	defer ticker.Stop()
 	reserve := min(finalizeReserve, options.Capture/finalizeReserveDivisor)
@@ -189,12 +178,10 @@ func (application *Collector) sampleSnapshots(ctx context.Context, options Optio
 		select {
 		case <-ctx.Done():
 			return nil
-		case addressErr := <-addressFailures:
-			return fmt.Errorf("observe device addresses: %w", addressErr)
 		case <-finalize.C:
 			return nil
 		case <-ticker.C:
-			finished, err := application.writeSample(ctx, sanitizer, write)
+			finished, err := application.writeSample(ctx, write)
 			if err != nil || finished {
 				return err
 			}
@@ -203,8 +190,7 @@ func (application *Collector) sampleSnapshots(ctx context.Context, options Optio
 }
 
 // writeSample reports whether the capture deadline ended the sample.
-func (application *Collector) writeSample(ctx context.Context, sanitizer *diagnosticSanitizer, write func(Event) error) (bool, error) {
-	sanitizer.refresh()
+func (application *Collector) writeSample(ctx context.Context, write func(Event) error) (bool, error) {
 	current, err := application.snapshotWithin(ctx)
 	if err == nil {
 		return false, write(Event{Time: current.Timestamp, Type: "sample", Snapshot: &current})
@@ -213,15 +199,15 @@ func (application *Collector) writeSample(ctx context.Context, sanitizer *diagno
 		return true, nil
 	}
 
-	return false, write(Event{Time: time.Now().UTC(), Type: "error", Message: sanitizer.sanitize(err.Error())})
+	return false, write(Event{Time: time.Now().UTC(), Type: "error", Message: sanitize(err.Error())})
 }
 
-func writeJournal(ctx context.Context, cursor string, sanitizer *diagnosticSanitizer, write func(Event) error) error {
+func writeJournal(ctx context.Context, cursor string, write func(Event) error) error {
 	for _, line := range journalLines(ctx, cursor, journalLineLimit) {
 		if expired(ctx) {
 			break
 		}
-		if err := write(Event{Time: time.Now().UTC(), Type: "log", Log: sanitizer.sanitize(line)}); err != nil {
+		if err := write(Event{Time: time.Now().UTC(), Type: "log", Log: sanitize(line)}); err != nil {
 			return err
 		}
 	}

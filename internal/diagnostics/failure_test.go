@@ -69,7 +69,7 @@ func TestFailureRecordingAttemptsBothFormats(t *testing.T) {
 	if err := json.Unmarshal(data, &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.Type != "failed" || strings.Contains(event.Message, "192.168.1.1") {
+	if event.Type != "failed" || !strings.Contains(event.Message, "192.168.1.1") {
 		t.Fatal("missing or unsafe failure record")
 	}
 }

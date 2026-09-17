@@ -65,6 +65,7 @@ func (application *Application) root() *cobra.Command {
 	command.SetErr(application.Err)
 	command.Version = application.Version
 	command.SetVersionTemplate("udm-iptv {{.Version}}\n")
+	command.CompletionOptions.DisableDefaultCmd = true
 	command.PersistentFlags().StringVar(&application.ConfigPath, "config", application.ConfigPath, "configuration file")
 	command.AddGroup(
 		&cobra.Group{ID: "manage", Title: "Management Commands:"},
@@ -88,7 +89,7 @@ func (application *Application) root() *cobra.Command {
 		Use: "version", Short: "Print the udm-iptv version", Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error { return writef(application.Out, "%s\n", application.Version) },
 	}
-	command.AddCommand(versionCommand, application.diagnoseWorkerCommand(), application.daemonCommand(), application.dhcpHookCommand())
+	command.AddCommand(versionCommand, application.completionCommand(), application.diagnoseWorkerCommand(), application.daemonCommand(), application.dhcpHookCommand())
 
 	return command
 }

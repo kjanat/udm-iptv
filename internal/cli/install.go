@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -240,12 +239,10 @@ func (application *Application) installBackend() installer.Backend {
 	return installer.SystemBackend{
 		Out: application.Out, Err: application.Err,
 		Completion: func(ctx context.Context) ([]byte, error) {
-			var output bytes.Buffer
 			root := application.root() //nolint:contextcheck // Constructs descriptions; no command runs.
 			root.SetContext(ctx)
-			err := root.GenBashCompletion(&output)
 
-			return output.Bytes(), err
+			return bashCompletionScript(root)
 		},
 		Health: func(ctx context.Context) error {
 			err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)

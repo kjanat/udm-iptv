@@ -108,6 +108,31 @@ func commandInvocationCases() []commandInvocationCase {
 	}
 }
 
+func TestReportRunUsesSavedConfigWhenInstallHadNoMonitor(t *testing.T) {
+	capture := captureTelemetry(t)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.json")
+	value := config.Default()
+	value.Telemetry.Logs = true
+	if err := config.Save(path, value); err != nil {
+		t.Fatal(err)
+	}
+	application := &Application{ConfigPath: path, StateDir: directory, Out: io.Discard, Err: io.Discard}
+	err := application.reportRun(t.Context(), "service.health", func(context.Context) error {
+		return errPrivateFailure
+	})
+	if !errors.Is(err, errPrivateFailure) {
+		t.Fatalf("result = %v", err)
+	}
+	output := capture.output()
+	if !strings.Contains(output, "service.health failed") {
+		t.Fatalf("missing health failure: %s", output)
+	}
+	if strings.Contains(output, privateFailureDetail) {
+		t.Fatal("raw error leaked")
+	}
+}
+
 func TestCommandInvocationTelemetry(t *testing.T) {
 	for _, testCase := range commandInvocationCases() {
 		t.Run(testCase.name, func(t *testing.T) { runCommandInvocationCase(t, testCase) })

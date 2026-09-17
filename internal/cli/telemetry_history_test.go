@@ -11,6 +11,10 @@ import (
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
+func envelopeContains(output, token string) bool {
+	return strings.Contains(output, token) || strings.Contains(output, strings.ReplaceAll(token, `"`, `\"`))
+}
+
 type firstConfigurationCase struct {
 	name        string
 	args        []string
@@ -48,13 +52,13 @@ func runFirstConfigurationCase(t *testing.T, testCase firstConfigurationCase) {
 		t.Fatal(err)
 	}
 	output := capture.output()
-	if strings.Contains(output, "installation.report") != testCase.wantReport {
+	if strings.Contains(output, "installation configuration") != testCase.wantReport {
 		t.Fatal("first configuration reporting mismatch")
 	}
 	if lookups != testCase.wantLookups {
 		t.Fatalf("network lookup preference ignored: %d lookups", lookups)
 	}
-	if testCase.wantReport && (!strings.Contains(output, `"applied":false`) || !strings.Contains(output, `"revision":1`)) {
+	if testCase.wantReport && (!envelopeContains(output, `"applied":false`) || !envelopeContains(output, `"revision":1`)) {
 		t.Fatal("uninstalled configuration marked applied")
 	}
 	value, err := config.Load(application.ConfigPath)

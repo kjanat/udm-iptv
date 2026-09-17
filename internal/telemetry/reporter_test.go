@@ -203,6 +203,38 @@ func assertPrivacyFilters(t *testing.T, options sentry.ClientOptions) {
 	}
 }
 
+func TestEnvironmentFor(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"5.0.0-preview.1": envPreview,
+		"5.0.0-rc.1":      envPreview,
+		"4.3.1":           envProduction,
+		"dev":             envDevelopment,
+		"":                envDevelopment,
+		"0.0.0-SNAPSHOT":  envDevelopment,
+		"5.0.0-next":      envDevelopment,
+		"5.0.0-arch1":     envProduction,
+		"5.0.0-source":    envProduction,
+		"5.0.0-rc1":       envPreview,
+		"5.0.0-beta.2+b1": envPreview,
+	}
+	for version, want := range cases {
+		if got := environmentFor(version); got != want {
+			t.Errorf("environmentFor(%q) = %q, want %q", version, got, want)
+		}
+	}
+	r, _ := newTestReporter(testSettings(), &recordingTransport{})
+	if r.environment != envProduction {
+		t.Fatalf("test reporter environment = %q", r.environment)
+	}
+	preview, err := newReporter(testSettings(), "5.0.0-preview.1", &recordingTransport{}, "https://public@example.invalid/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "preview environment", preview.environment, envPreview)
+	assertEqual(t, "preview client environment", preview.client.Options().Environment, envPreview)
+}
+
 func TestSDKConfigurationPreservesPrivacyAndSampling(t *testing.T) {
 	settings := testSettings()
 	settings.TraceRate = 0.2
@@ -363,6 +395,7 @@ func assertEventFiltered(t *testing.T, r *Reporter) {
 		t.Fatal("allowed event dropped")
 	}
 	assertEqual(t, "exception message", clean.Exception[0].Value, "install failed")
+	assertEqual(t, "environment", clean.Environment, "production")
 	assertEqual(t, "dist", clean.Dist, r.dist)
 	if r.dist != "" {
 		assertEqual(t, "vcs.revision", clean.Tags["vcs.revision"], r.dist)
