@@ -10,7 +10,7 @@ Already implemented: WAN port (`ethN` via default route/sysfs), LAN bridges (`br
 
 Discovery starts by reading UniFi's existing state and the kernel. Reuse existing topology, health monitoring, memberships, routes, and lease evidence before adding packet capture or active trials.
 
-### Verified local sources (UDM-Pro, firmware 5.1.31)
+## Verified local sources (UDM-Pro, firmware 5.1.31)
 
 Read-only queries on the running gateway established the following. These are observations from one device and firmware version; detect capabilities and preserve fallback behavior on other versions.
 
@@ -28,7 +28,7 @@ UniFi explicitly reported `ppp0` as the active WAN, routing table 201, and seven
 
 The CLI talks to a local Unix socket. Keep access read-only, bounded by timeouts and output limits, and parse only required fields: interface responses can include PPPoE credentials. Export sanitized observations rather than full API responses. Treat missing endpoints, malformed responses, and absent fields as unavailable evidence. The local Network application API remains a possible additional source; its field coverage has not been verified here.
 
-### IPv4 address-label semantics in 5.1.31
+## IPv4 address-label semantics in 5.1.31
 
 The supplied reverse-engineering trace of the exact [5.1.31 firmware] establishes that the IPv4 runtime path calls `rtnl_addr_get_flags()` and tests [IFA_F_PERMANENT] (`0x80`): set → `addresses[].type = static`, clear → `dynamic`. The relevant instructions were identified at `0x5ce0bc` and `0x5ce1f0`, with enum-to-string mapping in `libudapi.so`. The firmware also validates that PPPoE does not support its IPv4 dynamic-address mode.
 
@@ -36,7 +36,7 @@ This describes kernel address classification. It does not establish manual confi
 
 ---
 
-## 1. Fields
+### 1. Fields
 
 | Field                   | Role                                     | Can it be measured?                                                           |
 | ----------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
@@ -61,9 +61,9 @@ This describes kernel address classification. It does not establish manual confi
 
 ---
 
-## 2. Layers
+### 2. Layers
 
-### A. Passive (create nothing)
+#### A. Passive (create nothing)
 
 Runs when the IPTV interface or WAN already exists, or after a previous installation. Read existing state first; capture only for a named unresolved question.
 
@@ -78,7 +78,7 @@ Runs when the IPTV interface or WAN already exists, or after a previous installa
 
 SAP availability and delivery depend on the network; do not assume it exists or reaches the interface without membership. Joining a group belongs in the active phase. RFC 2974 uses a minimum base announcement interval of 300s, with randomization, so 30s cannot establish absence. Record announcers separately from advertised sessions and observed video sources. Without source evidence, leave source discovery unresolved.
 
-### B. Active (short trial, then clean up if it fails)
+#### B. Active (short trial, then clean up if it fails)
 
 Build candidates from passive evidence first. Active trials are a later fallback for unresolved service discovery, such as an unconfigured IPTV VLAN, after existing API/kernel/lease sources have been exhausted. No native UniFi discovery API for that case has been established. Try the combinations below only where existing interface ownership permits. A successful DHCP exchange identifies an address service, not IPTV. Require additional IPTV evidence, such as a relevant session announcement or observed stream, and user confirmation when identification remains uncertain. Do not stop at the first lease.
 
@@ -99,7 +99,7 @@ Implementation prerequisite: `internal/network/network.go` currently processes `
 
 Current catalog VLAN IDs: `0, 4, 20, 35, 4000`.
 
-### C. Fingerprint
+#### C. Fingerprint
 
 After collecting evidence from a trial or existing link:
 
@@ -113,9 +113,9 @@ The PTR hint and fingerprint may disagree. Evidence from the wire wins.
 
 ---
 
-## 3. Per signal, in theory
+### 3. Per signal, in theory
 
-### WAN port
+#### WAN port
 
 The default-route/sysfs walk is already implemented. Prefer explicit UDAPI WAN selection and PPPoE/VLAN parent relationships where available, corroborated by kernel state; retain the walk as a fallback. Dual-WAN: use the board table only as an ordering hint.
 
@@ -123,7 +123,7 @@ The Magenta profile uses both internet and TV on `ppp0`, with `vlan: 0` meaning 
 
 PostTV sets `interface: eth8.35` (VLAN in the interface name, `vlan: 0` in the profile). Discovery must choose `eth8` + VLAN 35 or the existing subinterface, not blindly hardcode `eth8.35`.
 
-### VLAN ID
+#### VLAN ID
 
 There is no DHCP option for this. 802.1Q is L2.
 
@@ -134,7 +134,7 @@ Options:
 - Provider documentation / catalog as a final hint, not as ground truth.
 - Trial (layer B) only when existing evidence cannot resolve a candidate.
 
-### DHCP vs static
+#### DHCP vs static
 
 A DHCPOFFER is preliminary; DHCPACK establishes a committed lease ([RFC 2131]). A completed exchange supports DHCP availability on that candidate, but does not identify IPTV.
 No response in any trial → address-assignment mode remains unknown. An existing IPv4 address may come from a lease, PPP, or static configuration. Inspect its owner and lease/configuration evidence before choosing `dhcp` or `staticAddress`; never freeze a dynamic address into static configuration.
@@ -142,7 +142,7 @@ No confirmed assignment method or address → ask the user. BT (`10.20.30.1/24`)
 
 For UDAPI IPv4 runtime addresses in 5.1.31, `type: static` reflects `IFA_F_PERMANENT`; it must not select static addressing. A PPPoE-owned link stays PPPoE-owned regardless of that label.
 
-### DHCP options
+#### DHCP options
 
 [RFC 2132]/[RFC 3442]:
 
@@ -162,7 +162,7 @@ udhcpc `-O staticroutes` explicitly requests 121. Record the actual request and 
 
 UDAPI exposes configured `ipv4.dhcpOptions`; the inspection did not establish an endpoint for received IPTV lease options. The project-managed `iptv` link was absent from UDAPI. Retain structured evidence from the project's existing DHCP hook on normal lease events rather than starting a second client to recover it. Until that evidence is available, use installed routes with their provenance and leave missing lease fields unknown.
 
-### NAT destinations
+#### NAT destinations
 
 Option 121 supplies route candidates, not NAT requirements ([RFC 3442]). Prefer the captured lease as evidence of what the server advertised. Installed `proto dhcp` routes are useful corroboration, but may include locally generated gateway routes or omit rejected routes.
 
@@ -175,7 +175,7 @@ Options after that:
 
 Multicast groups do **not** belong here (`-d` matches the destination; a SAP source is a source).
 
-### Proxy sources
+#### Proxy sources
 
 igmpproxy filters by **source**. improxy does not (`altnet` does not exist there).
 
@@ -189,25 +189,25 @@ Options:
 
 Retain exact observed hosts (/32) and explicitly advertised prefixes. Broader catalog ranges require independent justification and confirmation. A short capture may miss sources used by other channels; present that coverage limit. Privacy redaction in reports must not widen operational source ranges.
 
-### IGMP version
+#### IGMP version
 
 Record queries and reports separately per interface, including older-version queriers and membership evidence. Apply compatibility rules and the selected proxy's capabilities ([RFC 3376]); do not take the highest version across WAN and LAN. The current config exposes one version setting, so report incompatible or unresolved observations instead of silently collapsing them. If nothing is observed, 3 is a labeled local default, not a discovered fact.
 
-### LAN
+#### LAN
 
 Use UDAPI bridge membership plus kernel bridge/address state. Existing MDB entries identify group memberships and ports without a capture; distinguish IPTV evidence from unrelated multicast. Capture IGMP joins only if the existing state leaves the viewing network unresolved. Unchecked bridges do not get TV.
 
-### MAC spoofing
+#### MAC spoofing
 
 Cannot be discovered. Only fill in if the user supplies the box MAC, or if DHCP fails without spoofing but succeeds with the UniFi WAN MAC or a requested MAC (second trial, rare).
 
-### Proxy binary, quickleave, debug, telemetry
+#### Proxy binary, quickleave, debug, telemetry
 
 No ISP signal. Keep defaults (`improxy`, quickleave off, debug off).
 
 ---
 
-## 4. What “complete” does not mean
+### 4. What “complete” does not mean
 
 - Treating a playbook from one connection (n=1) as a nationwide truth. The fingerprint may say KPN. Ranges remain those measured.
 - Guessing the VLAN from PTR (`kpn.net` → 4). PTR identifies the brand; VLAN is L2.
@@ -219,7 +219,7 @@ No ISP signal. Keep defaults (`improxy`, quickleave off, debug off).
 
 ---
 
-## 5. Implementation order if this ever becomes code
+### 5. Implementation order if this ever becomes code
 
 1. Add a read-only observation collector to `diagnose`: UDAPI interfaces/services/statistics plus existing kernel links, routes, bridge MDB, multicast routes, and NAT counters. Include PPPoE/shared uplinks and project-managed links from the start. Store provenance, confidence, timestamps, and unknowns. Reuse existing health-monitor results. Redact exported reports separately from exact local operational evidence.
 2. Retain structured lease evidence from the existing DHCP hook's normal events. Distinguish configured requests, received options, and installed routes; do not launch duplicate DHCP clients.
@@ -230,6 +230,8 @@ No ISP signal. Keep defaults (`improxy`, quickleave off, debug off).
 7. Active VLAN/DHCP trial only for remaining discovery gaps during initial setup, after fixing option-121 default-route handling and validating trial isolation, cancellation, cleanup, and preservation of existing network state.
 
 Step 1 is already useful without changing the wizard (range discussions like issue kjanat/udm-iptv#30).
+
+<!-- link definitions -->
 
 [5.1.31 firmware]: https://fw-download.ubnt.com/data/unifi-dream/f100-UDMPRO-5.1.31-c840591d-ddc5-4ab4-a08b-4df62f47403d.bin "f100-UDMPRO-5.1.31.bin (2026-09-17T14:50:39Z)"
 [IFA_F_PERMANENT]: https://github.com/torvalds/linux/blob/238650ef6c7c7cca08e032527329424c9fbd70e5/include/uapi/linux/if_addr.h "include/uapi/linux/if_addr.h (2026-09-17T14:50:39Z)"
