@@ -384,10 +384,10 @@ func (r *Reporter) filterResearch(event *sentry.Event) *sentry.Event {
 
 	return &sentry.Event{
 		EventID: event.EventID, Timestamp: event.Timestamp,
-		Platform: "go", Release: r.release, Level: sentry.LevelInfo,
+		Platform: "go", Release: r.release, Dist: r.dist, Level: sentry.LevelInfo,
 		Message: "Installation " + report.Kind, Transaction: researchTransaction,
 		User: sentry.User{ID: report.InstallationID},
-		Tags: r.metadata, Contexts: map[string]sentry.Context{"research": {"report": report}},
+		Tags: r.eventTags(), Contexts: map[string]sentry.Context{"research": {"report": report}},
 	}
 }
 

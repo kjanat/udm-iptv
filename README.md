@@ -75,7 +75,7 @@ Saved settings remain unchanged until you accept the review.
 go test -race ./...
 go vet ./...
 go run ./cmd/udm-iptv preview
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/udm-iptv-linux-arm64 ./cmd/udm-iptv
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=true -o dist/udm-iptv-linux-arm64 ./cmd/udm-iptv
 goreleaser release --snapshot --clean --skip=publish
 ```
 

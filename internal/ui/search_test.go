@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"github.com/charmbracelet/x/exp/teatest/v2"
 
 	"github.com/kjanat/udm-iptv/internal/config"
@@ -122,6 +123,20 @@ func countryFrame(t *testing.T) (*Frame, *string) {
 	chosen := "NL"
 
 	return stepFrame(t, 0, "", &chosen), &chosen
+}
+
+func TestEmptyProviderSearchLeavesSelection(t *testing.T) {
+	chosen := choiceOf("kpn", "kpn")
+	s := &searchable{
+		all:   []huh.Option[string]{huh.NewOption("KPN (Netherlands)", chosen)},
+		value: &chosen,
+	}
+	if !s.keystroke("zzz", false, false) {
+		t.Fatal("filter rejected")
+	}
+	if chosen != choiceOf("kpn", "kpn") {
+		t.Fatalf("empty search overwrote selection: %q", chosen)
+	}
 }
 
 func TestTypingFiltersCountriesAndKeepsPinnedRows(t *testing.T) {

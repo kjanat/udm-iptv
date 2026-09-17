@@ -2,9 +2,6 @@ package cli
 
 import (
 	"context"
-	"io"
-	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -13,22 +10,14 @@ import (
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
-// firmwareVersionLimit bounds the read from /usr/lib/version, a one-line file.
-const firmwareVersionLimit = 64
-
 const (
 	commandConfigure = "configure"
 	commandInstall   = "install"
 )
 
-func setTelemetryMetadata(reporter *telemetry.Reporter, value config.Config) {
-	firmware := ""
-	if file, err := os.Open("/usr/lib/version"); err == nil {
-		data, _ := io.ReadAll(io.LimitReader(file, firmwareVersionLimit))
-		_ = file.Close()
-		firmware = strings.TrimSpace(string(data))
-	}
-	reporter.SetMetadata(device.Board(), firmware, value.Proxy.Program, value.Profile)
+func setTelemetryMetadata(ctx context.Context, reporter *telemetry.Reporter, value config.Config) {
+	hw := device.Inspect(ctx)
+	reporter.SetMetadata(hw.Board, hw.Firmware, hw.Discovery, hw.SysID, value.Proxy.Program, value.Profile)
 }
 
 // cobraRun is a Cobra RunE handler.
@@ -48,7 +37,7 @@ func (application *Application) reporting(operation string, run cobraRun) cobraR
 			return run(command, args)
 		}
 		defer reporter.Close()
-		setTelemetryMetadata(reporter, value)
+		setTelemetryMetadata(command.Context(), reporter, value)
 		application.monitor = reporter
 		defer func() { application.monitor = nil }()
 

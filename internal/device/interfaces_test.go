@@ -35,15 +35,63 @@ func TestDefaultRouteInterfaceRejectsIncompleteTable(t *testing.T) {
 	}
 }
 
-func TestWANInterfaceForBoard(t *testing.T) {
+func TestWANHintsForBoard(t *testing.T) {
 	t.Parallel()
 	for board, want := range map[string][]string{
 		"UDM": {"eth4"}, "udmpro": {"eth8", "eth9"}, "UDMPROSE": {"eth8", "eth9"},
 		"UDR7": {"eth3", "eth4", "eth2"}, "UCGF": {"eth6", "eth4"},
 	} {
-		if got := wanInterfacesForBoard(board); !slices.Equal(got, want) {
-			t.Errorf("wanInterfacesForBoard(%q) = %q, want %q", board, got, want)
+		if got := wanHints(board); !slices.Equal(got, want) {
+			t.Errorf("wanHints(%q) = %q, want %q", board, got, want)
 		}
+	}
+}
+
+func TestSelectWANPrefersLiveUplink(t *testing.T) {
+	t.Parallel()
+	ethernet := []string{"eth0", "eth7", "eth8", "eth9", "eth12"}
+	bridged := map[string]bool{"eth0": true, "eth7": true}
+	carrier := map[string]bool{"eth0": true, "eth7": true, "eth9": true, "eth12": true}
+	hints := []string{"eth8", "eth9"}
+	if got := selectWAN("eth12", ethernet, bridged, carrier, hints); got != "eth12" {
+		t.Fatalf("non-standard route = %q, want eth12", got)
+	}
+	if got := selectWAN("eth8.4", ethernet, bridged, carrier, hints); got != "eth8" {
+		t.Fatalf("vlan parent = %q, want eth8", got)
+	}
+	if got := selectWAN("", ethernet, bridged, carrier, hints); got != "eth9" {
+		t.Fatalf("carrier among hints = %q, want eth9", got)
+	}
+	if got := selectWAN("br0", ethernet, bridged, carrier, nil); got != "eth9" {
+		t.Fatalf("bridge route ignored = %q, want eth9", got)
+	}
+	if got := walkToEthernet("eth8.4", nil); got != "eth8" {
+		t.Fatalf("vlan parent = %q, want eth8", got)
+	}
+	if got := walkToEthernet("eth8.6", nil); got != "eth8" {
+		t.Fatalf("pppoe vlan parent = %q, want eth8", got)
+	}
+	if got := walkToEthernet("br0", nil); got != "" {
+		t.Fatalf("bridge parent = %q", got)
+	}
+	lower := func(name string) string {
+		return map[string]string{"ppp0": "eth8.6"}[name]
+	}
+	if got := walkToEthernet("ppp0", lower); got != "eth8" {
+		t.Fatalf("pppoe parent = %q, want eth8", got)
+	}
+}
+
+func TestSelectWANIgnoresSwitchPortsWhenInternetIsPPPoE(t *testing.T) {
+	t.Parallel()
+	ethernet := []string{"eth0", "eth1", "eth2", "eth3", "eth4", "eth5", "eth6", "eth7", "eth8", "eth9", "eth10"}
+	skip := map[string]bool{"eth0": true, "eth1": true, "eth2": true, "eth3": true, "eth4": true, "eth5": true, "eth6": true, "eth7": true}
+	carrier := map[string]bool{"eth0": true, "eth1": true, "eth2": true, "eth3": true, "eth4": true, "eth5": true, "eth6": true, "eth7": true, "eth8": true}
+	if got := selectWAN("eth8", ethernet, skip, carrier, nil); got != "eth8" {
+		t.Fatalf("udm-pro pppoe uplink = %q, want eth8", got)
+	}
+	if got := selectWAN("", ethernet, map[string]bool{}, carrier, nil); got != "eth0" {
+		t.Fatalf("unfiltered switch ports = %q, want eth0", got)
 	}
 }
 
@@ -73,7 +121,7 @@ func TestBoardInterfacePreservesProfileSuffix(t *testing.T) {
 	t.Parallel()
 	value := config.Default()
 	value.WAN.Interface = "eth8.35"
-	got := withBoardInterface(value, "UDM")
+	got := rewriteWAN(value, "eth4")
 	if got.WAN.Interface != "eth4.35" {
 		t.Fatalf("WAN interface = %q, want eth4.35", got.WAN.Interface)
 	}

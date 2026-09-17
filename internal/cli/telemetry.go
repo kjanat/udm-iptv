@@ -29,9 +29,9 @@ func (application *Application) reportSavedConfiguration(command *cobra.Command)
 		return
 	}
 	defer reporter.Close()
-	setTelemetryMetadata(reporter, value)
 	ctx, cancel := context.WithTimeout(command.Context(), reportConfigTimeout)
 	defer cancel()
+	setTelemetryMetadata(ctx, reporter, value)
 	_ = reporter.RecordConfiguration(ctx, *application.reportConfig, application.reportApplied, application.networkIdentity)
 }
 

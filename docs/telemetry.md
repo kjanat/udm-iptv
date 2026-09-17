@@ -2,7 +2,9 @@
 
 Reporting helps diagnose failures and improve provider presets.
 
-- All reporting categories default on for new configurations.
+I do not share this data with ISPs, Ubiquiti, or anyone else. It stays in my Sentry project. I use it to improve provider profiles, to see which firmware builds break IPTV so I can react faster, to find where the CLI or wizard loses people, and to learn which profiles work on which kind of connection so more profiles can be added.
+
+- All reporting categories default on for new configurations, imported legacy files, and saved files that omit a telemetry block.
 - The setup wizard offers “Help improve udm-iptv?”.
 - Existing opt-outs remain.
 - Reports reach the maintainer's Sentry project through HTTPS.
@@ -40,7 +42,7 @@ Individual category flags do not enable the master switch.
 
 ## Configuration reports
 
-- Software version, router model, firmware and selected provider profile.
+- Software version, git revision, Go toolchain, router model, subsystem id, firmware, firmware discovery string and selected provider profile.
 - VLAN, DHCP/static mode, proxy, IGMP version and quickleave.
 - Default-route policy, debug setting and downstream-interface count.
 - Shipped prefixes and custom public IPv4 networks: /8–/24.
