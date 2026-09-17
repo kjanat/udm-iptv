@@ -24,6 +24,7 @@ func (application *Application) upgradeCommand() *cobra.Command {
 	flags.StringVar(&options.Version, "version", "latest", "release version or latest")
 	flags.StringVar(&options.TokenFile, "token-file", "", "file containing a GitHub token for private repositories")
 	flags.BoolVar(&options.Force, "force", false, "reinstall even when the selected version is already installed")
+	flags.BoolVar(&options.Prerelease, "prerelease", false, "include prereleases when resolving latest")
 
 	return command
 }
