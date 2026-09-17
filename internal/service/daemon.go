@@ -239,6 +239,9 @@ func (application *Daemon) startConnection(ctx context.Context, value config.Con
 		if err := network.ResetLease(link); err != nil {
 			return nil, nil, fmt.Errorf("reset previous DHCP lease: %w", err)
 		}
+		if err := network.ApplyStaticRoutes(value, link); err != nil {
+			return nil, nil, fmt.Errorf("apply the configured IPTV routes: %w", err)
+		}
 		dhcp, err := application.startDHCP(ctx, value)
 
 		return dhcp, nil, err

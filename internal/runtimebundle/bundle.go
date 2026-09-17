@@ -171,6 +171,39 @@ func publishGeneration(root, program, generation string) error {
 		return fmt.Errorf("publish runtime link for %s: %w", program, err)
 	}
 
+	return pruneGenerations(root)
+}
+
+// pruneGenerations removes generations no proxy link points at. A firmware
+// update changes the proxy or a shared library, and each generation holds up
+// to maxRuntimeTotalSize of the persistent partition.
+func pruneGenerations(root string) error {
+	keep := map[string]bool{}
+	for _, program := range []string{"improxy", "igmpproxy"} {
+		target, err := os.Readlink(filepath.Join(root, program))
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("read runtime link for %s: %w", program, err)
+			}
+
+			continue
+		}
+		keep[filepath.Base(target)] = true
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return fmt.Errorf("list runtime generations: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || keep[name] || strings.HasPrefix(name, ".") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+			return fmt.Errorf("remove obsolete runtime generation %s: %w", name, err)
+		}
+	}
+
 	return nil
 }
 

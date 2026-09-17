@@ -177,6 +177,13 @@ func ApplyStatic(value config.Config, link netlink.Link) error {
 			return fmt.Errorf("retire the previous static address: %w", err)
 		}
 	}
+	return ApplyStaticRoutes(value, link)
+}
+
+// ApplyStaticRoutes installs the configured unicast routes on link. udm-iptvd
+// added IPTV_STATIC_ROUTES whether or not the uplink used DHCP, so the DHCP
+// path calls this without applying an address.
+func ApplyStaticRoutes(value config.Config, link netlink.Link) error {
 	for _, raw := range value.WAN.StaticRoutes {
 		prefix, err := netip.ParsePrefix(raw)
 		if err != nil {

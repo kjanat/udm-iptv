@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/installer"
 )
@@ -305,5 +306,32 @@ func assertInstallOutcome(t *testing.T, testCase installSelectionCase, err error
 	}
 	if strings.Contains(output, "has started") != testCase.wantSuccess {
 		t.Fatal(output)
+	}
+}
+
+func TestLegacyCandidatesIncludeThePersistedBackup(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	candidates := legacyCandidates(stateDir)
+	if got := candidates[len(candidates)-1]; got != filepath.Join(stateDir, "udm-iptv.conf") {
+		t.Fatalf("persisted backup is not a candidate: %q", candidates)
+	}
+	backup := `IPTV_WAN_INTERFACE="eth9"
+IPTV_WAN_VLAN="35"
+IPTV_WAN_VLAN_INTERFACE="iptv"
+IPTV_WAN_RANGES="198.51.100.0/24"
+IPTV_LAN_INTERFACES="br0"
+IPTV_IGMPPROXY_PROGRAM="improxy"
+IPTV_IGMPPROXY_IGMP_VERSION="3"
+`
+	if err := atomicfile.Write(filepath.Join(stateDir, "udm-iptv.conf"), []byte(backup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, found, err := config.ImportFirstLegacy(candidates)
+	if err != nil || !found {
+		t.Fatalf("persisted backup not imported: found=%t err=%v", found, err)
+	}
+	if value.WAN.Interface != "eth9" || value.WAN.VLAN != 35 {
+		t.Fatalf("imported %#v", value.WAN)
 	}
 }
