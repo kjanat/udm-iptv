@@ -7,38 +7,47 @@ import (
 	"testing"
 )
 
+var errInjectedUninstallStep = errors.New("injected uninstall failure")
+
 func TestUninstallFailureBoundaries(t *testing.T) {
-	want := []string{"stop", "disable", "NAT", "files", "state", "reload"}
-	for boundary := -1; boundary < len(want); boundary++ {
-		var calls []string
-		cause := errors.New("injected uninstall failure")
-		step := func(name string) func(context.Context) error {
-			return func(context.Context) error {
-				calls = append(calls, name)
-				if boundary >= 0 && name == want[boundary] {
-					return cause
+	all := []string{"stop", "disable", "NAT", "files", "state", "reload"}
+	for _, test := range []struct {
+		name, fail string
+		want       []string
+		fails      bool
+	}{
+		{"success", "", all, false},
+		{"stop", "stop", all[:1], true},
+		{"disable", "disable", all[:2], true},
+		{"NAT", "NAT", all, true},
+		{"files", "files", all[:4], true},
+		{"state", "state", all[:5], true},
+		{"reload", "reload", all[:6], true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls []string
+			cause := errInjectedUninstallStep
+			step := func(name string) func(context.Context) error {
+				return func(context.Context) error {
+					calls = append(calls, name)
+					if name == test.fail {
+						return cause
+					}
+
+					return nil
 				}
-				return nil
 			}
-		}
-		err := executeUninstall(t.Context(), uninstallActions{
-			stop: step("stop"), disable: step("disable"), removeNAT: step("NAT"),
-			removeFiles: step("files"), removeState: step("state"), reload: step("reload"),
+			err := executeUninstall(t.Context(), uninstallActions{
+				stop: step("stop"), disable: step("disable"), removeNAT: step("NAT"),
+				removeFiles: step("files"), removeState: step("state"), reload: step("reload"),
+			})
+			if (err != nil) != test.fails || (test.fails && !errors.Is(err, cause)) {
+				t.Fatalf("uninstall error: %v", err)
+			}
+			if !reflect.DeepEqual(calls, test.want) {
+				t.Fatalf("calls=%v want=%v", calls, test.want)
+			}
 		})
-		switch {
-		case boundary < 0:
-			if err != nil || !reflect.DeepEqual(calls, want) {
-				t.Fatalf("successful uninstall: %v %v", calls, err)
-			}
-		case want[boundary] == "NAT":
-			if !errors.Is(err, cause) || !reflect.DeepEqual(calls, want) {
-				t.Fatalf("NAT failure must not block cleanup: %v %v", calls, err)
-			}
-		default:
-			if !errors.Is(err, cause) || !reflect.DeepEqual(calls, want[:boundary+1]) {
-				t.Fatalf("boundary %d: %v %v", boundary, calls, err)
-			}
-		}
 	}
 }
 

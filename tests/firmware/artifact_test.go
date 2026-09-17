@@ -10,6 +10,11 @@ import (
 	"testing"
 )
 
+var (
+	errUnexpectedArtifactEntry = errors.New("unexpected artifact archive entry")
+	errArtifactDiffers         = errors.New("installed binary differs from shared build artifact")
+)
+
 func verifyArtifactArchive(input io.Reader, expected [sha256.Size]byte) error {
 	archive := tar.NewReader(input)
 	header, err := archive.Next()
@@ -17,14 +22,14 @@ func verifyArtifactArchive(input io.Reader, expected [sha256.Size]byte) error {
 		return fmt.Errorf("read artifact header: %w", err)
 	}
 	if header.Name != "udm-iptv" || header.Typeflag != tar.TypeReg || header.Size <= 0 || header.Size > 128<<20 {
-		return errors.New("unexpected artifact archive entry")
+		return errUnexpectedArtifactEntry
 	}
 	digest := sha256.New()
 	if _, err := io.CopyN(digest, archive, header.Size); err != nil {
 		return fmt.Errorf("hash installed artifact: %w", err)
 	}
 	if !bytes.Equal(digest.Sum(nil), expected[:]) {
-		return errors.New("installed binary differs from shared build artifact")
+		return errArtifactDiffers
 	}
 	return nil
 }

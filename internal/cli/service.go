@@ -13,17 +13,23 @@ import (
 	"github.com/kjanat/udm-iptv/internal/service"
 )
 
+var (
+	errLeaseAcquisitionFailed = errors.New("DHCP lease acquisition failed")
+	errLeaseRejected          = errors.New("DHCP server rejected the lease")
+	errUnsupportedHookAction  = errors.New("unsupported udhcpc action")
+)
+
 func (application *Application) daemonCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use: "daemon", Short: "Run the IPTV service", Hidden: true, Args: cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
+		RunE: application.reporting("daemon", func(command *cobra.Command, _ []string) error {
 			err := requireRoot()
 			if err != nil {
 				return err
 			}
 
 			return (&service.Daemon{ConfigPath: application.ConfigPath, StateDir: application.StateDir, Out: application.Out, Err: application.Err, Monitor: application.monitor}).Run(command.Context())
-		},
+		}),
 	}
 
 	return command
@@ -33,25 +39,25 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 	var allowDefaultRoute bool
 	command := &cobra.Command{
 		Use: "dhcp-hook ACTION", Hidden: true, Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, arguments []string) error {
+		RunE: application.reportingHook(func(_ *cobra.Command, arguments []string) error {
 			if value, err := config.Load(application.ConfigPath); err == nil {
 				allowDefaultRoute = value.WAN.AllowDefaultRoute
 			}
 			lease, err := network.LeaseFromEnvironment(arguments[0])
 			if err != nil {
-				return err
+				return fmt.Errorf("read the DHCP lease from the environment: %w", err)
 			}
 			switch arguments[0] {
 			case "deconfig", "bound", "renew":
 				return network.ApplyLease(lease, allowDefaultRoute)
 			case "leasefail":
-				return errors.New("DHCP lease acquisition failed")
+				return errLeaseAcquisitionFailed
 			case "nak":
-				return errors.New("DHCP server rejected the lease")
+				return errLeaseRejected
 			default:
-				return fmt.Errorf("unsupported udhcpc action %q", arguments[0])
+				return fmt.Errorf("%w %q", errUnsupportedHookAction, arguments[0])
 			}
-		},
+		}),
 	}
 	command.Flags().BoolVar(&allowDefaultRoute, "allow-default-route", false, "allow DHCP router fallback when RFC3442 routes are absent")
 
@@ -59,7 +65,12 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 }
 
 func (application *Application) waitHealthy(ctx context.Context, startup, stable time.Duration) error {
-	return application.monitor.Run(ctx, "service.health", func(ctx context.Context) error {
+	err := application.monitor.Run(ctx, "service.health", func(ctx context.Context) error {
 		return service.WaitHealthy(ctx, startup, stable)
 	})
+	if err != nil {
+		return fmt.Errorf("udm-iptv.service health check: %w", err)
+	}
+
+	return nil
 }

@@ -9,6 +9,11 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
+var (
+	errStopNotDone    = errors.New("stop finished with status")
+	errRestartNotDone = errors.New("start finished with status")
+)
+
 // NoSuchUnit reports whether err is systemd's "unit not found" D-Bus error.
 func NoSuchUnit(err error) bool {
 	var dbusError *dbus.Error
@@ -20,17 +25,17 @@ func NoSuchUnit(err error) bool {
 func Stop(ctx context.Context, connection *systemd.Conn, unit string) error {
 	result := make(chan string, 1)
 	if _, err := connection.StopUnitContext(ctx, unit, "replace", result); err != nil {
-		return err
+		return fmt.Errorf("stop %s: %w", unit, err)
 	}
 	select {
 	case status := <-result:
 		if status != "done" {
-			return fmt.Errorf("stop finished with status %s", status)
+			return fmt.Errorf("%w %s", errStopNotDone, status)
 		}
 
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("stop %s: %w", unit, ctx.Err())
 	}
 }
 
@@ -38,16 +43,16 @@ func Stop(ctx context.Context, connection *systemd.Conn, unit string) error {
 func Restart(ctx context.Context, connection *systemd.Conn, unit string) error {
 	result := make(chan string, 1)
 	if _, err := connection.RestartUnitContext(ctx, unit, "replace", result); err != nil {
-		return err
+		return fmt.Errorf("restart %s: %w", unit, err)
 	}
 	select {
 	case status := <-result:
 		if status != "done" {
-			return fmt.Errorf("start finished with status %s", status)
+			return fmt.Errorf("%w %s", errRestartNotDone, status)
 		}
 
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("restart %s: %w", unit, ctx.Err())
 	}
 }

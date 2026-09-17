@@ -6,6 +6,7 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -21,6 +22,11 @@ import (
 // DSN is injected into official releases using -ldflags -X. Unstamped builds
 // have no telemetry destination, even when SENTRY_DSN is set at runtime.
 var DSN string
+
+var (
+	errNoTelemetryEndpoint = errors.New("this build has no telemetry endpoint")
+	errPanic               = errors.New("panic")
+)
 
 const (
 	transportBufferSize = 32
@@ -76,7 +82,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 		return r, nil
 	}
 	if dsn == "" {
-		return nil, errors.New("this build has no telemetry endpoint")
+		return nil, errNoTelemetryEndpoint
 	}
 	client, err := sentry.NewClient(sentry.ClientOptions{
 		Dsn: dsn, Release: r.release, Environment: "production", ServerName: "udm-iptv",
@@ -97,7 +103,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 		BeforeSendLog: r.filterLog, BeforeSendMetric: r.filterMetric,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create telemetry client: %w", err)
 	}
 	r.client, r.hub = client, sentry.NewHub(client, sentry.NewScope())
 
@@ -170,10 +176,70 @@ func (r *Reporter) SetMetadata(model, firmware, proxy, profile string) {
 	}
 }
 
+func (r *Reporter) instruments(operation string) bool {
+	return r != nil && r.client != nil && operations[operation]
+}
+
+// Error text can include tokens, IP addresses and local file paths.
+// Report the error class and call stack; keep its text local.
+func (r *Reporter) reportOutcome(ctx context.Context, operation string, err error, panicked bool) {
+	if panicked {
+		r.failure(ctx, operation, err, true)
+
+		return
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		r.failure(ctx, operation, err, false)
+	}
+}
+
+func (r *Reporter) logOutcome(ctx context.Context, operation string, err error) {
+	if !r.settings.Logs {
+		return
+	}
+	logger := sentry.NewLogger(ctx)
+	switch {
+	case errors.Is(err, context.Canceled):
+		logger.Info().Emit(operation + " cancelled")
+	case err != nil:
+		logger.Error().Emit(operation + " failed")
+	default:
+		logger.Info().Emit(operation + " completed")
+	}
+}
+
+func (r *Reporter) meterOutcome(ctx context.Context, operation string, err error, elapsed time.Duration) {
+	if !r.settings.Metrics {
+		return
+	}
+	meter := sentry.NewMeter(ctx)
+	meter.SetAttributes(attribute.String("operation", operation))
+	meter.Count("operation.completed", 1)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		meter.Count("operation.failed", 1)
+	}
+	if operation != "daemon" {
+		meter.Distribution("operation.duration", elapsed.Seconds(), sentry.WithUnit(sentry.UnitSecond))
+	}
+}
+
+func spanStatus(err error) sentry.SpanStatus {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return sentry.SpanStatusCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return sentry.SpanStatusDeadlineExceeded
+	case err != nil:
+		return sentry.SpanStatusInternalError
+	default:
+		return sentry.SpanStatusOK
+	}
+}
+
 // Run executes run under a trace and reports its outcome, if operation is
 // enabled for telemetry; otherwise it runs run directly.
 func (r *Reporter) Run(ctx context.Context, operation string, run func(context.Context) error) (err error) {
-	if r == nil || r.client == nil || !operations[operation] {
+	if !r.instruments(operation) {
 		return run(ctx)
 	}
 	ctx = sentry.SetHubOnContext(ctx, r.hub)
@@ -189,46 +255,13 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 	defer func() {
 		panicked := recover()
 		if panicked != nil {
-			err = errors.New("panic")
-			r.failure(ctx, operation, err, true)
-		} else if err != nil && !errors.Is(err, context.Canceled) {
-			// Error text can include tokens, IP addresses and local file paths.
-			// Report the error class and call stack; keep its text local.
-			r.failure(ctx, operation, err, false)
+			err = errPanic
 		}
-		if r.settings.Logs {
-			logger := sentry.NewLogger(ctx)
-			switch {
-			case errors.Is(err, context.Canceled):
-				logger.Info().Emit(operation + " cancelled")
-			case err != nil:
-				logger.Error().Emit(operation + " failed")
-			default:
-				logger.Info().Emit(operation + " completed")
-			}
-		}
-		if r.settings.Metrics {
-			meter := sentry.NewMeter(ctx)
-			meter.SetAttributes(attribute.String("operation", operation))
-			meter.Count("operation.completed", 1)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				meter.Count("operation.failed", 1)
-			}
-			if operation != "daemon" {
-				meter.Distribution("operation.duration", time.Since(start).Seconds(), sentry.WithUnit(sentry.UnitSecond))
-			}
-		}
+		r.reportOutcome(ctx, operation, err, panicked != nil)
+		r.logOutcome(ctx, operation, err)
+		r.meterOutcome(ctx, operation, err, time.Since(start))
 		if span != nil {
-			switch {
-			case errors.Is(err, context.Canceled):
-				span.Status = sentry.SpanStatusCanceled
-			case errors.Is(err, context.DeadlineExceeded):
-				span.Status = sentry.SpanStatusDeadlineExceeded
-			case err != nil:
-				span.Status = sentry.SpanStatusInternalError
-			default:
-				span.Status = sentry.SpanStatusOK
-			}
+			span.Status = spanStatus(err)
 			span.Finish()
 		}
 		if panicked != nil {
@@ -306,18 +339,34 @@ func (r *Reporter) MetricsEnabled() bool {
 	return err == nil && value.Telemetry.Enabled && value.Telemetry.Metrics
 }
 
+func (r *Reporter) allowsEvent(event *sentry.Event) bool {
+	if event.Type == "transaction" {
+		return r.settings.Tracing && r.allow("traces", tracesPerMinute)
+	}
+
+	return r.settings.Errors && r.allow("errors", errorsPerMinute)
+}
+
+func cleanTraceContext(contexts map[string]sentry.Context) map[string]sentry.Context {
+	source := contexts["trace"]
+	if source == nil {
+		return nil
+	}
+	clean := sentry.Context{}
+	for _, key := range []string{"trace_id", "span_id", "parent_span_id", "status"} {
+		if value, ok := source[key]; ok {
+			clean[key] = value
+		}
+	}
+
+	return map[string]sentry.Context{"trace": clean}
+}
+
 func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	if event.Transaction == researchTransaction {
 		return r.filterResearch(event)
 	}
-	if !operations[event.Transaction] {
-		return nil
-	}
-	trace := event.Type == "transaction"
-	if trace && (!r.settings.Tracing || !r.allow("traces", tracesPerMinute)) {
-		return nil
-	}
-	if !trace && (!r.settings.Errors || !r.allow("errors", errorsPerMinute)) {
+	if !operations[event.Transaction] || !r.allowsEvent(event) {
 		return nil
 	}
 	clean := &sentry.Event{
@@ -326,16 +375,8 @@ func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry
 	}
 	clean.Tags = r.metadata
 	clean.User = sentry.User{ID: r.installationID()}
-	if source := event.Contexts["trace"]; source != nil {
-		context := sentry.Context{}
-		for _, key := range []string{"trace_id", "span_id", "parent_span_id", "status"} {
-			if value, ok := source[key]; ok {
-				context[key] = value
-			}
-		}
-		clean.Contexts = map[string]sentry.Context{"trace": context}
-	}
-	if trace {
+	clean.Contexts = cleanTraceContext(event.Contexts)
+	if event.Type == "transaction" {
 		clean.Spans = cleanSpans(event.Spans)
 	} else {
 		clean.Exception = cleanExceptions(event.Exception, event.Transaction)
@@ -408,27 +449,27 @@ func (r *Reporter) filterLog(log *sentry.Log) *sentry.Log {
 	return &sentry.Log{Timestamp: log.Timestamp, TraceID: log.TraceID, SpanID: log.SpanID, Level: log.Level, Severity: log.Severity, Body: log.Body, Attributes: r.attributes()}
 }
 
+var metricNames = map[string]bool{
+	"operation.completed": true, "operation.failed": true, "operation.duration": true,
+	"daemon.uptime": true, "daemon.restarts": true, "multicast.routes": true,
+	"multicast.packets": true, "wizard.event": true,
+}
+
+var metricAttributes = map[string]func(string) bool{
+	"operation": func(value string) bool { return operations[value] },
+	"event":     func(value string) bool { return wizardEvents[value] },
+	"question":  isQuestionKey,
+}
+
 func (r *Reporter) filterMetric(metric *sentry.Metric) *sentry.Metric {
-	if !r.settings.Metrics {
-		return nil
-	}
-	switch metric.Name {
-	case "operation.completed", "operation.failed", "operation.duration", "daemon.uptime", "daemon.restarts", "multicast.routes", "multicast.packets", "wizard.event":
-	default:
-		return nil
-	}
-	if !r.allow("metrics", metricsPerMinute) {
+	if !r.settings.Metrics || !metricNames[metric.Name] || !r.allow("metrics", metricsPerMinute) {
 		return nil
 	}
 	attributes := r.attributes()
-	if op, ok := metric.Attributes["operation"].AsInterface().(string); ok && operations[op] {
-		attributes["operation"] = attribute.StringValue(op)
-	}
-	if event, ok := metric.Attributes["event"].AsInterface().(string); ok && wizardEvents[event] {
-		attributes["event"] = attribute.StringValue(event)
-	}
-	if question, ok := metric.Attributes["question"].AsInterface().(string); ok && isQuestionKey(question) {
-		attributes["question"] = attribute.StringValue(question)
+	for key, accepted := range metricAttributes {
+		if value, ok := metric.Attributes[key].AsInterface().(string); ok && accepted(value) {
+			attributes[key] = attribute.StringValue(value)
+		}
 	}
 
 	return &sentry.Metric{Timestamp: metric.Timestamp, TraceID: metric.TraceID, SpanID: metric.SpanID, Type: metric.Type, Name: metric.Name, Value: metric.Value, Unit: metric.Unit, Attributes: attributes}

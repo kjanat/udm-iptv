@@ -7,15 +7,19 @@ import (
 )
 
 func writef(writer io.Writer, format string, arguments ...any) error {
-	_, err := fmt.Fprintf(writer, format, arguments...)
+	if _, err := fmt.Fprintf(writer, format, arguments...); err != nil {
+		return fmt.Errorf("write installer progress output: %w", err)
+	}
 
-	return err
+	return nil
 }
 
 func writeString(writer io.Writer, value string) error {
-	_, err := io.WriteString(writer, value)
+	if _, err := io.WriteString(writer, value); err != nil {
+		return fmt.Errorf("write installer progress output: %w", err)
+	}
 
-	return err
+	return nil
 }
 
 func closeIgnoringError(closer io.Closer) {

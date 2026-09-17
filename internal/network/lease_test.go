@@ -2,7 +2,9 @@ package network
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,8 +12,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var (
+	errInjectedFailure = errors.New("injected failure")
+	errInjectedNetlink = errors.New("injected netlink failure")
+)
+
 func TestLeaseFailuresKeepOperationAndCause(t *testing.T) {
-	want := errors.New("injected failure")
+	want := errInjectedFailure
 	for _, stage := range []string{"find DHCP interface", "apply DHCP address", "bring DHCP interface up", "apply DHCP routes", "retire previous DHCP address"} {
 		t.Run(stage, func(t *testing.T) {
 			fixture := &leaseFixture{}
@@ -46,75 +53,86 @@ type leaseFixture struct {
 
 func (f *leaseFixture) ops() leaseOperations {
 	return leaseOperations{
-		link: func(string) (netlink.Link, error) {
-			return &netlink.Dummy{Index: 52}, nil
-		},
-		addresses: func(netlink.Link, int) ([]netlink.Addr, error) { return f.addresses, nil },
-		replaceAddress: func(_ netlink.Link, a *netlink.Addr) error {
-			f.changes = append(f.changes, "address")
-			for _, old := range f.addresses {
-				if sameAddress(old, *a) {
-					return nil
-				}
-			}
-			f.addresses = append(f.addresses, *a)
-
-			return nil
-		},
-		deleteAddress: func(_ netlink.Link, a *netlink.Addr) error {
-			f.changes = append(f.changes, "delete-address")
-			if f.dropSecondary {
-				f.addresses = nil
-				f.routes = nil
-
-				return nil
-			}
-			for i, old := range f.addresses {
-				if sameAddress(old, *a) {
-					f.addresses = append(f.addresses[:i:i], f.addresses[i+1:]...)
-
-					break
-				}
-			}
-
-			return nil
-		},
-		up: func(netlink.Link) error {
-			f.changes = append(f.changes, "up")
-			return nil
-		},
-		routes: func(int, *netlink.Route, uint64) ([]netlink.Route, error) {
-			return append([]netlink.Route(nil), f.routes...), nil
-		},
-		replaceRoute: func(r *netlink.Route) error {
-			f.changes = append(f.changes, "replace-route")
-			if f.failReplace {
-				return errors.New("injected netlink failure")
-			}
-			for i, old := range f.routes {
-				if leaseRouteKey(old) == leaseRouteKey(*r) {
-					f.routes[i] = *r
-
-					return nil
-				}
-			}
-			f.routes = append(f.routes, *r)
-
-			return nil
-		},
-		deleteRoute: func(r *netlink.Route) error {
-			f.changes = append(f.changes, "delete-route")
-			for i, old := range f.routes {
-				if leaseRouteKey(old) == leaseRouteKey(*r) {
-					f.routes = append(f.routes[:i:i], f.routes[i+1:]...)
-
-					break
-				}
-			}
-
-			return nil
-		},
+		link:           func(string) (netlink.Link, error) { return &netlink.Dummy{Index: 52}, nil },
+		addresses:      func(netlink.Link, int) ([]netlink.Addr, error) { return f.addresses, nil },
+		replaceAddress: f.replaceAddress,
+		deleteAddress:  f.deleteAddress,
+		up:             f.up,
+		routes:         f.listRoutes,
+		replaceRoute:   f.replaceRoute,
+		deleteRoute:    f.deleteRoute,
 	}
+}
+
+func (f *leaseFixture) replaceAddress(_ netlink.Link, a *netlink.Addr) error {
+	f.changes = append(f.changes, "address")
+	for _, old := range f.addresses {
+		if sameAddress(old, *a) {
+			return nil
+		}
+	}
+	f.addresses = append(f.addresses, *a)
+
+	return nil
+}
+
+func (f *leaseFixture) deleteAddress(_ netlink.Link, a *netlink.Addr) error {
+	f.changes = append(f.changes, "delete-address")
+	if f.dropSecondary {
+		f.addresses = nil
+		f.routes = nil
+
+		return nil
+	}
+	for i, old := range f.addresses {
+		if sameAddress(old, *a) {
+			f.addresses = append(f.addresses[:i:i], f.addresses[i+1:]...)
+
+			break
+		}
+	}
+
+	return nil
+}
+
+func (f *leaseFixture) up(netlink.Link) error {
+	f.changes = append(f.changes, "up")
+
+	return nil
+}
+
+func (f *leaseFixture) listRoutes(int, *netlink.Route, uint64) ([]netlink.Route, error) {
+	return append([]netlink.Route(nil), f.routes...), nil
+}
+
+func (f *leaseFixture) replaceRoute(r *netlink.Route) error {
+	f.changes = append(f.changes, "replace-route")
+	if f.failReplace {
+		return errInjectedNetlink
+	}
+	for i, old := range f.routes {
+		if leaseRouteKey(old) == leaseRouteKey(*r) {
+			f.routes[i] = *r
+
+			return nil
+		}
+	}
+	f.routes = append(f.routes, *r)
+
+	return nil
+}
+
+func (f *leaseFixture) deleteRoute(r *netlink.Route) error {
+	f.changes = append(f.changes, "delete-route")
+	for i, old := range f.routes {
+		if leaseRouteKey(old) == leaseRouteKey(*r) {
+			f.routes = append(f.routes[:i:i], f.routes[i+1:]...)
+
+			break
+		}
+	}
+
+	return nil
 }
 
 func testLease() Lease {
@@ -187,59 +205,98 @@ func TestChangedLeaseAppliesBeforeRemovingOldState(t *testing.T) {
 		lease.Address, lease.StaticRoutes[0] = "192.0.2.3", "198.51.100.0/24"
 		err := applyLease(lease, true, fixture.ops())
 		if fail {
-			if err == nil {
-				t.Fatal("replacement error ignored")
-			}
-			if !reflect.DeepEqual(fixture.routes, []netlink.Route{old, unrelated}) {
-				t.Fatal("failed replacement removed old routes")
-			}
-			if len(fixture.addresses) != 2 {
-				t.Fatal("failed replacement removed old address")
-			}
+			assertFailedReplacementKeepsOldState(t, fixture, err, []netlink.Route{old, unrelated})
 
 			continue
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := []string{"address", "up", "replace-route", "delete-route", "delete-address", "address"}
-		if !reflect.DeepEqual(fixture.changes, want) {
-			t.Fatalf("order: %v", fixture.changes)
-		}
-		if len(fixture.addresses) != 1 || fixture.addresses[0].IP.String() != lease.Address {
-			t.Fatal("stale address retained")
-		}
-		if len(fixture.routes) != 2 || fixture.routes[0].Protocol != unix.RTPROT_STATIC {
-			t.Fatal("unrelated static route removed")
-		}
+		assertReplacementRetiredOldState(t, fixture, err, lease.Address)
+	}
+}
+
+func assertFailedReplacementKeepsOldState(t *testing.T, fixture *leaseFixture, err error, wantRoutes []netlink.Route) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("replacement error ignored")
+	}
+	if !reflect.DeepEqual(fixture.routes, wantRoutes) {
+		t.Fatal("failed replacement removed old routes")
+	}
+	if len(fixture.addresses) != 2 {
+		t.Fatal("failed replacement removed old address")
+	}
+}
+
+func assertReplacementRetiredOldState(t *testing.T, fixture *leaseFixture, err error, address string) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"address", "up", "replace-route", "delete-route", "delete-address", "address"}
+	if !reflect.DeepEqual(fixture.changes, want) {
+		t.Fatalf("order: %v", fixture.changes)
+	}
+	if len(fixture.addresses) != 1 || fixture.addresses[0].IP.String() != address {
+		t.Fatal("stale address retained")
+	}
+	if len(fixture.routes) != 2 || fixture.routes[0].Protocol != unix.RTPROT_STATIC {
+		t.Fatal("unrelated static route removed")
 	}
 }
 
 func TestLeaseRoutePolicies(t *testing.T) {
 	t.Parallel()
-	lease := testLease()
-	lease.Routers = []string{"192.0.2.254"}
-	routes, err := leaseRoutes(lease, 52, 32, true)
-	if err != nil || len(routes) != 2 {
-		t.Fatalf("host lease routes: %v, %v", routes, err)
+	for _, test := range []struct {
+		name         string
+		staticRoutes []string
+		prefixLength int
+		allowDefault bool
+		want         []string
+	}{
+		{
+			name:         "host lease keeps the gateway reachable",
+			staticRoutes: []string{"213.75.112.0/21", "192.0.2.1"},
+			prefixLength: 32,
+			allowDefault: true,
+			want:         []string{"192.0.2.1/32 on-link metric 252", "213.75.112.0/21 via 192.0.2.1 metric 252"},
+		},
+		{name: "router fallback stays off when not permitted", prefixLength: 24},
+		{
+			name:         "router fallback when permitted",
+			prefixLength: 24,
+			allowDefault: true,
+			want:         []string{"0.0.0.0/0 via 192.0.2.254 metric 252"},
+		},
+		{
+			name:         "explicit RFC3442 default survives the policy",
+			staticRoutes: []string{"0.0.0.0/0", "192.0.2.1"},
+			prefixLength: 24,
+			want:         []string{"0.0.0.0/0 via 192.0.2.1 metric 252"},
+		},
+	} {
+		lease := testLease()
+		lease.Routers = []string{"192.0.2.254"}
+		lease.StaticRoutes = test.staticRoutes
+		routes, err := leaseRoutes(lease, 52, test.prefixLength, test.allowDefault)
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if got := describeRoutes(routes); !slices.Equal(got, test.want) {
+			t.Fatalf("%s: %v", test.name, got)
+		}
 	}
-	if routes[0].Dst.String() != "192.0.2.1/32" || routes[1].Priority != 252 {
-		t.Fatalf("host gateway route missing: %v", routes)
+}
+
+func describeRoutes(routes []netlink.Route) []string {
+	described := make([]string, 0, len(routes))
+	for _, route := range routes {
+		via := "on-link"
+		if len(route.Gw) != 0 {
+			via = "via " + route.Gw.String()
+		}
+		described = append(described, fmt.Sprintf("%s %s metric %d", route.Dst, via, route.Priority))
 	}
-	lease.StaticRoutes = nil
-	routes, err = leaseRoutes(lease, 52, 24, false)
-	if err != nil || len(routes) != 0 {
-		t.Fatalf("unwanted router fallback: %v, %v", routes, err)
-	}
-	routes, err = leaseRoutes(lease, 52, 24, true)
-	if err != nil || len(routes) != 1 || routes[0].Dst.String() != "0.0.0.0/0" {
-		t.Fatalf("missing permitted fallback: %v, %v", routes, err)
-	}
-	lease.StaticRoutes = []string{"0.0.0.0/0", "192.0.2.1"}
-	routes, err = leaseRoutes(lease, 52, 24, false)
-	if err != nil || len(routes) != 1 || routes[0].Gw.String() != "192.0.2.1" {
-		t.Fatalf("explicit RFC3442 default lost: %v, %v", routes, err)
-	}
+
+	return described
 }
 
 func TestDeconfigRemovesLeaseState(t *testing.T) {

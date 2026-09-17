@@ -13,6 +13,8 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
+var errImportRejected = errors.New("import firmware image")
+
 // Image identifies a built firmware image and the catalog fingerprint it was built from.
 type Image struct{ ID, Fingerprint string }
 
@@ -36,7 +38,7 @@ type Docker struct {
 func NewDocker(username, token string) (*Docker, error) {
 	engine, err := client.New(client.FromEnv)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("connect to Docker Engine: %w", err)
 	}
 	docker := &Docker{engine: engine}
 	if token != "" {
@@ -48,7 +50,7 @@ func NewDocker(username, token string) (*Docker, error) {
 		if err != nil {
 			_ = engine.Close()
 
-			return nil, err
+			return nil, fmt.Errorf("encode Docker registry credentials: %w", err)
 		}
 		docker.auth = base64.URLEncoding.EncodeToString(credentials)
 	}
@@ -57,40 +59,54 @@ func NewDocker(username, token string) (*Docker, error) {
 }
 
 // Close releases the Docker Engine connection.
-func (d *Docker) Close() error { return d.engine.Close() }
+func (d *Docker) Close() error {
+	if err := d.engine.Close(); err != nil {
+		return fmt.Errorf("close Docker Engine connection: %w", err)
+	}
+
+	return nil
+}
 
 // Pull downloads the arm64 image ref from its registry.
 func (d *Docker) Pull(ctx context.Context, ref string) error {
 	result, err := d.engine.ImagePull(ctx, ref, client.ImagePullOptions{RegistryAuth: d.auth, Platforms: []ocispec.Platform{{OS: "linux", Architecture: "arm64"}}})
 	if err != nil {
-		return err
+		return fmt.Errorf("start pull of %s: %w", ref, err)
+	}
+	if err := result.Wait(ctx); err != nil {
+		return fmt.Errorf("pull %s: %w", ref, err)
 	}
 
-	return result.Wait(ctx)
+	return nil
 }
 
 // Push uploads the image ref to its registry.
 func (d *Docker) Push(ctx context.Context, ref string) error {
 	result, err := d.engine.ImagePush(ctx, ref, client.ImagePushOptions{RegistryAuth: d.auth})
 	if err != nil {
-		return err
+		return fmt.Errorf("start push of %s: %w", ref, err)
+	}
+	if err := result.Wait(ctx); err != nil {
+		return fmt.Errorf("push %s: %w", ref, err)
 	}
 
-	return result.Wait(ctx)
+	return nil
 }
 
 // Tag applies target as an additional tag for the source image.
 func (d *Docker) Tag(ctx context.Context, source, target string) error {
-	_, err := d.engine.ImageTag(ctx, client.ImageTagOptions{Source: source, Target: target})
+	if _, err := d.engine.ImageTag(ctx, client.ImageTagOptions{Source: source, Target: target}); err != nil {
+		return fmt.Errorf("tag %s as %s: %w", source, target, err)
+	}
 
-	return err
+	return nil
 }
 
 // Inspect returns ref's image ID and catalog fingerprint label.
 func (d *Docker) Inspect(ctx context.Context, ref string) (Image, error) {
 	result, err := d.engine.ImageInspect(ctx, ref)
 	if err != nil {
-		return Image{}, err
+		return Image{}, fmt.Errorf("inspect %s: %w", ref, err)
 	}
 	image := Image{ID: result.ID}
 	if result.Config != nil {
@@ -105,7 +121,7 @@ func (d *Docker) Inspect(ctx context.Context, ref string) (Image, error) {
 func (d *Docker) Import(ctx context.Context, archive, ref, fingerprint string) (resultErr error) {
 	input, err := os.Open(archive)
 	if err != nil {
-		return err
+		return fmt.Errorf("open firmware archive %s: %w", archive, err)
 	}
 	defer func() {
 		if err := input.Close(); err != nil {
@@ -117,7 +133,7 @@ func (d *Docker) Import(ctx context.Context, archive, ref, fingerprint string) (
 		Changes:  []string{`CMD ["/bin/bash"]`, "ENV DEBIAN_FRONTEND=noninteractive", `LABEL org.opencontainers.image.description="Extracted UniFi OS filesystem for lifecycle tests"`, fmt.Sprintf(`LABEL io.github.udm-iptv.catalog-fingerprint="%s"`, fingerprint)},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("start import of %s: %w", ref, err)
 	}
 	defer func() {
 		if err := result.Close(); err != nil {
@@ -140,10 +156,10 @@ func readImportResult(reader io.Reader) error {
 				return nil
 			}
 
-			return err
+			return fmt.Errorf("decode Docker import progress: %w", err)
 		}
 		if message.Error != "" {
-			return fmt.Errorf("import firmware image: %s", message.Error)
+			return fmt.Errorf("%w: %s", errImportRejected, message.Error)
 		}
 	}
 }

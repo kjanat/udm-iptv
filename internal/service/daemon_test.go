@@ -12,6 +12,8 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
+var errStopFailed = errors.New("stop failed")
+
 func TestProxyConfigurationKeepsNATOutOfImproxy(t *testing.T) {
 	t.Parallel()
 	value := config.Default()
@@ -70,7 +72,7 @@ func TestNoSuchUnitRecognition(t *testing.T) {
 	if !NoSuchUnit(err) {
 		t.Fatal("systemd NoSuchUnit error was not recognized")
 	}
-	if NoSuchUnit(errors.New("stop failed")) {
+	if NoSuchUnit(errStopFailed) {
 		t.Fatal("ordinary stop failure was treated as a missing unit")
 	}
 }

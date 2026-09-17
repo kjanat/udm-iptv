@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+var errDiskFull = errors.New("disk full")
+
 func TestRootfsRangeRejectsOverflow(t *testing.T) {
 	for _, size := range []int64{-1, math.MaxInt64, maximumFirmwareSize + 1} {
 		if err := Extract(bytes.NewReader(nil), size, io.Discard); err == nil {
@@ -35,7 +37,7 @@ func (writer failingExtractWriter) Write([]byte) (int, error) { return 0, writer
 
 func TestExtractPreservesOutputError(t *testing.T) {
 	image := fixture(false)
-	want := errors.New("disk full")
+	want := errDiskFull
 	if err := Extract(bytes.NewReader(image), int64(len(image)), failingExtractWriter{want}); !errors.Is(err, want) {
 		t.Fatalf("lost cause: %v", err)
 	}
@@ -82,32 +84,53 @@ func fixture(nested bool) []byte {
 }
 
 func TestExtract(t *testing.T) {
-	for _, nested := range []bool{false, true} {
-		image := fixture(nested)
-		var output bytes.Buffer
-		err := Extract(bytes.NewReader(image), int64(len(image)), &output)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if output.Len() != 96 || string(output.Bytes()[:4]) != "hsqs" {
-			t.Fatal("incorrect rootfs")
-		}
-	}
-	for _, name := range []string{"short", "header", "file", "length", "rootfs"} {
-		t.Run(name, func(t *testing.T) {
-			image := fixture(false)
-			switch name {
-			case "short":
-				image = image[:100]
-			case "header":
-				image[5] = 1
-			case "file":
-				image[0x140] = 0
-			case "length":
-				binary.LittleEndian.PutUint64(image[len(image)-56:], 1000)
-			case "rootfs":
-				image = image[:len(image)-96]
+	for _, test := range []struct {
+		name   string
+		nested bool
+	}{
+		{"flat", false},
+		{"nested", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			image := fixture(test.nested)
+			var output bytes.Buffer
+			err := Extract(bytes.NewReader(image), int64(len(image)), &output)
+			if err != nil {
+				t.Fatal(err)
 			}
+			if output.Len() != 96 || string(output.Bytes()[:4]) != "hsqs" {
+				t.Fatal("incorrect rootfs")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name    string
+		corrupt func([]byte) []byte
+	}{
+		{"short", func(image []byte) []byte {
+			return image[:100]
+		}},
+		{"header", func(image []byte) []byte {
+			image[5] = 1
+
+			return image
+		}},
+		{"file", func(image []byte) []byte {
+			image[0x140] = 0
+
+			return image
+		}},
+		{"length", func(image []byte) []byte {
+			binary.LittleEndian.PutUint64(image[len(image)-56:], 1000)
+
+			return image
+		}},
+		{"rootfs", func(image []byte) []byte {
+			return image[:len(image)-96]
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			image := test.corrupt(fixture(false))
 			err := Extract(bytes.NewReader(image), int64(len(image)), io.Discard)
 			if err == nil {
 				t.Fatal("malformed firmware accepted")

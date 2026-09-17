@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"syscall"
@@ -11,11 +12,11 @@ import (
 func ReadRuntimeState() (RuntimeState, error) {
 	data, err := os.ReadFile(runtimeStatePath)
 	if err != nil {
-		return RuntimeState{}, err
+		return RuntimeState{}, fmt.Errorf("read %s: %w", runtimeStatePath, err)
 	}
 	var state RuntimeState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return RuntimeState{}, err
+		return RuntimeState{}, fmt.Errorf("parse %s: %w", runtimeStatePath, err)
 	}
 
 	return state, nil
@@ -41,17 +42,11 @@ func ParseCounter(value any) uint64 {
 	case uint:
 		return uint64(typed)
 	case int:
-		if typed >= 0 {
-			return uint64(typed)
-		}
+		return nonNegative(int64(typed))
 	case int32:
-		if typed >= 0 {
-			return uint64(typed)
-		}
+		return nonNegative(int64(typed))
 	case int64:
-		if typed >= 0 {
-			return uint64(typed)
-		}
+		return nonNegative(typed)
 	case string:
 		parsed, _ := strconv.ParseUint(typed, 10, 64)
 
@@ -59,4 +54,12 @@ func ParseCounter(value any) uint64 {
 	}
 
 	return 0
+}
+
+func nonNegative(value int64) uint64 {
+	if value < 0 {
+		return 0
+	}
+
+	return uint64(value)
 }

@@ -92,6 +92,36 @@ func publicAddress(address netip.Addr) bool {
 
 var dnsName = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\.?$`)
 
+const dnsLabelLimit = 63
+
+func validPointerName(value string) bool {
+	if !dnsName.MatchString(value) {
+		return false
+	}
+	for label := range strings.SplitSeq(strings.TrimSuffix(value, "."), ".") {
+		if len(label) == 0 || len(label) > dnsLabelLimit || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+	}
+
+	return true
+}
+
+// PTR evidence is a low-confidence operator hint, never confirmation of a
+// retail subscription. Match DNS label boundaries, not arbitrary substrings.
+var providerSuffixes = map[string]string{"kpn.net": "kpn", "xs4all.nl": "xs4all", "freedom.nl": "freedom", "solcon.nl": "solcon", "tweak.nl": "tweak", "btcentralplus.com": "bt", "bluewin.ch": "swisscom", "init7.net": "init7"}
+
+func providerFromPointerName(value string) (string, bool) {
+	name := strings.ToLower(strings.TrimSuffix(value, "."))
+	for suffix, provider := range providerSuffixes {
+		if name == suffix || strings.HasSuffix(name, "."+suffix) {
+			return provider, true
+		}
+	}
+
+	return "", false
+}
+
 func cleanIdentity(value NetworkIdentity) NetworkIdentity {
 	result := NetworkIdentity{Provider: "unknown", Method: "none", Confidence: "unknown", Status: "unavailable"}
 	address, err := netip.ParseAddr(value.IP)
@@ -99,24 +129,12 @@ func cleanIdentity(value NetworkIdentity) NetworkIdentity {
 		return result
 	}
 	result.IP, result.Status = address.Unmap().String(), "ip-only"
-	if !dnsName.MatchString(value.PTR) {
+	if !validPointerName(value.PTR) {
 		return result
 	}
-	for label := range strings.SplitSeq(strings.TrimSuffix(value.PTR, "."), ".") {
-		if len(label) == 0 || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
-			return result
-		}
-	}
 	result.PTR, result.Status = value.PTR, "ip-and-ptr"
-	name := strings.ToLower(strings.TrimSuffix(value.PTR, "."))
-	// PTR evidence is a low-confidence operator hint, never confirmation of a
-	// retail subscription. Match DNS label boundaries, not arbitrary substrings.
-	for suffix, provider := range map[string]string{"kpn.net": "kpn", "xs4all.nl": "xs4all", "freedom.nl": "freedom", "solcon.nl": "solcon", "tweak.nl": "tweak", "btcentralplus.com": "bt", "bluewin.ch": "swisscom", "init7.net": "init7"} {
-		if name == suffix || strings.HasSuffix(name, "."+suffix) {
-			result.Provider, result.Method, result.Confidence = provider, "ptr-suffix", "low"
-
-			break
-		}
+	if provider, ok := providerFromPointerName(value.PTR); ok {
+		result.Provider, result.Method, result.Confidence = provider, "ptr-suffix", "low"
 	}
 
 	return result

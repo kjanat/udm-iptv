@@ -31,6 +31,22 @@ const (
 	hostPrefixBits = 32
 )
 
+var (
+	errTraceRateRange       = errors.New("telemetry trace rate must be between 0 and 1")
+	errWANInterfaceName     = errors.New("WAN interface must be a valid Linux interface name")
+	errWANVLANRange         = errors.New("WAN VLAN must be between 0 and 4094")
+	errVLANInterfaceName    = errors.New("VLAN interface must be a valid Linux interface name")
+	errNoLANInterface       = errors.New("at least one LAN interface is required")
+	errProxyProgram         = errors.New("proxy must be improxy or igmpproxy")
+	errMissingProxySources  = errors.New("igmpproxy requires at least one proxy source range")
+	errIGMPVersion          = errors.New("IGMP version must be 2 or 3")
+	errVLANMAC              = errors.New("VLAN MAC address is invalid")
+	errStaticAddress        = errors.New("static address must be an IPv4 CIDR address")
+	errInvalidLANInterface  = errors.New("invalid LAN interface")
+	errInvalidNetworkPrefix = errors.New("invalid network prefix")
+	errNotAnInterfaceName   = errors.New("is not a valid Linux interface name")
+)
+
 // Config is the persisted configuration file format. It is a superset of the
 // legacy shell configuration, which is imported and converted to this format.
 type Config struct {
@@ -119,7 +135,7 @@ func DefaultKPN() Config {
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("read configuration: %w", err)
 	}
 	var value Config
 	if err := json.Unmarshal(data, &value); err != nil {
@@ -140,62 +156,116 @@ func Save(path string, value Config) error {
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("encode configuration: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), filemode.PrivateDir); err != nil {
 		return fmt.Errorf("create configuration directory for %s: %w", path, err)
 	}
 
-	return atomicfile.Write(path, append(data, '\n'), filemode.PrivateFile)
+	if err := atomicfile.Write(path, append(data, '\n'), filemode.PrivateFile); err != nil {
+		return fmt.Errorf("write configuration: %w", err)
+	}
+
+	return nil
+}
+
+var configChecks = []func(Config) error{
+	validateTelemetrySampling,
+	validateWANLink,
+	validateLANPresence,
+	validateProxy,
+	validateWANAddressing,
+	validateLANNames,
+	validatePrefixLists,
 }
 
 // Validate reports whether value is a consistent, applyable configuration.
 func (value Config) Validate() error {
-	if !(value.Telemetry.TraceRate >= 0 && value.Telemetry.TraceRate <= 1) {
-		return errors.New("telemetry trace rate must be between 0 and 1")
+	for _, check := range configChecks {
+		if err := check(value); err != nil {
+			return err
+		}
 	}
+
+	return nil
+}
+
+func validateTelemetrySampling(value Config) error {
+	if !(value.Telemetry.TraceRate >= 0 && value.Telemetry.TraceRate <= 1) {
+		return errTraceRateRange
+	}
+
+	return nil
+}
+
+func validateWANLink(value Config) error {
 	if !validInterface(value.WAN.Interface) {
-		return errors.New("WAN interface must be a valid Linux interface name")
+		return errWANInterfaceName
 	}
 	if value.WAN.VLAN < 0 || value.WAN.VLAN > 4094 {
-		return errors.New("WAN VLAN must be between 0 and 4094")
+		return errWANVLANRange
 	}
 	if value.WAN.VLAN > 0 && !validInterface(value.WAN.VLANInterface) {
-		return errors.New("VLAN interface must be a valid Linux interface name")
+		return errVLANInterfaceName
 	}
+
+	return nil
+}
+
+func validateLANPresence(value Config) error {
 	if len(value.LAN.Interfaces) == 0 {
-		return errors.New("at least one LAN interface is required")
+		return errNoLANInterface
 	}
+
+	return nil
+}
+
+func validateProxy(value Config) error {
 	if value.Proxy.Program != "improxy" && value.Proxy.Program != "igmpproxy" {
-		return errors.New("proxy must be improxy or igmpproxy")
+		return errProxyProgram
 	}
 	if value.Proxy.Program == "igmpproxy" && len(value.Proxy.SourceRanges) == 0 {
-		return errors.New("igmpproxy requires at least one proxy source range")
+		return errMissingProxySources
 	}
 	if value.Proxy.IGMPVersion != 2 && value.Proxy.IGMPVersion != 3 {
-		return errors.New("IGMP version must be 2 or 3")
+		return errIGMPVersion
 	}
+
+	return nil
+}
+
+func validateWANAddressing(value Config) error {
 	if value.WAN.VLANMAC != "" {
 		if _, err := net.ParseMAC(value.WAN.VLANMAC); err != nil {
-			return errors.New("VLAN MAC address is invalid")
+			return errVLANMAC
 		}
 	}
 	if value.WAN.StaticAddress != "" {
 		prefix, err := netip.ParsePrefix(value.WAN.StaticAddress)
 		if err != nil || !prefix.Addr().Is4() {
-			return errors.New("static address must be an IPv4 CIDR address")
+			return errStaticAddress
 		}
 	}
+
+	return nil
+}
+
+func validateLANNames(value Config) error {
 	for _, name := range value.LAN.Interfaces {
 		if !validInterface(name) {
-			return fmt.Errorf("invalid LAN interface %q", name)
+			return fmt.Errorf("%w %q", errInvalidLANInterface, name)
 		}
 	}
+
+	return nil
+}
+
+func validatePrefixLists(value Config) error {
 	for _, values := range [][]string{value.WAN.NATDestinations, value.Proxy.SourceRanges, value.WAN.StaticRoutes} {
 		for _, prefix := range values {
 			parsed, err := netip.ParsePrefix(prefix)
 			if err != nil || !parsed.Addr().Is4() {
-				return fmt.Errorf("invalid network prefix %q", prefix)
+				return fmt.Errorf("%w %q", errInvalidNetworkPrefix, prefix)
 			}
 		}
 	}
@@ -223,7 +293,7 @@ func (value Config) Clone() Config {
 // ValidateInterfaceName reports whether name is a usable Linux interface name.
 func ValidateInterfaceName(name string) error {
 	if !validInterface(name) {
-		return fmt.Errorf("%q is not a valid Linux interface name", name)
+		return fmt.Errorf("%q %w", name, errNotAnInterfaceName)
 	}
 
 	return nil
@@ -311,27 +381,11 @@ func applyLegacyProxy(value *Config, values map[string]string) {
 func ImportLegacy(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("read legacy configuration: %w", err)
 	}
-	values := map[string]string{}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, raw, ok := strings.Cut(line, "=")
-		if !ok || (!strings.HasPrefix(key, "IPTV_") && key != "NO_GATEWAY") {
-			continue
-		}
-		raw = strings.TrimSpace(raw)
-		if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
-			decoded, decodeErr := strconv.Unquote(raw)
-			if decodeErr != nil {
-				return Config{}, fmt.Errorf("parse %s: %w", key, decodeErr)
-			}
-			raw = decoded
-		}
-		values[key] = raw
+	values, err := parseLegacyAssignments(string(data))
+	if err != nil {
+		return Config{}, err
 	}
 	value := legacyBase()
 	applyLegacyWAN(&value, values)
@@ -350,6 +404,39 @@ func ImportLegacy(path string) (Config, error) {
 	}
 
 	return value, value.Validate()
+}
+
+func parseLegacyAssignments(text string) (map[string]string, error) {
+	values := map[string]string{}
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, raw, ok := strings.Cut(line, "=")
+		if !ok || !legacyKey(key) {
+			continue
+		}
+		raw = strings.TrimSpace(raw)
+		if quotedLegacyValue(raw) {
+			decoded, decodeErr := strconv.Unquote(raw)
+			if decodeErr != nil {
+				return nil, fmt.Errorf("parse %s: %w", key, decodeErr)
+			}
+			raw = decoded
+		}
+		values[key] = raw
+	}
+
+	return values, nil
+}
+
+func legacyKey(key string) bool {
+	return strings.HasPrefix(key, "IPTV_") || key == "NO_GATEWAY"
+}
+
+func quotedLegacyValue(raw string) bool {
+	return len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"'
 }
 
 func fallback(value, defaultValue string) string {

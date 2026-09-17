@@ -28,6 +28,17 @@ const (
 	catalogResponseLimit = 16 << 20
 )
 
+var (
+	errUnknownModel           = errors.New("unknown model")
+	errInvalidImageRepository = errors.New("invalid image repository")
+	errReleasePairRequired    = errors.New("two firmware releases required")
+	errInvalidReleaseMetadata = errors.New("invalid firmware metadata")
+	errUnorderedReleases      = errors.New("firmware releases must be distinct and ascending")
+	errCatalogStatus          = errors.New("firmware catalog")
+	errStablePairRequired     = errors.New("two stable releases required")
+	errPublishedPairRequired  = errors.New("two published firmware versions required")
+)
+
 var models = []struct{ Name, Board string }{
 	{"udm", "UDM"},
 	{"udmpro", "UDMPRO"},
@@ -83,7 +94,7 @@ func boardFor(model string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("unknown model: %s", model)
+	return "", fmt.Errorf("%w: %s", errUnknownModel, model)
 }
 
 var (
@@ -94,7 +105,7 @@ var (
 // ValidateImage reports whether image is a valid ghcr.io/*/unifi-os repository.
 func ValidateImage(image string) error {
 	if !imageName.MatchString(image) {
-		return fmt.Errorf("invalid image repository: %s", image)
+		return fmt.Errorf("%w: %s", errInvalidImageRepository, image)
 	}
 
 	return nil
@@ -107,16 +118,16 @@ func ValidatePair(model string, releases []Release) error {
 		return err
 	}
 	if len(releases) != releasesInPair {
-		return fmt.Errorf("two firmware releases required for %s", model)
+		return fmt.Errorf("%w for %s", errReleasePairRequired, model)
 	}
 	for _, release := range releases {
 		checksum, err := hex.DecodeString(release.SHA256)
 		if release.Board != board || !stable(release.Version) || !downloadURL.MatchString(release.URL) || err != nil || len(checksum) != 32 {
-			return fmt.Errorf("invalid firmware metadata for %s", model)
+			return fmt.Errorf("%w for %s", errInvalidReleaseMetadata, model)
 		}
 	}
 	if compare(releases[0].Version, releases[1].Version) >= 0 {
-		return errors.New("firmware releases must be distinct and ascending")
+		return errUnorderedReleases
 	}
 
 	return nil
@@ -126,7 +137,7 @@ func ValidatePair(model string, releases []Release) error {
 func Discover(ctx context.Context, client *http.Client, endpoint, image, model string, cutoff time.Time) (Matrix, error) {
 	address, err := url.Parse(endpoint)
 	if err != nil {
-		return Matrix{}, err
+		return Matrix{}, fmt.Errorf("parse firmware catalog endpoint %s: %w", endpoint, err)
 	}
 	query := address.Query()
 	query.Add("filter", "eq~~product~~unifi-dream")
@@ -136,11 +147,11 @@ func Discover(ctx context.Context, client *http.Client, endpoint, image, model s
 	address.RawQuery = query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address.String(), nil)
 	if err != nil {
-		return Matrix{}, err
+		return Matrix{}, fmt.Errorf("build firmware catalog request: %w", err)
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return Matrix{}, err
+		return Matrix{}, fmt.Errorf("fetch firmware catalog: %w", err)
 	}
 	matrix, result := discoverFromResponse(response, image, model, cutoff)
 	if closeErr := response.Body.Close(); closeErr != nil {
@@ -152,7 +163,7 @@ func Discover(ctx context.Context, client *http.Client, endpoint, image, model s
 
 func discoverFromResponse(response *http.Response, image, model string, cutoff time.Time) (Matrix, error) {
 	if response.StatusCode != http.StatusOK {
-		return Matrix{}, fmt.Errorf("firmware catalog: HTTP %d", response.StatusCode)
+		return Matrix{}, fmt.Errorf("%w: HTTP %d", errCatalogStatus, response.StatusCode)
 	}
 
 	return SelectCatalog(io.LimitReader(response.Body, catalogResponseLimit), image, model, cutoff)
@@ -161,62 +172,93 @@ func discoverFromResponse(response *http.Response, image, model string, cutoff t
 // SelectCatalog picks the latest two stable, non-prerelease firmware versions
 // per model from a catalog API response.
 func SelectCatalog(reader io.Reader, image, model string, cutoff time.Time) (Matrix, error) {
-	err := ValidateImage(image)
+	err := validateCatalogSelectors(image, model)
 	if err != nil {
 		return Matrix{}, err
 	}
-	if model != "all" {
-		if _, err := boardFor(model); err != nil {
-			return Matrix{}, err
-		}
-	}
-	var catalog struct {
-		Embedded struct {
-			Firmware []catalogRelease `json:"firmware"`
-		} `json:"_embedded"`
-	}
-	err = json.NewDecoder(reader).Decode(&catalog)
+	entries, err := decodeCatalog(reader)
 	if err != nil {
-		return Matrix{}, fmt.Errorf("decode firmware catalog: %w", err)
+		return Matrix{}, err
 	}
 	matrix := Matrix{}
 	for _, device := range models {
 		if model != "all" && model != device.Name {
 			continue
 		}
-		latest := make(map[string]catalogRelease)
-		for _, entry := range catalog.Embedded.Firmware {
-			version, _, _ := strings.Cut(strings.TrimPrefix(entry.Version, "v"), "+")
-			if entry.Platform != device.Board || entry.Created.After(cutoff) || !stable(version) {
-				continue
-			}
-			previous, exists := latest[version]
-			if !exists || entry.Created.After(previous.Created) {
-				latest[version] = entry
-			}
-		}
-		versions := make([]string, 0, len(latest))
-		for version := range latest {
-			versions = append(versions, version)
-		}
-		slices.SortFunc(versions, compare)
-		if len(versions) < releasesInPair {
-			return Matrix{}, fmt.Errorf("two stable releases required for %s", device.Name)
-		}
-		pair := Pair{Model: device.Name}
-		for _, version := range versions[len(versions)-2:] {
-			entry := latest[version]
-			pair.Firmwares = append(pair.Firmwares, Release{device.Board, version, entry.Links.Data.Href, entry.SHA256})
-		}
-		err := ValidatePair(device.Name, pair.Firmwares)
+		pair, err := catalogPair(device.Name, device.Board, image, newestPerVersion(entries, device.Board, cutoff))
 		if err != nil {
 			return Matrix{}, err
 		}
-		pair.From, pair.To = image+":"+device.Name+"-"+versions[len(versions)-2], image+":"+device.Name+"-"+versions[len(versions)-1]
 		matrix.Include = append(matrix.Include, pair)
 	}
 
 	return matrix, nil
+}
+
+func validateCatalogSelectors(image, model string) error {
+	err := ValidateImage(image)
+	if err != nil {
+		return err
+	}
+	if model == "all" {
+		return nil
+	}
+	_, err = boardFor(model)
+
+	return err
+}
+
+func decodeCatalog(reader io.Reader) ([]catalogRelease, error) {
+	var catalog struct {
+		Embedded struct {
+			Firmware []catalogRelease `json:"firmware"`
+		} `json:"_embedded"`
+	}
+	err := json.NewDecoder(reader).Decode(&catalog)
+	if err != nil {
+		return nil, fmt.Errorf("decode firmware catalog: %w", err)
+	}
+
+	return catalog.Embedded.Firmware, nil
+}
+
+func newestPerVersion(entries []catalogRelease, board string, cutoff time.Time) map[string]catalogRelease {
+	latest := make(map[string]catalogRelease)
+	for _, entry := range entries {
+		version, _, _ := strings.Cut(strings.TrimPrefix(entry.Version, "v"), "+")
+		if entry.Platform != board || entry.Created.After(cutoff) || !stable(version) {
+			continue
+		}
+		previous, exists := latest[version]
+		if !exists || entry.Created.After(previous.Created) {
+			latest[version] = entry
+		}
+	}
+
+	return latest
+}
+
+func catalogPair(name, board, image string, latest map[string]catalogRelease) (Pair, error) {
+	versions := make([]string, 0, len(latest))
+	for version := range latest {
+		versions = append(versions, version)
+	}
+	slices.SortFunc(versions, compare)
+	if len(versions) < releasesInPair {
+		return Pair{}, fmt.Errorf("%w for %s", errStablePairRequired, name)
+	}
+	pair := Pair{Model: name}
+	for _, version := range versions[len(versions)-2:] {
+		entry := latest[version]
+		pair.Firmwares = append(pair.Firmwares, Release{board, version, entry.Links.Data.Href, entry.SHA256})
+	}
+	err := ValidatePair(name, pair.Firmwares)
+	if err != nil {
+		return Pair{}, err
+	}
+	pair.From, pair.To = image+":"+name+"-"+versions[len(versions)-2], image+":"+name+"-"+versions[len(versions)-1]
+
+	return pair, nil
 }
 
 // Published selects the latest two published firmware tags per model.
@@ -237,7 +279,7 @@ func Published(tags, image string) (Matrix, error) {
 		slices.SortFunc(versions, compare)
 		versions = slices.Compact(versions)
 		if len(versions) < releasesInPair {
-			return Matrix{}, fmt.Errorf("two published firmware versions required for %s", device.Name)
+			return Matrix{}, fmt.Errorf("%w for %s", errPublishedPairRequired, device.Name)
 		}
 		matrix.Include = append(matrix.Include, Pair{Model: device.Name, From: image + ":" + device.Name + "-" + versions[len(versions)-2], To: image + ":" + device.Name + "-" + versions[len(versions)-1]})
 	}

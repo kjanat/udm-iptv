@@ -28,7 +28,11 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	return command().ExecuteContext(ctx)
+	if err := command().ExecuteContext(ctx); err != nil {
+		return fmt.Errorf("run firmware command: %w", err)
+	}
+
+	return nil
 }
 
 const (
@@ -49,7 +53,7 @@ func command() *cobra.Command {
 		defer cancel()
 		matrix, err := firmware.Discover(ctx, client, firmware.CatalogURL, image, model, time.Now())
 		if err != nil {
-			return err
+			return fmt.Errorf("discover firmware pairs: %w", err)
 		}
 
 		return writeMatrix(cmd.OutOrStdout(), output, matrix)
@@ -60,7 +64,7 @@ func command() *cobra.Command {
 	published := &cobra.Command{Use: "published", Short: "Select published firmware pairs.", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		matrix, err := pipeline.Published(cmd.Context(), image)
 		if err != nil {
-			return err
+			return fmt.Errorf("select published firmware pairs: %w", err)
 		}
 
 		return writeMatrix(cmd.OutOrStdout(), output, matrix)
@@ -76,13 +80,9 @@ func command() *cobra.Command {
 			}
 			engine, err := firmware.NewDocker(os.Getenv("GITHUB_ACTOR"), os.Getenv("GH_TOKEN"))
 			if err != nil {
-				return err
+				return fmt.Errorf("create Docker image client: %w", err)
 			}
-			defer func() {
-				if err := engine.Close(); err != nil {
-					result = errors.Join(result, fmt.Errorf("close Docker client: %w", err))
-				}
-			}()
+			defer func() { result = errors.Join(result, engine.Close()) }()
 			pipeline.Images = engine
 			if operation == operationBuild {
 				return pipeline.Build(cmd.Context(), image, model, cache, pair)
@@ -104,19 +104,23 @@ func command() *cobra.Command {
 func writeMatrix(output io.Writer, filename string, matrix firmware.Matrix) (err error) {
 	data, err := json.Marshal(matrix)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode firmware matrix: %w", err)
 	}
 	if filename == "" {
-		_, err = fmt.Fprintln(output, string(data))
+		if _, err := fmt.Fprintln(output, string(data)); err != nil {
+			return fmt.Errorf("write firmware matrix: %w", err)
+		}
 
-		return err
+		return nil
 	}
 	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("open GitHub output file %s: %w", filename, err)
 	}
 	defer func() { err = errors.Join(err, file.Close()) }()
-	_, err = fmt.Fprintf(file, "matrix=%s\n", data)
+	if _, err := fmt.Fprintf(file, "matrix=%s\n", data); err != nil {
+		return fmt.Errorf("append firmware matrix to %s: %w", filename, err)
+	}
 
-	return err
+	return nil
 }

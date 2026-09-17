@@ -26,7 +26,7 @@ func systemUpgradeActions(restart func(context.Context, bool) error) upgradeActi
 func backupExecutable(target string) (string, error) {
 	file, err := os.CreateTemp(filepath.Dir(target), ".udm-iptv.previous-*")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create recovery copy beside %s: %w", target, err)
 	}
 	name := file.Name()
 	if err := file.Close(); err != nil {
@@ -40,7 +40,7 @@ func backupExecutable(target string) (string, error) {
 
 func activateUpgrade(ctx context.Context, source, target, version string, actions upgradeActions) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("upgrade cancelled before any change: %w", err)
 	}
 	backup, err := actions.backup(target)
 	if err != nil {

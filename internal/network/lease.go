@@ -16,46 +16,53 @@ func reconcileLeaseRoutes(linkIndex int, desired []netlink.Route, ops leaseOpera
 	if err != nil {
 		return fmt.Errorf("read DHCP routes: %w", err)
 	}
+	installed := make(map[string]bool, len(current))
+	for _, route := range current {
+		installed[leaseRouteIdentity(route)] = true
+	}
 	for _, route := range desired {
-		unchanged := false
-		for _, old := range current {
-			if leaseRouteKey(old) == leaseRouteKey(route) && old.Protocol == route.Protocol && old.Scope == route.Scope && old.Gw.Equal(route.Gw) {
-				unchanged = true
-
-				break
-			}
+		if installed[leaseRouteIdentity(route)] {
+			continue
 		}
-		if !unchanged {
-			err := ops.replaceRoute(&route)
-			if err != nil {
-				return fmt.Errorf("apply DHCP route %s: %w", route.Dst, err)
-			}
+		if err := ops.replaceRoute(&route); err != nil {
+			return fmt.Errorf("apply DHCP route %s: %w", route.Dst, err)
 		}
 	}
+
+	return removeObsoleteLeaseRoutes(linkIndex, current, desired, ops)
+}
+
+func removeObsoleteLeaseRoutes(linkIndex int, current, desired []netlink.Route, ops leaseOperations) error {
+	obsolete := obsoleteLeaseRoutes(linkIndex, current, desired)
 	// Delete gateway-dependent routes before their on-link gateway routes.
-	for _, gatewayRoute := range []bool{false, true} {
-		for _, old := range current {
-			if old.LinkIndex != linkIndex || int(old.Protocol) != routeProtocolDHCP || (len(old.Gw) == 0) != gatewayRoute {
+	for _, viaGateway := range []bool{true, false} {
+		for _, route := range obsolete {
+			if (len(route.Gw) != 0) != viaGateway {
 				continue
 			}
-			keep := false
-			for _, route := range desired {
-				if leaseRouteKey(old) == leaseRouteKey(route) {
-					keep = true
-
-					break
-				}
-			}
-			if !keep {
-				err := ops.deleteRoute(&old)
-				if err != nil {
-					return fmt.Errorf("remove obsolete DHCP route %s: %w", old.Dst, err)
-				}
+			if err := ops.deleteRoute(&route); err != nil {
+				return fmt.Errorf("remove obsolete DHCP route %s: %w", route.Dst, err)
 			}
 		}
 	}
 
 	return nil
+}
+
+func obsoleteLeaseRoutes(linkIndex int, current, desired []netlink.Route) []netlink.Route {
+	keep := make(map[string]bool, len(desired))
+	for _, route := range desired {
+		keep[leaseRouteKey(route)] = true
+	}
+	var obsolete []netlink.Route
+	for _, route := range current {
+		managed := route.LinkIndex == linkIndex && int(route.Protocol) == routeProtocolDHCP
+		if managed && !keep[leaseRouteKey(route)] {
+			obsolete = append(obsolete, route)
+		}
+	}
+
+	return obsolete
 }
 
 func leaseRouteKey(route netlink.Route) string {
@@ -69,6 +76,12 @@ func leaseRouteKey(route netlink.Route) string {
 	}
 
 	return fmt.Sprintf("%d/%d/%s/%d", table, route.LinkIndex, destination, route.Priority)
+}
+
+// leaseRouteIdentity also covers the attributes a replacement would change,
+// so an unchanged renewal touches nothing.
+func leaseRouteIdentity(route netlink.Route) string {
+	return fmt.Sprintf("%s/%d/%d/%s", leaseRouteKey(route), route.Protocol, route.Scope, route.Gw)
 }
 
 func removeOldLeaseAddresses(link netlink.Link, desired *netlink.Addr, ops leaseOperations) (bool, error) {

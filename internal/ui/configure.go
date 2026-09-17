@@ -21,6 +21,14 @@ type formValues struct {
 	vlan, dhcpOptions, nat, sources string
 }
 
+var (
+	errNotIPv4Prefix         = errors.New("use IPv4 prefixes, for example 213.75.0.0/16")
+	errVLANIDOutOfRange      = errors.New("enter a VLAN ID between 0 and 4094")
+	errNotMACAddress         = errors.New("enter a valid MAC address")
+	errNotIPv4CIDR           = errors.New("enter an IPv4 CIDR address")
+	errSourcePrefixesMissing = errors.New("igmpproxy needs at least one source prefix")
+)
+
 const (
 	// selectChrome is the extra rows a select adds around its visible options.
 	selectChrome = 4
@@ -184,7 +192,7 @@ func applyProfile(catalog config.Catalog, value *config.Config, profileID string
 	}
 	applied, err := catalog.Apply(profileID, *value)
 	if err != nil {
-		return err
+		return fmt.Errorf("select a provider profile: %w", err)
 	}
 	*value = applied
 
@@ -232,67 +240,112 @@ const (
 	stageChain wizardStage = iota
 	stageSettings
 	stageReview
+	stageDone
 )
+
+type configureSession struct {
+	catalog    config.Catalog
+	run        RunForm
+	draft      *config.Config
+	apply      func() error
+	settings   *Wizard
+	ports      []Port
+	suggestion string
+	chosen     selection
+	remaining  int
+	asked      int
+	start      int
+	accepted   bool
+}
 
 // ConfigureSuggested highlights evidence without treating it as an applied choice.
 // The caller supplies a provider ID only for a new, unconfigured installation.
 func ConfigureSuggested(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, ports ...Port) error {
-	original := value
 	draft := clone(*value)
-	value = &draft
-	chosen := startingSelection(catalog, value.Profile, suggestion)
-	estimate, _ := settingsForm(catalog, value, ports, 0)
-	remaining := estimate.visibleFields() + reviewQuestions
-	stage, start, asked := stageChain, 0, 0
-	var settings *Wizard
-	var apply func() error
-	accepted := true
-	for {
-		switch stage {
-		case stageChain:
-			count, err := chooseProfile(ctx, catalog, run, &chosen, suggestion, remaining, start)
-			if err != nil {
-				return err
-			}
-			asked = count
-			if err := applyProfile(catalog, value, chosen.profile()); err != nil {
-				return err
-			}
-			settings, apply = settingsForm(catalog, value, ports, asked)
-			stage = stageSettings
-		case stageSettings:
-			err := run(ctx, settings)
-			if errors.Is(err, ErrBack) {
-				stage, start = stageChain, max(asked-1, 0)
-
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			if err := apply(); err != nil {
-				return err
-			}
-			stage = stageReview
-		case stageReview:
-			err := run(ctx, reviewForm(*value, asked+settings.visiblePages(), &accepted))
-			if errors.Is(err, ErrBack) {
-				settings, apply = settingsForm(catalog, value, ports, asked)
-				stage = stageSettings
-
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			if !accepted {
-				return context.Canceled
-			}
-			*original = draft
-
-			return nil
-		}
+	chosen := startingSelection(catalog, draft.Profile, suggestion)
+	estimate, _ := settingsForm(catalog, &draft, ports, 0)
+	session := &configureSession{
+		catalog:    catalog,
+		run:        run,
+		draft:      &draft,
+		ports:      ports,
+		suggestion: suggestion,
+		chosen:     chosen,
+		remaining:  estimate.visibleFields() + reviewQuestions,
+		accepted:   true,
 	}
+	if err := session.walk(ctx); err != nil {
+		return err
+	}
+	*value = draft
+
+	return nil
+}
+
+var wizardStages = map[wizardStage]func(*configureSession, context.Context) (wizardStage, error){
+	stageChain:    (*configureSession).pickProfile,
+	stageSettings: (*configureSession).editSettings,
+	stageReview:   (*configureSession).confirmSettings,
+}
+
+func (session *configureSession) walk(ctx context.Context) error {
+	for stage := stageChain; stage != stageDone; {
+		next, err := wizardStages[stage](session, ctx)
+		if err != nil {
+			return err
+		}
+		stage = next
+	}
+
+	return nil
+}
+
+func (session *configureSession) pickProfile(ctx context.Context) (wizardStage, error) {
+	asked, err := chooseProfile(ctx, session.catalog, session.run, &session.chosen, session.suggestion, session.remaining, session.start)
+	if err != nil {
+		return stageChain, err
+	}
+	session.asked = asked
+	if err := applyProfile(session.catalog, session.draft, session.chosen.profile()); err != nil {
+		return stageChain, err
+	}
+	session.settings, session.apply = settingsForm(session.catalog, session.draft, session.ports, session.asked)
+
+	return stageSettings, nil
+}
+
+func (session *configureSession) editSettings(ctx context.Context) (wizardStage, error) {
+	err := session.run(ctx, session.settings)
+	if errors.Is(err, ErrBack) {
+		session.start = max(session.asked-1, 0)
+
+		return stageChain, nil
+	}
+	if err != nil {
+		return stageSettings, err
+	}
+	if err := session.apply(); err != nil {
+		return stageSettings, err
+	}
+
+	return stageReview, nil
+}
+
+func (session *configureSession) confirmSettings(ctx context.Context) (wizardStage, error) {
+	err := session.run(ctx, reviewForm(*session.draft, session.asked+session.settings.visiblePages(), &session.accepted))
+	if errors.Is(err, ErrBack) {
+		session.settings, session.apply = settingsForm(session.catalog, session.draft, session.ports, session.asked)
+
+		return stageSettings, nil
+	}
+	if err != nil {
+		return stageReview, err
+	}
+	if !session.accepted {
+		return stageReview, context.Canceled
+	}
+
+	return stageDone, nil
 }
 
 func configurationPages(value *config.Config, ports []Port, note string, fields *formValues) []*page {
@@ -304,18 +357,19 @@ func configurationPages(value *config.Config, ports []Port, note string, fields 
 func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues) ([]*page, *string, *[]string) {
 	groups, selectedPort := wanGroups(&value.WAN.Interface, ports)
 	lanPages, selectedLAN := lanGroups(value.LAN.Interfaces, ports)
+	groups = append(groups, uplinkPages(value, note, fields)...)
+	groups = append(groups, lanPages...)
+	groups = append(groups, multicastPages(value, fields)...)
+	groups = append(groups, newPage(telemetryConsent(&value.Telemetry)))
+
+	return groups, selectedPort, selectedLAN
+}
+
+func uplinkPages(value *config.Config, note string, fields *formValues) []*page {
 	connection := newPage(
 		huh.NewInput().Key("vlan").Title("IPTV VLAN ID").
 			Description("Use 0 when IPTV is untagged.").
-			Placeholder("4").Value(&fields.vlan).
-			Validate(func(value string) error {
-				parsed, err := strconv.Atoi(value)
-				if err != nil || parsed < 0 || parsed > 4094 {
-					return errors.New("enter a VLAN ID between 0 and 4094")
-				}
-
-				return nil
-			}),
+			Placeholder("4").Value(&fields.vlan).Validate(validateVLANID),
 		huh.NewConfirm().Key("dhcp").Title("Use DHCP for the IPTV address?").
 			Description("Most providers assign this automatically.").
 			Affirmative("Yes").Negative("No").Value(&value.WAN.DHCP),
@@ -323,25 +377,16 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 	if note != "" {
 		connection = connection.description(note)
 	}
-	groups = append(groups,
+
+	return []*page{
 		connection,
 		newPage(
 			huh.NewInput().Key("vlan-interface").Title("VLAN interface name").
 				Description("Virtual name, not a physical port.").
-				Placeholder("iptv").Value(&value.WAN.VLANInterface).Validate(validateInterface),
+				Placeholder("iptv").Value(&value.WAN.VLANInterface).Validate(config.ValidateInterfaceName),
 			huh.NewInput().Key("vlan-mac").Title("Custom MAC address").
 				Description("Leave empty unless your provider requires it.").
-				Value(&value.WAN.VLANMAC).
-				Validate(func(value string) error {
-					if value == "" {
-						return nil
-					}
-					if _, err := net.ParseMAC(value); err != nil {
-						return errors.New("enter a valid MAC address")
-					}
-
-					return nil
-				}),
+				Value(&value.WAN.VLANMAC).Validate(validateOptionalMAC),
 		).title("VLAN interface").hide(func() bool { return fields.vlan == "0" }),
 		newPage(
 			huh.NewInput().Key("dhcp-options").Title("DHCP client options").
@@ -354,22 +399,13 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 		newPage(
 			huh.NewInput().Key("static-address").Title("Static IPTV address").
 				Description("Address for the IPTV connection with its prefix length, for example 10.0.0.2/24.").
-				Placeholder("10.0.0.2/24").Value(&value.WAN.StaticAddress).
-				Validate(func(value string) error {
-					if value == "" {
-						return nil
-					}
-					prefix, err := netip.ParsePrefix(value)
-					if err != nil || !prefix.Addr().Is4() {
-						return errors.New("enter an IPv4 CIDR address")
-					}
-
-					return nil
-				}),
+				Placeholder("10.0.0.2/24").Value(&value.WAN.StaticAddress).Validate(validateOptionalPrefix),
 		).title("Static address").hide(func() bool { return value.WAN.DHCP }),
-	)
-	groups = append(groups, lanPages...)
-	groups = append(groups,
+	}
+}
+
+func multicastPages(value *config.Config, fields *formValues) []*page {
+	return []*page{
 		newPage(
 			huh.NewInput().Key("nat").Title("IPTV unicast destinations").
 				Description("Networks your TVs talk to for the guide, video on demand and other services. Write each one as an address and prefix length such as 213.75.0.0/16, separated by spaces or commas.").
@@ -398,19 +434,9 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 		newPage(
 			huh.NewInput().Key("proxy-sources").Title("Allowed multicast sources").
 				Description("Networks igmpproxy accepts multicast video from. Write each one as an address and prefix length such as 213.75.0.0/16, separated by spaces or commas. 0.0.0.0/0 accepts every source.").
-				Value(&fields.sources).
-				Validate(func(value string) error {
-					if len(splitList(value)) == 0 {
-						return errors.New("igmpproxy needs at least one source prefix")
-					}
-
-					return validatePrefixes(value)
-				}),
+				Value(&fields.sources).Validate(validateSourcePrefixes),
 		).title("Multicast sources").hide(func() bool { return value.Proxy.Program != "igmpproxy" }),
-		newPage(telemetryConsent(&value.Telemetry)),
-	)
-
-	return groups, selectedPort, selectedLAN
+	}
 }
 
 func reviewSummary(value config.Config) string {
@@ -428,10 +454,6 @@ func clone(value config.Config) config.Config {
 	return value.Clone()
 }
 
-func validateInterface(name string) error {
-	return config.ValidateInterfaceName(name)
-}
-
 func splitList(value string) []string {
 	return strings.FieldsFunc(value, func(r rune) bool {
 		return unicode.IsSpace(r) || r == ',' || r == ';'
@@ -442,9 +464,49 @@ func validatePrefixes(value string) error {
 	for _, item := range splitList(value) {
 		prefix, err := netip.ParsePrefix(item)
 		if err != nil || !prefix.Addr().Is4() {
-			return errors.New("use IPv4 prefixes, for example 213.75.0.0/16")
+			return errNotIPv4Prefix
 		}
 	}
 
 	return nil
+}
+
+func validateVLANID(value string) error {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 || parsed > 4094 {
+		return errVLANIDOutOfRange
+	}
+
+	return nil
+}
+
+func validateOptionalMAC(value string) error {
+	if value == "" {
+		return nil
+	}
+	if _, err := net.ParseMAC(value); err != nil {
+		return errNotMACAddress
+	}
+
+	return nil
+}
+
+func validateOptionalPrefix(value string) error {
+	if value == "" {
+		return nil
+	}
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil || !prefix.Addr().Is4() {
+		return errNotIPv4CIDR
+	}
+
+	return nil
+}
+
+func validateSourcePrefixes(value string) error {
+	if len(splitList(value)) == 0 {
+		return errSourcePrefixesMissing
+	}
+
+	return validatePrefixes(value)
 }

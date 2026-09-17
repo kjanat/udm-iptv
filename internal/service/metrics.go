@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -107,11 +108,14 @@ func multicastCounters(reader io.Reader) (int, uint64, error) {
 		}
 		count, err := strconv.ParseUint(fields[ipMRCacheFields-1], 10, 64)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, fmt.Errorf("parse multicast packet counter: %w", err)
 		}
 		routes++
 		packets += count
 	}
+	if err := scanner.Err(); err != nil {
+		return 0, 0, fmt.Errorf("read the multicast route cache: %w", err)
+	}
 
-	return routes, packets, scanner.Err()
+	return routes, packets, nil
 }

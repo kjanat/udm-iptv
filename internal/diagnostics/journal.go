@@ -30,7 +30,12 @@ func (output *boundedJournal) Write(data []byte) (int, error) {
 		n, _ := output.Buffer.Write(data[:remaining])
 		return n, io.ErrShortBuffer
 	}
-	return output.Buffer.Write(data)
+	n, err := output.Buffer.Write(data)
+	if err != nil {
+		return n, fmt.Errorf("buffer journal output: %w", err)
+	}
+
+	return n, nil
 }
 
 func journalOutput(ctx context.Context, limit int, arguments ...string) ([]byte, error) {

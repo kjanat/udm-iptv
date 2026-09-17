@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -18,6 +19,8 @@ import (
 // addressUpdateBuffer bounds pending netlink address updates before the
 // sanitizer's watch loop applies backpressure.
 const addressUpdateBuffer = 16
+
+var errAddressObservationStopped = errors.New("address observation stopped")
 
 var (
 	macPattern = regexp.MustCompile(`(?i)(?:\b[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b|\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b`)
@@ -44,21 +47,30 @@ func sanitizeWithAddresses(text string, addresses []string) string {
 		text = pattern.ReplaceAllString(text, "${1}<device-address>${3}")
 	}
 
-	return ipPattern.ReplaceAllStringFunc(text, func(candidate string) string {
-		address := strings.Trim(candidate, "[](),")
-		if zone := strings.LastIndexByte(address, '%'); zone >= 0 {
-			address = address[:zone]
-		}
-		parsed, err := netip.ParseAddr(address)
-		if err != nil {
-			return candidate
-		}
-		if parsed.IsPrivate() || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() || parsed.IsMulticast() || parsed.IsUnspecified() || parsed.Is6() || sharedAddress(parsed) {
-			return "<redacted-address>"
-		}
+	return ipPattern.ReplaceAllStringFunc(text, redactAddressLiteral)
+}
 
+func redactAddressLiteral(candidate string) string {
+	address := strings.Trim(candidate, "[](),")
+	if zone := strings.LastIndexByte(address, '%'); zone >= 0 {
+		address = address[:zone]
+	}
+	parsed, err := netip.ParseAddr(address)
+	if err != nil {
 		return candidate
-	})
+	}
+	if parsed.Is6() || localAddress(parsed) {
+		return "<redacted-address>"
+	}
+
+	return candidate
+}
+
+// localAddress reports whether an address describes this network rather than
+// a routable peer, and so must not reach a diagnostic report.
+func localAddress(address netip.Addr) bool {
+	return address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() ||
+		address.IsMulticast() || address.IsUnspecified() || sharedAddress(address)
 }
 
 type diagnosticSanitizer struct {
@@ -110,42 +122,44 @@ func (value *diagnosticSanitizer) watch(ctx context.Context) (<-chan error, erro
 	failures := make(chan error, 1)
 	updates := make(chan netlink.AddrUpdate, addressUpdateBuffer)
 	options := netlink.AddrSubscribeOptions{
-		ListExisting: true,
-		ErrorCallback: func(err error) {
-			select {
-			case failures <- err:
-			default:
-			}
-		},
+		ListExisting:  true,
+		ErrorCallback: func(err error) { reportFailure(failures, err) },
 	}
 	err := netlink.AddrSubscribeWithOptions(updates, ctx.Done(), options)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("subscribe to address updates: %w", err)
 	}
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case update, ok := <-updates:
-				if !ok {
-					if ctx.Err() == nil {
-						select {
-						case failures <- errors.New("address observation stopped"):
-						default:
-						}
-					}
-
-					return
-				}
-				if update.LinkAddress.IP != nil {
-					value.observe([]string{update.LinkAddress.IP.String()})
-				}
-			}
-		}
-	}()
+	go value.observeUpdates(ctx, updates, failures)
 
 	return failures, nil
+}
+
+// reportFailure keeps the first failure without blocking the netlink reader.
+func reportFailure(failures chan<- error, cause error) {
+	select {
+	case failures <- cause:
+	default:
+	}
+}
+
+func (value *diagnosticSanitizer) observeUpdates(ctx context.Context, updates <-chan netlink.AddrUpdate, failures chan<- error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case update, ok := <-updates:
+			if !ok {
+				if ctx.Err() == nil {
+					reportFailure(failures, errAddressObservationStopped)
+				}
+
+				return
+			}
+			if update.LinkAddress.IP != nil {
+				value.observe([]string{update.LinkAddress.IP.String()})
+			}
+		}
+	}
 }
 
 func assignedAddresses() []string {
@@ -180,7 +194,7 @@ func sanitizePrefixes(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		prefix, err := netip.ParsePrefix(value)
-		if err == nil && (prefix.Addr().IsPrivate() || prefix.Addr().IsLoopback() || prefix.Addr().IsLinkLocalUnicast() || prefix.Addr().IsMulticast() || prefix.Addr().IsUnspecified() || sharedAddress(prefix.Addr())) {
+		if err == nil && localAddress(prefix.Addr()) {
 			result = append(result, "<redacted-prefix>")
 		} else {
 			result = append(result, value)

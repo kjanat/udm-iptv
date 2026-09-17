@@ -36,8 +36,11 @@ func runWizard(session *ui.Session) ui.RunForm {
 		if errors.Is(err, huh.ErrUserAborted) {
 			return errors.Join(context.Canceled, err)
 		}
+		if err != nil {
+			return fmt.Errorf("run the wizard: %w", err)
+		}
 
-		return err
+		return nil
 	}
 }
 
@@ -52,7 +55,11 @@ func (application *Application) configureForm(ctx context.Context, value *config
 	})
 	defer session.Close()
 
-	return ui.ConfigureSuggested(ctx, value, catalog, runWizard(session), application.providerSuggestion, detectedPorts()...)
+	if err := ui.ConfigureSuggested(ctx, value, catalog, runWizard(session), application.providerSuggestion, detectedPorts()...); err != nil {
+		return fmt.Errorf("collect the configuration: %w", err)
+	}
+
+	return nil
 }
 
 // Suggestions never replace saved/imported settings or explicit --profile values.
@@ -67,9 +74,8 @@ func (application *Application) suggestProvider(ctx context.Context, value confi
 		return err
 	}
 	identity := application.networkIdentity(ctx)
-	err = ctx.Err()
-	if err != nil {
-		return err
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("look up the provider: %w", err)
 	}
 	application.providerSuggestion = suggestedProvider(identity)
 	if application.providerSuggestion == "" {
@@ -123,14 +129,14 @@ func (application *Application) previewCommandWith(prompt func(context.Context, 
 		RunE: func(command *cobra.Command, _ []string) error {
 			value, err := config.FromProfile(profile, config.Default())
 			if err != nil {
-				return err
+				return fmt.Errorf("apply --profile: %w", err)
 			}
 			if err := prompt(command.Context(), &value); err != nil {
 				return fmt.Errorf("preview ended without saving changes: %w", err)
 			}
 			data, err := json.MarshalIndent(value, "", "  ")
 			if err != nil {
-				return err
+				return fmt.Errorf("encode the previewed configuration: %w", err)
 			}
 
 			return writef(application.Out, "%s\n", data)
