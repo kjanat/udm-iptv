@@ -30,7 +30,7 @@ func TestTelemetryDefaultsAndExistingChoice(t *testing.T) {
 	}
 }
 
-func TestLegacyTelemetryRemainsDisabled(t *testing.T) {
+func TestMigratedConfigurationKeepsDefaultTelemetry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.conf")
 	// The packaging always wrote IPTV_WAN_RANGES, and igmpproxy needs a source
 	// prefix, so a realistic legacy file carries one.
@@ -42,7 +42,7 @@ func TestLegacyTelemetryRemainsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.Telemetry.Enabled {
-		t.Fatal("migration enabled telemetry")
+	if !value.Telemetry.Enabled {
+		t.Fatal("migration disabled telemetry")
 	}
 }

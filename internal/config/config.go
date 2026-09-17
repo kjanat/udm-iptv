@@ -329,8 +329,6 @@ func legacyBase() Config {
 	value.WAN.VLANInterface = legacyVLANInterface
 	value.Proxy.Program = legacyProxyProgram
 	value.Proxy.IGMPVersion = legacyIGMPVersion
-	// Legacy installations never selected telemetry; do not opt them in.
-	value.Telemetry.Enabled = false
 
 	return value
 }
