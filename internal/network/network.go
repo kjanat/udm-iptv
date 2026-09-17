@@ -41,11 +41,7 @@ var (
 // Target returns the interface IPTV traffic flows through: the VLAN
 // sub-interface when tagged, otherwise the WAN interface itself.
 func Target(value config.Config) string {
-	if value.WAN.VLAN > 0 {
-		return value.WAN.VLANInterface
-	}
-
-	return value.WAN.Interface
+	return value.Target()
 }
 
 // EnsureLink brings up the WAN interface, creating the VLAN sub-interface when tagged.
@@ -166,7 +162,8 @@ func RemoveNAT(value config.Config) error {
 	return joined
 }
 
-// ApplyStatic sets the configured static address and static routes on link.
+// ApplyStatic sets the configured static address and static routes on link,
+// retiring any IPv4 address a previous configuration left behind.
 func ApplyStatic(value config.Config, link netlink.Link) error {
 	if value.WAN.StaticAddress != "" {
 		address, err := netlink.ParseAddr(value.WAN.StaticAddress)
@@ -175,6 +172,9 @@ func ApplyStatic(value config.Config, link netlink.Link) error {
 		}
 		if err := netlink.AddrReplace(link, address); err != nil {
 			return fmt.Errorf("apply static address %s: %w", value.WAN.StaticAddress, err)
+		}
+		if _, err := removeOtherAddresses(link, address, systemOperations()); err != nil {
+			return fmt.Errorf("retire the previous static address: %w", err)
 		}
 	}
 	for _, raw := range value.WAN.StaticRoutes {
@@ -236,13 +236,17 @@ func LeaseFromEnvironment(action string) (Lease, error) {
 }
 
 // ApplyLease reconciles the interface's address and routes with a DHCP lease event.
-func ApplyLease(lease Lease, allowDefaultRoute bool) error {
-	return applyLease(lease, allowDefaultRoute, leaseOperations{
+func ApplyLease(lease Lease, policy config.RoutePolicy) error {
+	return applyLease(lease, policy, systemOperations())
+}
+
+func systemOperations() leaseOperations {
+	return leaseOperations{
 		link: netlink.LinkByName, addresses: netlink.AddrList,
 		replaceAddress: netlink.AddrReplace, deleteAddress: netlink.AddrDel,
 		up: netlink.LinkSetUp, routes: netlink.RouteListFiltered,
 		replaceRoute: netlink.RouteReplace, deleteRoute: netlink.RouteDel,
-	})
+	}
 }
 
 type leaseOperations struct {
@@ -256,7 +260,7 @@ type leaseOperations struct {
 	deleteRoute    func(*netlink.Route) error
 }
 
-func applyLease(lease Lease, allowDefaultRoute bool, ops leaseOperations) error {
+func applyLease(lease Lease, policy config.RoutePolicy, ops leaseOperations) error {
 	if lease.Action != "deconfig" && lease.Action != "bound" && lease.Action != "renew" {
 		return nil
 	}
@@ -272,7 +276,7 @@ func applyLease(lease Lease, allowDefaultRoute bool, ops leaseOperations) error 
 		return err
 	}
 	// Validate every route before changing the working lease.
-	routes, err := leaseRoutes(lease, link.Attrs().Index, prefixLength, allowDefaultRoute)
+	routes, err := leaseRoutes(lease, link.Attrs().Index, prefixLength, policy)
 	if err != nil {
 		return fmt.Errorf("validate DHCP routes: %w", err)
 	}
@@ -283,7 +287,7 @@ func clearLease(link netlink.Link, ops leaseOperations) error {
 	if err := reconcileLeaseRoutes(link.Attrs().Index, nil, ops); err != nil {
 		return fmt.Errorf("clear DHCP routes: %w", err)
 	}
-	if _, err := removeOldLeaseAddresses(link, nil, ops); err != nil {
+	if _, err := removeOtherAddresses(link, nil, ops); err != nil {
 		return fmt.Errorf("clear DHCP addresses: %w", err)
 	}
 	return nil
@@ -320,7 +324,7 @@ func installLease(link netlink.Link, address *netlink.Addr, routes []netlink.Rou
 	if err := reconcileLeaseRoutes(link.Attrs().Index, routes, ops); err != nil {
 		return fmt.Errorf("apply DHCP routes: %w", err)
 	}
-	removed, err := removeOldLeaseAddresses(link, address, ops)
+	removed, err := removeOtherAddresses(link, address, ops)
 	if err != nil {
 		return fmt.Errorf("retire previous DHCP address: %w", err)
 	}
@@ -339,11 +343,14 @@ func installLease(link netlink.Link, address *netlink.Addr, routes []netlink.Rou
 
 // addStaticRoutes adds the RFC3442 classless static routes, preferring a
 // host route over the on-link gateway before adding the route itself.
-func addStaticRoutes(add func(destination, gateway string, priority int) error, staticRoutes []string, prefixLength, metric int) error {
+func addStaticRoutes(add func(destination, gateway string, priority int) error, staticRoutes []string, prefixLength, metric int, allowDefault bool) error {
 	if len(staticRoutes)%2 != 0 {
 		return errInvalidClasslessRoutes
 	}
 	for index := 0; index < len(staticRoutes); index += 2 {
+		if !allowDefault && defaultDestination(staticRoutes[index]) {
+			continue
+		}
 		if prefixLength == ipv4HostBits && staticRoutes[index+1] != "0.0.0.0" {
 			if err := add(staticRoutes[index+1]+"/32", "0.0.0.0", metric); err != nil {
 				return err
@@ -374,7 +381,10 @@ func addRouterRoutes(add func(destination, gateway string, priority int) error, 
 	return nil
 }
 
-func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute bool) ([]netlink.Route, error) {
+func leaseRoutes(lease Lease, linkIndex, prefixLength int, policy config.RoutePolicy) ([]netlink.Route, error) {
+	if policy == config.RoutesNone {
+		return nil, nil
+	}
 	metric, err := leaseMetric(lease.Metric, linkIndex)
 	if err != nil {
 		return nil, err
@@ -389,19 +399,27 @@ func leaseRoutes(lease Lease, linkIndex, prefixLength int, allowDefaultRoute boo
 		return err
 	}
 	if len(lease.StaticRoutes) > 0 {
-		if err := addStaticRoutes(add, lease.StaticRoutes, prefixLength, metric); err != nil {
+		if err := addStaticRoutes(add, lease.StaticRoutes, prefixLength, metric, policy.AllowsDefault()); err != nil {
 			return nil, err
 		}
 
 		return routes, nil
 	}
-	if allowDefaultRoute {
+	if policy.AllowsDefault() {
 		if err := addRouterRoutes(add, lease.Routers, prefixLength, metric); err != nil {
 			return nil, err
 		}
 	}
 
 	return routes, nil
+}
+
+// A lease can carry a default route in RFC3442 option 121 just as it can in
+// the Router option, so the policy has to recognise it in both.
+func defaultDestination(destination string) bool {
+	prefix, err := netip.ParsePrefix(destination)
+
+	return err == nil && prefix.Bits() == 0
 }
 
 func leaseMetric(metric, linkIndex int) (int, error) {

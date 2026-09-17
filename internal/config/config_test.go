@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,7 +17,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "config.json")
 	// A provider config exercises every omitempty slice on the way out.
 	want := DefaultKPN()
-	want.WAN.AllowDefaultRoute = true
+	want.WAN.DHCPRoutes = RoutesAllowDefault
 	want.Proxy.SourceRanges = []string{"195.121.0.0/16"}
 	if err := Save(path, want); err != nil {
 		t.Fatal(err)
@@ -82,6 +83,33 @@ func TestProfilesValidate(t *testing.T) {
 		if err != nil {
 			t.Errorf("profile %s: %v", profile.ID, err)
 		}
+	}
+}
+
+func TestValidateWANAddressing(t *testing.T) {
+	t.Parallel()
+	base := Default()
+	base.WAN.VLANMAC = "00:11:22:33:44:55"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("six-byte MAC rejected: %v", err)
+	}
+	eui64 := base
+	eui64.WAN.VLANMAC = "00:11:22:33:44:55:66:77"
+	if err := eui64.Validate(); !errors.Is(err, errVLANMAC) {
+		t.Fatalf("eight-byte MAC accepted: %v", err)
+	}
+	both := Default()
+	both.WAN.DHCP = true
+	both.WAN.StaticAddress = "192.0.2.10/24"
+	if err := both.Validate(); !errors.Is(err, errDHCPWithStatic) {
+		t.Fatalf("DHCP with a static address accepted: %v", err)
+	}
+	NormalizeAddressing(&both)
+	if both.WAN.StaticAddress != "" {
+		t.Fatalf("static address survived normalization: %q", both.WAN.StaticAddress)
+	}
+	if err := both.Validate(); err != nil {
+		t.Fatalf("normalized configuration rejected: %v", err)
 	}
 }
 
@@ -221,8 +249,12 @@ NO_GATEWAY="` + noGateway + `"
 			if err != nil {
 				t.Fatal(err)
 			}
-			if value.WAN.AllowDefaultRoute != (noGateway == "") {
-				t.Fatalf("allowDefaultRoute = %t for NO_GATEWAY=%q", value.WAN.AllowDefaultRoute, noGateway)
+			want := RoutesAllowDefault
+			if noGateway != "" {
+				want = RoutesNone
+			}
+			if value.WAN.DHCPRoutes != want {
+				t.Fatalf("dhcpRoutes = %q for NO_GATEWAY=%q, want %q", value.WAN.DHCPRoutes, noGateway, want)
 			}
 		})
 	}
@@ -256,5 +288,99 @@ IPTV_IGMPPROXY_IGMP_VERSION="3"
 	}
 	if count := len(value.Proxy.SourceRanges); count != 5 {
 		t.Fatalf("proxy sources contain duplicates: %q", value.Proxy.SourceRanges)
+	}
+}
+
+func TestImportLegacyAcceptsSingleQuotedAssignments(t *testing.T) {
+	t.Parallel()
+	legacy := filepath.Join(t.TempDir(), "udm-iptv.conf")
+	content := `IPTV_WAN_INTERFACE='eth8'
+IPTV_WAN_VLAN='4'
+IPTV_WAN_VLAN_INTERFACE='iptv'
+IPTV_WAN_RANGES='213.75.0.0/16 217.166.0.0/16 195.121.0.0/16'
+IPTV_WAN_DHCP_OPTIONS='-O staticroutes -V IPTV_RG'
+IPTV_LAN_INTERFACES='br0'
+IPTV_IGMPPROXY_PROGRAM='improxy'
+IPTV_IGMPPROXY_IGMP_VERSION='3'
+`
+	if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := ImportLegacy(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.WAN.Interface != "eth8" || value.WAN.VLANInterface != "iptv" || value.WAN.VLAN != 4 {
+		t.Fatalf("single-quoted import: %#v", value.WAN)
+	}
+	if !slices.Equal(value.WAN.DHCPOptions, []string{"-O", "staticroutes", "-V", "IPTV_RG"}) {
+		t.Fatalf("DHCP options = %q", value.WAN.DHCPOptions)
+	}
+	if value.Profile != "kpn" {
+		t.Fatalf("profile = %q, want kpn", value.Profile)
+	}
+}
+
+func TestImportLegacyHonorsVLANGatewayOptOut(t *testing.T) {
+	t.Parallel()
+	for noGateway, want := range map[string]RoutePolicy{
+		"iptv": RoutesNone, "eth8": RoutesNone, "": RoutesAllowDefault, "br0": RoutesAllowDefault,
+	} {
+		t.Run("NO_GATEWAY="+noGateway, func(t *testing.T) {
+			legacy := filepath.Join(t.TempDir(), "udm-iptv.conf")
+			content := `IPTV_WAN_INTERFACE="eth8"
+IPTV_WAN_VLAN="4"
+IPTV_WAN_VLAN_INTERFACE="iptv"
+IPTV_WAN_DHCP="true"
+IPTV_WAN_RANGES="213.75.0.0/16"
+IPTV_STATIC_ROUTES="203.0.113.7 198.51.100.0/24"
+IPTV_LAN_INTERFACES="br0"
+IPTV_IGMPPROXY_PROGRAM="improxy"
+IPTV_IGMPPROXY_IGMP_VERSION="3"
+NO_GATEWAY="` + noGateway + `"
+`
+			if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			value, err := ImportLegacy(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.WAN.DHCPRoutes != want {
+				t.Fatalf("dhcpRoutes = %q, want %q", value.WAN.DHCPRoutes, want)
+			}
+			if !slices.Equal(value.WAN.StaticRoutes, []string{"203.0.113.7/32", "198.51.100.0/24"}) {
+				t.Fatalf("static routes = %q", value.WAN.StaticRoutes)
+			}
+		})
+	}
+}
+
+func TestDecodeAcceptsLegacyAllowDefaultRoute(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, wan string
+		want      RoutePolicy
+	}{
+		{"fallback allowed", `"allowDefaultRoute": true`, RoutesAllowDefault},
+		{"fallback refused", `"allowDefaultRoute": false`, RoutesNoDefault},
+		{"policy wins over the old key", `"allowDefaultRoute": true, "dhcpRoutes": "none"`, RoutesNone},
+		{"neither key", `"vlan": 4`, RoutesNoDefault},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			data := []byte(`{"profile":"custom","wan":{"interface":"eth8","vlanInterface":"iptv",` + test.wan +
+				`},"lan":{"interfaces":["br0"]},"proxy":{"program":"improxy","igmpVersion":3}}`)
+			value, err := decodeConfig(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.WAN.DHCPRoutes != test.want {
+				t.Fatalf("dhcpRoutes = %q, want %q", value.WAN.DHCPRoutes, test.want)
+			}
+			if err := value.Validate(); err != nil {
+				t.Fatalf("decoded configuration rejected: %v", err)
+			}
+		})
 	}
 }

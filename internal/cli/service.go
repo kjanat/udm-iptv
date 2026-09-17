@@ -36,12 +36,13 @@ func (application *Application) daemonCommand() *cobra.Command {
 }
 
 func (application *Application) dhcpHookCommand() *cobra.Command {
-	var allowDefaultRoute bool
+	var routes string
 	command := &cobra.Command{
 		Use: "dhcp-hook ACTION", Hidden: true, Args: cobra.ExactArgs(1),
 		RunE: application.reportingHook(func(_ *cobra.Command, arguments []string) error {
+			policy := config.RoutePolicy(routes)
 			if value, err := config.Load(application.ConfigPath); err == nil {
-				allowDefaultRoute = value.WAN.AllowDefaultRoute
+				policy = value.WAN.DHCPRoutes
 			}
 			lease, err := network.LeaseFromEnvironment(arguments[0])
 			if err != nil {
@@ -49,7 +50,7 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 			}
 			switch arguments[0] {
 			case "deconfig", "bound", "renew":
-				return network.ApplyLease(lease, allowDefaultRoute)
+				return network.ApplyLease(lease, policy)
 			case "leasefail":
 				return errLeaseAcquisitionFailed
 			case "nak":
@@ -59,7 +60,7 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 			}
 		}),
 	}
-	command.Flags().BoolVar(&allowDefaultRoute, "allow-default-route", false, "allow DHCP router fallback when RFC3442 routes are absent")
+	command.Flags().StringVar(&routes, "dhcp-routes", string(config.RoutesNoDefault), "route policy when the configuration is unreadable")
 
 	return command
 }

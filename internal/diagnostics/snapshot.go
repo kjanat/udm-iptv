@@ -47,7 +47,7 @@ type configSummary struct {
 	DHCP              bool     `json:"dhcp"`
 	DHCPOptions       bool     `json:"dhcpOptionsConfigured"`
 	StaticAddress     bool     `json:"staticAddressConfigured"`
-	AllowDefaultRoute bool     `json:"allowDefaultRoute"`
+	DHCPRoutes        string   `json:"dhcpRoutes"`
 	NATDestinations   []string `json:"natDestinations"`
 	LANInterfaces     []string `json:"lanInterfaces"`
 	Proxy             string   `json:"proxy"`
@@ -137,7 +137,7 @@ func summarizeConfig(value config.Config) configSummary {
 	return configSummary{
 		Profile: value.Profile, WANInterface: value.WAN.Interface, VLAN: value.WAN.VLAN, IPTVInterface: value.WAN.VLANInterface,
 		CustomMAC: value.WAN.VLANMAC != "", DHCP: value.WAN.DHCP, DHCPOptions: len(value.WAN.DHCPOptions) > 0, StaticAddress: value.WAN.StaticAddress != "",
-		AllowDefaultRoute: value.WAN.AllowDefaultRoute, NATDestinations: sanitizePrefixes(value.WAN.NATDestinations),
+		DHCPRoutes: string(value.WAN.DHCPRoutes), NATDestinations: sanitizePrefixes(value.WAN.NATDestinations),
 		LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion,
 		QuickLeave: value.Proxy.QuickLeave, Debug: value.Proxy.Debug, ProxySourceRanges: sanitizePrefixes(value.Proxy.SourceRanges),
 	}

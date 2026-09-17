@@ -37,6 +37,9 @@ const (
 	releaseAssetLimit = 128 << 20
 	// attestationResponseLimit bounds the GitHub attestations API response body.
 	attestationResponseLimit = 8 << 20
+	// attestationDecodedLimit bounds a Snappy block's declared decoded length,
+	// which a hostile bundle can inflate far beyond its compressed size.
+	attestationDecodedLimit = 32 << 20
 	// githubAPIHost is the only host that receives the release token.
 	githubAPIHost = "api.github.com"
 	// Version 2026-03-10 drops the inline attestation bundle and serves it from a Snappy-compressed bundle_url.
@@ -449,6 +452,10 @@ func (candidate upgradeCandidate) fetchBundleBody(ctx context.Context, address s
 // header to detect it by.
 func decompressBundle(data []byte) []byte {
 	if trimmed := bytes.TrimLeft(data, " \t\r\n"); len(trimmed) > 0 && trimmed[0] == '{' {
+		return data
+	}
+	size, err := snappy.DecodedLen(data)
+	if err != nil || size > attestationDecodedLimit {
 		return data
 	}
 	decoded, err := snappy.Decode(nil, data)

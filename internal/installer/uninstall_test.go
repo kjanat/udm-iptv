@@ -44,6 +44,10 @@ func TestUninstallFailureBoundaries(t *testing.T) {
 			if (err != nil) != test.fails || (test.fails && !errors.Is(err, cause)) {
 				t.Fatalf("uninstall error: %v", err)
 			}
+			var warning CleanupError
+			if got := errors.As(err, &warning); got != (test.fail == "NAT") {
+				t.Fatalf("%s reported as a cleanup warning: %v", test.fail, got)
+			}
 			if !reflect.DeepEqual(calls, test.want) {
 				t.Fatalf("calls=%v want=%v", calls, test.want)
 			}

@@ -101,6 +101,14 @@ type uninstallActions struct {
 	stop, disable, removeNAT, removeFiles, removeState, reload func(context.Context) error
 }
 
+// CleanupError reports that the installation is gone but an optional cleanup
+// step failed. Callers that must not fail on a warning check for it.
+type CleanupError struct{ Err error }
+
+func (warning CleanupError) Error() string { return warning.Err.Error() }
+
+func (warning CleanupError) Unwrap() error { return warning.Err }
+
 func executeUninstall(ctx context.Context, actions uninstallActions) error {
 	var deferred error
 	for _, step := range []struct {
@@ -129,5 +137,8 @@ func executeUninstall(ctx context.Context, actions uninstallActions) error {
 		}
 		return errors.Join(deferred, err)
 	}
-	return deferred
+	if deferred != nil {
+		return CleanupError{Err: deferred}
+	}
+	return nil
 }
