@@ -38,6 +38,7 @@ nfpms:
     contents:
       - { src: ./packaging/deb/copyright, dst: /usr/share/doc/udm-iptv/copyright }
       - { src: ./packaging/deb/go-package, dst: /usr/share/udm-iptv/go-package }
+      - { src: ./packaging/deb/udm-iptv-completion.sh, dst: /etc/profile.d/udm-iptv-completion.sh }
     scripts:
       preinstall: ./packaging/deb/preinstall
       postinstall: ./packaging/deb/postinstall

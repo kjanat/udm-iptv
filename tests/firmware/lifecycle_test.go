@@ -116,7 +116,17 @@ func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
 	version := strings.TrimSpace(h.inside(name, binary, "version"))
 	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
 	config := h.readConfig(name)
-	h.inside(name, "bash", "-c", "source /etc/bash_completion.d/udm-iptv; complete -p udm-iptv")
+	h.inside(name, "bash", "--noprofile", "--norc", "-ec", `
+test -s /etc/bash_completion.d/udm-iptv
+test -s /etc/profile.d/udm-iptv-completion.sh
+source /etc/bash_completion.d/udm-iptv
+complete -p udm-iptv >/dev/null
+COMP_WORDS=(udm-iptv "")
+COMP_CWORD=1
+COMP_LINE=$'udm-iptv '
+COMP_POINT=${#COMP_LINE}
+__start_udm-iptv
+`)
 	h.capture(name)
 
 	return version, config

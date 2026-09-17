@@ -52,7 +52,7 @@ func (application *Application) telemetryCommand() *cobra.Command {
 	feedback := &cobra.Command{
 		Use: "feedback working|problems|not-using", Short: "Report your experience explicitly (requires preset research)", Args: cobra.ExactArgs(1),
 		ValidArgs: []string{"working", "problems", "not-using"},
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			value, err := config.Load(application.ConfigPath)
 			if err != nil {
 				return fmt.Errorf("load configuration from %s: %w", application.ConfigPath, err)
@@ -62,7 +62,7 @@ func (application *Application) telemetryCommand() *cobra.Command {
 				return fmt.Errorf("open the reporter: %w", err)
 			}
 			defer reporter.Close()
-			if err := reporter.Feedback(args[0], provider); err != nil {
+			if err := reporter.Feedback(command.Context(), args[0], provider); err != nil {
 				return fmt.Errorf("queue the feedback: %w", err)
 			}
 

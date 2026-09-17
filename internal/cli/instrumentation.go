@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -93,4 +94,29 @@ func previewOnly(command *cobra.Command) bool {
 	dryRun, _ := command.Flags().GetBool("dry-run")
 
 	return dryRun
+}
+
+func (application *Application) reportRun(ctx context.Context, operation string, run func(context.Context) error) error {
+	if application.monitor != nil {
+		if err := application.monitor.Run(ctx, operation, run); err != nil {
+			return fmt.Errorf("%s: %w", operation, err)
+		}
+
+		return nil
+	}
+	value, err := config.Load(application.ConfigPath)
+	if err != nil || !value.Telemetry.Enabled {
+		return run(ctx)
+	}
+	reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
+	if err != nil {
+		return run(ctx)
+	}
+	defer reporter.Close()
+	setTelemetryMetadata(ctx, reporter, value)
+	if err := reporter.Run(ctx, operation, run); err != nil {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+
+	return nil
 }

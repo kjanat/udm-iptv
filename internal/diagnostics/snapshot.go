@@ -14,6 +14,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/device"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/kjanat/udm-iptv/internal/service"
 )
@@ -98,9 +99,38 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		NAT:        managedNATRules(),
 		Downstream: inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces),
 	}
-	result.Switches, result.NativeProxy, result.Playback = notChecked, notChecked, notChecked
+	result.Switches = inspectSwitch(os.DirFS("/sys"), device.Inspect(ctx).Firmware)
+	result.NativeProxy = inspectNativeProxy(ctx, result.Service.ProxyPID)
+	result.Playback = inspectReceivers(result.Multicast, value.LAN.Interfaces)
 
 	return result, nil
+}
+
+func inspectNativeProxy(ctx context.Context, ourPID int) string {
+	loaded, active := false, ""
+	connection, err := systemd.NewSystemConnectionContext(ctx)
+	if err == nil {
+		defer connection.Close()
+		properties, err := connection.GetAllPropertiesContext(ctx, "igmpproxy.service")
+		if err == nil {
+			loaded = true
+			active, _ = properties["ActiveState"].(string)
+		}
+	}
+
+	extra, scanned := extraProxyPIDs(ourPID)
+
+	return formatNativeProxy(loaded, active, extra, scanned)
+}
+
+func inspectReceivers(usage multicastInfo, lan []string) string {
+	data, err := os.ReadFile("/proc/net/igmp")
+	if err != nil {
+		return formatReceivers(usage.Routes, usage.Packets, nil)
+	}
+	groups := countLANIGMPGroups(string(data), lan)
+
+	return formatReceivers(usage.Routes, usage.Packets, &groups)
 }
 
 func summarizeConfig(value config.Config) configSummary {
@@ -229,5 +259,5 @@ Multicast routes: %d (%d packets)
 		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts,
 		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, value.Config.QuickLeave, value.Config.Debug,
 		value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount,
-		strings.Join(value.Network.Routes, ", "), value.Network.DefaultRoute, value.Multicast.Routes, value.Multicast.Packets) + renderDownstream(value.Downstream)
+		strings.Join(value.Network.Routes, ", "), value.Network.DefaultRoute, value.Multicast.Routes, value.Multicast.Packets) + renderDownstream(value)
 }

@@ -30,14 +30,35 @@ func researchReporter(t *testing.T) (*Reporter, *recordingTransport) {
 
 func reportAt(t *testing.T, transport *recordingTransport, index int) researchReport {
 	t.Helper()
-	if len(transport.events) <= index {
-		t.Fatalf("missing research event %d", index)
+	var reports []researchReport
+	for _, event := range transport.events {
+		if event.Transaction == researchTransaction {
+			t.Fatal("research sent as an issue")
+		}
+		for _, log := range event.Logs {
+			if !researchLog(log.Body) {
+				continue
+			}
+			raw, ok := log.Attributes["research.report"]
+			if !ok {
+				t.Fatal("missing research.report attribute")
+			}
+			text, _ := raw.AsInterface().(string)
+			var report researchReport
+			if err := json.Unmarshal([]byte(text), &report); err != nil {
+				t.Fatal(err)
+			}
+			if report.ChangedFields == nil {
+				report.ChangedFields = []string{}
+			}
+			reports = append(reports, report)
+		}
 	}
-	report, ok := transport.events[index].Contexts["research"]["report"].(researchReport)
-	if !ok {
-		t.Fatal("missing typed research report")
+	if len(reports) <= index {
+		t.Fatalf("missing research log %d (have %d)", index, len(reports))
 	}
-	return report
+
+	return reports[index]
 }
 
 type timeCheck int
@@ -173,7 +194,7 @@ func TestResearchSeparateProcessAndLiveRevocation(t *testing.T) {
 	if r.installationID() != "" {
 		t.Fatal("opt-out retained correlation")
 	}
-	if err := r.RecordObservation(Observation{Active: true, UptimeSeconds: 3600}); err != nil {
+	if err := r.RecordObservation(context.Background(), Observation{Active: true, UptimeSeconds: 3600}); err != nil {
 		t.Fatal(err)
 	}
 	if len(transport.events) != 1 {
@@ -284,7 +305,7 @@ func assertRejectedFeedback(t *testing.T, r *Reporter) {
 		{"free text", "arbitrary private text", ""},
 		{"arbitrary provider", "working", "private-customer"},
 	} {
-		if err := r.Feedback(test.answer, test.provider); err == nil {
+		if err := r.Feedback(context.Background(), test.answer, test.provider); err == nil {
 			t.Fatalf("%s accepted", test.name)
 		}
 	}
@@ -305,7 +326,7 @@ func TestResearchResetAndFeedback(t *testing.T) {
 	if fresh == old {
 		t.Fatal("running reporter did not notice reset")
 	}
-	if err := r.Feedback("problems", "freedom"); err != nil {
+	if err := r.Feedback(context.Background(), "problems", "freedom"); err != nil {
 		t.Fatal(err)
 	}
 	report := reportAt(t, transport, 1)
@@ -317,6 +338,19 @@ func TestResearchResetAndFeedback(t *testing.T) {
 		t.Fatalf("reset retained settings history: %+v", report.Settings)
 	}
 	assertRejectedFeedback(t, r)
+}
+
+func TestFeedbackReportsRateLimitedDrop(t *testing.T) {
+	r, transport := researchReporter(t)
+	for i := range presetsPerMinute {
+		if err := r.Feedback(context.Background(), "working", "freedom"); err != nil {
+			t.Fatalf("feedback %d: %v", i, err)
+		}
+	}
+	if err := r.Feedback(context.Background(), "working", "freedom"); !errors.Is(err, errFeedbackNotQueued) {
+		t.Fatalf("rate-limited feedback reported success: %v", err)
+	}
+	assertEqual(t, "events sent", len(transport.events), presetsPerMinute)
 }
 
 func TestResearchRejectsSymlinks(t *testing.T) {

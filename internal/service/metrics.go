@@ -79,7 +79,7 @@ func (application *Daemon) sampleSystemd(ctx context.Context, started, lastObser
 	if time.Since(lastObservation) < time.Hour {
 		return lastObservation
 	}
-	err = application.Monitor.RecordObservation(telemetry.Observation{
+	err = application.Monitor.RecordObservation(ctx, telemetry.Observation{
 		UptimeSeconds: uint64(time.Since(started).Seconds()),
 		Restarts:      ParseCounter(properties["NRestarts"]), Active: properties["ActiveState"] == "active",
 	})

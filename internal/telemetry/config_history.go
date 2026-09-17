@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
+	"github.com/getsentry/sentry-go/attribute"
 	"golang.org/x/sys/unix"
 
 	"github.com/kjanat/udm-iptv/internal/config"
@@ -273,7 +274,7 @@ func (r *Reporter) RecordConfiguration(ctx context.Context, value config.Config,
 		return err
 	}
 	r.attachNetwork(ctx, &report, lookup)
-	r.sendResearch(report)
+	r.sendResearch(ctx, report)
 
 	return nil
 }
@@ -294,7 +295,7 @@ func reportFromState(state researchState, kind string) researchReport {
 }
 
 // RecordObservation reports uptime and restart counts, at most once an hour.
-func (r *Reporter) RecordObservation(observation Observation) error {
+func (r *Reporter) RecordObservation(ctx context.Context, observation Observation) error {
 	if !r.researchEnabled() {
 		return nil
 	}
@@ -311,7 +312,7 @@ func (r *Reporter) RecordObservation(observation Observation) error {
 	if err != nil {
 		return err
 	}
-	r.sendResearch(report)
+	r.sendResearch(ctx, report)
 
 	return nil
 }
@@ -331,7 +332,7 @@ func knownProvider(provider string) bool {
 }
 
 // Feedback records the user's answer to the confirmed-provider prompt.
-func (r *Reporter) Feedback(answer, provider string) error {
+func (r *Reporter) Feedback(ctx context.Context, answer, provider string) error {
 	if !feedbackAnswers[answer] {
 		return errFeedbackAnswer
 	}
@@ -355,24 +356,36 @@ func (r *Reporter) Feedback(answer, provider string) error {
 	if err != nil {
 		return err
 	}
-	if !r.sendResearch(report) {
+	if !r.sendResearch(ctx, report) {
 		return errFeedbackNotQueued
 	}
 
 	return nil
 }
 
-func (r *Reporter) sendResearch(report researchReport) bool {
-	event := sentry.NewEvent()
-	event.Transaction, event.Level = researchTransaction, sentry.LevelInfo
-	event.Contexts = map[string]sentry.Context{"research": {"report": report}}
+func (r *Reporter) sendResearch(ctx context.Context, report researchReport) bool {
+	if r.client == nil || r.hub == nil || !r.researchEnabled() || !r.allow("presets", presetsPerMinute) {
+		return false
+	}
+	payload, err := json.Marshal(report)
+	if err != nil {
+		return false
+	}
+	ctx = sentry.SetHubOnContext(ctx, r.hub)
+	sentry.NewLogger(ctx).Info().String("research.report", string(payload)).Emit("installation " + report.Kind)
+	r.client.Flush(sentryRequestTimeout)
 
-	return r.hub.CaptureEvent(event) != nil
+	return true
 }
 
-func (r *Reporter) filterResearch(event *sentry.Event) *sentry.Event {
-	report, ok := event.Contexts["research"]["report"].(researchReport)
-	if !ok || !r.researchEnabled() || !r.allow("presets", presetsPerMinute) {
+func (r *Reporter) filterResearchLog(log *sentry.Log) *sentry.Log {
+	raw, ok := log.Attributes["research.report"]
+	if !ok {
+		return nil
+	}
+	text, _ := raw.AsInterface().(string)
+	var report researchReport
+	if err := json.Unmarshal([]byte(text), &report); err != nil {
 		return nil
 	}
 	if !r.networkEnabled() {
@@ -381,14 +394,14 @@ func (r *Reporter) filterResearch(event *sentry.Event) *sentry.Event {
 		clean := cleanIdentity(*report.Network)
 		report.Network = &clean
 	}
-
-	return &sentry.Event{
-		EventID: event.EventID, Timestamp: event.Timestamp,
-		Platform: "go", Release: r.release, Dist: r.dist, Level: sentry.LevelInfo,
-		Message: "Installation " + report.Kind, Transaction: researchTransaction,
-		User: sentry.User{ID: report.InstallationID},
-		Tags: r.eventTags(), Contexts: map[string]sentry.Context{"research": {"report": report}},
+	payload, err := json.Marshal(report)
+	if err != nil {
+		return nil
 	}
+	attrs := r.attributes()
+	attrs["research.report"] = attribute.StringValue(string(payload))
+
+	return &sentry.Log{Timestamp: log.Timestamp, TraceID: log.TraceID, SpanID: log.SpanID, Level: sentry.LogLevelInfo, Severity: log.Severity, Body: log.Body, Attributes: attrs}
 }
 
 func (r *Reporter) installationID() string {

@@ -65,7 +65,7 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 }
 
 func (application *Application) waitHealthy(ctx context.Context, startup, stable time.Duration) error {
-	err := application.monitor.Run(ctx, "service.health", func(ctx context.Context) error {
+	err := application.reportRun(ctx, "service.health", func(ctx context.Context) error {
 		return service.WaitHealthy(ctx, startup, stable)
 	})
 	if err != nil {
