@@ -4,7 +4,7 @@ Reporting helps diagnose failures and improve provider presets.
 
 - All reporting categories default on for new configurations.
 - The setup wizard offers “Help improve udm-iptv?”.
-- Existing opt-outs remain; imported legacy configurations default off.
+- Existing opt-outs remain.
 - Reports reach the maintainer's Sentry project through HTTPS.
 - Sentry uses an EU ingest endpoint.
 - No Sentry account is required.
