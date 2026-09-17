@@ -32,6 +32,7 @@ import (
 
 const (
 	upgradeClientTimeout = 30 * time.Second
+	releaseListPageSize  = 30
 	// releaseAssetLimit bounds a downloaded GitHub release asset.
 	releaseAssetLimit = 128 << 20
 	// attestationResponseLimit bounds the GitHub attestations API response body.
@@ -48,6 +49,7 @@ var (
 	errNotInstalled         = errors.New("udm-iptv is not installed; run 'udm-iptv install' first")
 	errInvalidRepository    = errors.New("invalid repository")
 	errReleaseAssetsMissing = errors.New("release is missing required assets")
+	errNoPublishedRelease   = errors.New("no published GitHub release")
 	errNoAttestation        = errors.New("no published attestation")
 	errNoTrustedAttestation = errors.New("no trusted attestation")
 	errAttestationRequest   = errors.New("attestation request failed")
@@ -62,6 +64,7 @@ type UpgradeOptions struct {
 	Version    string
 	TokenFile  string
 	Force      bool
+	Prerelease bool
 }
 
 // Upgrade downloads, verifies and activates a GitHub release, rolling back on failure.
@@ -105,7 +108,7 @@ func resolveUpgrade(ctx context.Context, options UpgradeOptions) (upgradeCandida
 		return upgradeCandidate{}, err
 	}
 	client := upgradeHTTPClient(token)
-	release, err := fetchRelease(ctx, github.NewClient(client), owner, repository, options.Version)
+	release, err := fetchRelease(ctx, github.NewClient(client), owner, repository, options.Version, options.Prerelease)
 	if err != nil {
 		return upgradeCandidate{}, err
 	}
@@ -153,23 +156,49 @@ func upgradeHTTPClient(token string) *http.Client {
 	return client
 }
 
-func fetchRelease(ctx context.Context, client *github.Client, owner, repository, version string) (*github.RepositoryRelease, error) {
+func fetchRelease(ctx context.Context, client *github.Client, owner, repository, version string, prerelease bool) (*github.RepositoryRelease, error) {
 	var release *github.RepositoryRelease
 	var err error
 	if version == "" || version == "latest" {
-		release, _, err = client.Repositories.GetLatestRelease(ctx, owner, repository)
-	} else {
-		tag := version
-		if !strings.HasPrefix(tag, "v") {
-			tag = "v" + tag
+		if prerelease {
+			release, err = latestPublishedRelease(ctx, client, owner, repository)
+		} else {
+			release, _, err = client.Repositories.GetLatestRelease(ctx, owner, repository)
 		}
-		release, _, err = client.Repositories.GetReleaseByTag(ctx, owner, repository, tag)
+	} else {
+		tag := strings.TrimPrefix(version, "v")
+		release, _, err = client.Repositories.GetReleaseByTag(ctx, owner, repository, "v"+tag)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve release: %w", err)
 	}
 
 	return release, nil
+}
+
+func latestPublishedRelease(ctx context.Context, client *github.Client, owner, repository string) (*github.RepositoryRelease, error) {
+	releases, _, err := client.Repositories.ListReleases(ctx, owner, repository, &github.ListOptions{PerPage: releaseListPageSize})
+	if err != nil {
+		return nil, fmt.Errorf("list GitHub releases: %w", err)
+	}
+	release := newestPublishedRelease(releases)
+	if release == nil {
+		return nil, errNoPublishedRelease
+	}
+
+	return release, nil
+}
+
+func newestPublishedRelease(releases []*github.RepositoryRelease) *github.RepositoryRelease {
+	for _, release := range releases {
+		if release == nil || release.GetDraft() {
+			continue
+		}
+
+		return release
+	}
+
+	return nil
 }
 
 func (application *Upgrader) applyRelease(ctx context.Context, candidate upgradeCandidate) error {

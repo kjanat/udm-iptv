@@ -16,6 +16,20 @@ import (
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
 
+func TestNewestPublishedReleaseSkipsDrafts(t *testing.T) {
+	t.Parallel()
+	pre := &github.RepositoryRelease{TagName: new("v5.0.0-preview.1"), Prerelease: new(true), Draft: new(false)}
+	stable := &github.RepositoryRelease{TagName: new("v4.3.0"), Prerelease: new(false), Draft: new(false)}
+	draft := &github.RepositoryRelease{TagName: new("v9.0.0"), Draft: new(true)}
+	got := newestPublishedRelease([]*github.RepositoryRelease{draft, pre, stable})
+	if got == nil || got.GetTagName() != "v5.0.0-preview.1" {
+		t.Fatalf("got %#v", got)
+	}
+	if newestPublishedRelease([]*github.RepositoryRelease{draft, nil}) != nil {
+		t.Fatal("drafts only")
+	}
+}
+
 func TestVerifyChecksum(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
