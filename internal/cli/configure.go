@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -12,10 +13,21 @@ import (
 	"github.com/kjanat/udm-iptv/internal/installer"
 )
 
+// legacyCandidates lists the legacy configurations an install may import, in
+// the order they are trusted. udm-iptv persist wrote udm-iptv.conf into the
+// state directory, and cleanup deletes it once an install succeeds.
+func legacyCandidates(stateDir string) []string {
+	return []string{
+		"/etc/udm-iptv.conf",
+		filepath.Join(stateDir, "legacy.conf"),
+		filepath.Join(stateDir, "udm-iptv.conf"),
+	}
+}
+
 // loadOrImportConfig loads the saved configuration, falls back to importing a
 // legacy config file, and otherwise reports fresh so the caller can suggest a
 // provider profile.
-func loadOrImportConfig(path string) (config.Config, bool, error) {
+func loadOrImportConfig(path, stateDir string) (config.Config, bool, error) {
 	current, err := config.Load(path)
 	if err == nil {
 		return current, false, nil
@@ -23,7 +35,7 @@ func loadOrImportConfig(path string) (config.Config, bool, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return config.Config{}, false, fmt.Errorf("load configuration from %s: %w", path, err)
 	}
-	legacy, found, err := config.ImportFirstLegacy([]string{"/etc/udm-iptv.conf"})
+	legacy, found, err := config.ImportFirstLegacy(legacyCandidates(stateDir))
 	if err != nil {
 		return config.Config{}, false, fmt.Errorf("import the legacy configuration: %w", err)
 	}
@@ -180,7 +192,7 @@ func (application *Application) configureCommand() *cobra.Command {
 		Args:    cobra.NoArgs,
 		RunE: application.reportingSaved(commandConfigure, reportingTurnedOff, func(command *cobra.Command, _ []string) error {
 			application.providerSuggestion = ""
-			value, fresh, err := loadOrImportConfig(application.ConfigPath)
+			value, fresh, err := loadOrImportConfig(application.ConfigPath, application.StateDir)
 			if err != nil {
 				return err
 			}

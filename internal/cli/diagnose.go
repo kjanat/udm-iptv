@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,6 +49,7 @@ var (
 	errBothFormatsNeedCapture = errors.New("--format both requires --capture")
 	errFollowFileStandsAlone  = errors.New("--follow-file cannot be combined with --capture or --follow")
 	errCapturePathNotRegular  = errors.New("capture path must be a regular file")
+	errCaptureWorkerExited    = errors.New("the capture worker exited during initialisation")
 )
 
 // diagnoseRule reports why an invocation of diagnose is not runnable.
@@ -220,10 +222,14 @@ func (application *Application) startCapture(ctx context.Context, options diagno
 		return fmt.Errorf("create capture error log: %w", err)
 	}
 	defer closeIgnoringError(errorLog)
-	pid, err := application.startCaptureWorker(ctx, options, errorLog)
+	worker, err := application.startCaptureWorker(ctx, options, errorLog)
 	if err != nil {
 		return err
 	}
+	if err := confirmCaptureStarted(worker, errorLog.Name()); err != nil {
+		return err
+	}
+	pid := worker.Process.Pid
 	completion := time.Now().Add(options.Capture).UTC()
 	if err := application.reportCaptureStarted(options, pid, errorLog.Name(), completion); err != nil {
 		return err
@@ -261,10 +267,10 @@ func (application *Application) prepareCaptureFiles(options diagnostics.Options)
 }
 
 // The worker intentionally outlives this command and its SSH session.
-func (application *Application) startCaptureWorker(ctx context.Context, options diagnostics.Options, errorLog *os.File) (int, error) {
+func (application *Application) startCaptureWorker(ctx context.Context, options diagnostics.Options, errorLog *os.File) (*exec.Cmd, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return 0, fmt.Errorf("locate the running executable: %w", err)
+		return nil, fmt.Errorf("locate the running executable: %w", err)
 	}
 	worker := exec.CommandContext(context.WithoutCancel(ctx), executable, "diagnose-worker",
 		"--config", application.ConfigPath,
@@ -278,15 +284,37 @@ func (application *Application) startCaptureWorker(ctx context.Context, options 
 	worker.Stdout, worker.Stderr = io.Discard, errorLog
 	worker.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := worker.Start(); err != nil {
-		return 0, errors.Join(fmt.Errorf("start capture worker: %w", err), os.Remove(errorLog.Name()))
-	}
-	// Release invalidates the handle, so the reported id is read first.
-	pid := worker.Process.Pid
-	if err := worker.Process.Release(); err != nil {
-		return 0, fmt.Errorf("detach capture worker: %w", err)
+		return nil, errors.Join(fmt.Errorf("start capture worker: %w", err), os.Remove(errorLog.Name()))
 	}
 
-	return pid, nil
+	return worker, nil
+}
+
+// captureStartGrace bounds the wait for a worker that fails while opening its
+// outputs, subscribing to address updates or loading the configuration.
+const captureStartGrace = time.Second
+
+// confirmCaptureStarted reports a worker that exited during initialisation
+// instead of announcing a capture that is not running. Setsid keeps the worker
+// alive past this process, so the wait only ever observes an early exit.
+func confirmCaptureStarted(worker *exec.Cmd, errorLogPath string) error {
+	exited := make(chan error, 1)
+	go func() { exited <- worker.Wait() }()
+	select {
+	case cause := <-exited:
+		return errors.Join(captureWorkerFailure(cause, errorLogPath), os.Remove(errorLogPath))
+	case <-time.After(captureStartGrace):
+		return nil
+	}
+}
+
+func captureWorkerFailure(cause error, errorLogPath string) error {
+	log, err := os.ReadFile(errorLogPath)
+	if err != nil || len(bytes.TrimSpace(log)) == 0 {
+		return fmt.Errorf("%w: %w", errCaptureWorkerExited, cause)
+	}
+
+	return fmt.Errorf("%w: %w: %s", errCaptureWorkerExited, cause, bytes.TrimSpace(log))
 }
 
 func (application *Application) reportCaptureStarted(options diagnostics.Options, pid int, logPath string, completion time.Time) error {

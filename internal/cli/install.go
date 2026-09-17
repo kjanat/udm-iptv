@@ -27,7 +27,7 @@ func (application *Application) installCommand() *cobra.Command {
 	return application.installCommandWith(installDependencies{
 		load: func() (config.Config, error) { return config.Load(application.ConfigPath) },
 		legacy: func() (config.Config, bool, error) {
-			return config.ImportFirstLegacy([]string{"/etc/udm-iptv.conf", filepath.Join(application.StateDir, "legacy.conf")})
+			return config.ImportFirstLegacy(legacyCandidates(application.StateDir))
 		},
 		defaults: device.Defaults, prompt: application.configureForm,
 		suggest:    application.suggestProvider,
