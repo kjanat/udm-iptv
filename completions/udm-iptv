@@ -83,6 +83,7 @@ _udm_iptv() {
 				options+=(-h --help)
 			fi
 			_udm_iptv_seen --force || options+=(--force)
+			_udm_iptv_seen --prerelease || options+=(--prerelease)
 			_udm_iptv_seen --repository || options+=(--repository)
 			_udm_iptv_seen --branch || options+=(--branch)
 			_udm_iptv_seen --token-file || options+=(--token-file)

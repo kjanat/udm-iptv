@@ -23,6 +23,9 @@ jobs:
       - name: Test Bash Completion
         working-directory: udm-iptv
         run: ./tests/bash-completion.sh
+      - name: Test installer asset selection
+        working-directory: udm-iptv
+        run: ./tests/install-assets.sh
       - name: Test Diagnostics
         working-directory: udm-iptv
         run: ./tests/diagnostics.sh
