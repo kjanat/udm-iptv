@@ -47,7 +47,7 @@ func TestSuggestedProviderIsDraftUntilReview(t *testing.T) {
 }
 
 func TestReviewDeclinePreservesConfiguration(t *testing.T) {
-	value := config.Default()
+	value := config.DefaultKPN()
 	original := clone(value)
 	calls := 0
 	err := Configure(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {

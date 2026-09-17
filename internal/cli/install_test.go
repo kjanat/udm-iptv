@@ -141,7 +141,7 @@ func TestInstallSelectionAndFailures(t *testing.T) {
 
 					return value, mode == "legacy", nil
 				},
-				defaults: config.Default,
+				defaults: config.DefaultKPN,
 				prompt: func(_ context.Context, v *config.Config) error {
 					if mode == "cancel-form" {
 						return context.Canceled

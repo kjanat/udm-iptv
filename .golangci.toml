@@ -131,6 +131,15 @@ require-specific    = true
 generated   = "strict"
 warn-unused = true
 
+# The firmware pipeline downloads and unpacks multi-gigabyte images into a
+# per-build directory that buildImage deletes on every exit path. Nothing
+# there outlives the build, so atomic replacement buys no durability, and
+# buffering a whole image to pass it through atomicfile.Write is not viable.
+[[linters.exclusions.rules]]
+linters = ["forbidigo"]
+path    = "internal/firmware/images\\.go"
+text    = "os\\.Create"
+
 [formatters]  # tombi: format.rules.table-keys-order = "ascending"
 enable = ["gci", "goimports"]
 

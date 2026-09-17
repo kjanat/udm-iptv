@@ -18,7 +18,7 @@ import (
 func TestConfigureProfileSwitch(t *testing.T) {
 	for _, cancel := range []bool{false, true} {
 		t.Run(map[bool]string{false: "accept", true: "cancel"}[cancel], func(t *testing.T) {
-			value := config.Default()
+			value := config.DefaultKPN()
 			value.Telemetry.Enabled = true
 			original := clone(value)
 			selected, _ := config.FromProfile("tweak", value)
@@ -103,7 +103,7 @@ func TestConfigurationPagesFollowAnswers(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			value := config.Default()
+			value := config.DefaultKPN()
 			if test.edit != nil {
 				test.edit(&value)
 			}
@@ -287,7 +287,7 @@ func TestEveryQuestionHasHelp(t *testing.T) {
 }
 
 func TestHelpOverlayExplainsFocusedQuestion(t *testing.T) {
-	value := config.Default()
+	value := config.DefaultKPN()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, nil, "", &fields)
 	frame := NewFrame(wizardForm(groups...).steps(1, 1), "")
@@ -489,7 +489,7 @@ func TestCountryListShowsEveryCountry(t *testing.T) {
 }
 
 func TestVLANFieldAcceptsDigitsOnly(t *testing.T) {
-	value := config.Default()
+	value := config.DefaultKPN()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, nil, "", &fields)
 	frame := NewFrame(wizardForm(groups...), "")

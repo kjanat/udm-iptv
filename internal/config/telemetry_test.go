@@ -32,7 +32,10 @@ func TestTelemetryDefaultsAndExistingChoice(t *testing.T) {
 
 func TestLegacyTelemetryRemainsDisabled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.conf")
-	if err := atomicfile.Write(path, []byte("IPTV_WAN_INTERFACE=eth8\n"), 0o600); err != nil {
+	// The packaging always wrote IPTV_WAN_RANGES, and igmpproxy needs a source
+	// prefix, so a realistic legacy file carries one.
+	legacy := "IPTV_WAN_INTERFACE=eth8\nIPTV_WAN_RANGES=213.75.0.0/16\n"
+	if err := atomicfile.Write(path, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	value, err := ImportLegacy(path)

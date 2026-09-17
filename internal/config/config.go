@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
@@ -95,9 +96,20 @@ func genericBase() Config {
 	}
 }
 
-// Default is the kpn profile applied to the generic base: KPN is the primary
-// market and the config a fresh install starts from before the wizard runs.
+// Default is a configuration with no provider in it: the interface names and
+// proxy settings every profile shares, and nothing a provider decides. Use it
+// wherever the caller wants the shared defaults rather than a market.
 func Default() Config {
+	value := genericBase()
+	value.Profile = profileCustom
+
+	return value
+}
+
+// DefaultKPN is the kpn profile applied to the generic base. KPN is the
+// primary market, so it seeds a fresh installation before the wizard runs.
+// Callers that only want the shared defaults want Default instead.
+func DefaultKPN() Config {
 	kpn, _ := embedded().Profile("kpn")
 
 	return kpn.Config
@@ -120,7 +132,8 @@ func Load(path string) (Config, error) {
 	return value, nil
 }
 
-// Save validates value and atomically writes it to path.
+// Save validates value and atomically writes it to path. The directory is
+// created owner-only, which atomicfile does not assume.
 func Save(path string, value Config) error {
 	if err := value.Validate(); err != nil {
 		return err
@@ -129,36 +142,11 @@ func Save(path string, value Config) error {
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
 	if err := os.MkdirAll(filepath.Dir(path), filemode.PrivateDir); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".config-*.json")
-	if err != nil {
-		return err
-	}
-	name := temporary.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := temporary.Chmod(filemode.PrivateFile); err != nil {
-		_ = temporary.Close()
-
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
+		return fmt.Errorf("create configuration directory for %s: %w", path, err)
 	}
 
-	return os.Rename(name, path)
+	return atomicfile.Write(path, append(data, '\n'), filemode.PrivateFile)
 }
 
 // Validate reports whether value is a consistent, applyable configuration.
@@ -241,6 +229,84 @@ func ValidateInterfaceName(name string) error {
 	return nil
 }
 
+// Defaults the shell daemon applied to a variable the configuration file did
+// not set. Its parameter expansions all use ${VAR:-…}, so an empty assignment
+// and a missing line mean the same thing. Line numbers refer to udm-iptvd in
+// the shell implementation.
+const (
+	// udm-iptvd:18 defaulted the VLAN to 0, meaning untagged IPTV.
+	legacyVLAN = 0
+	// udm-iptvd:12 defaulted the VLAN interface name.
+	legacyVLANInterface = "iptv"
+	// udm-iptvd:24 and :185 selected igmpproxy for anything but "improxy".
+	legacyProxyProgram = "igmpproxy"
+	// udm-iptvd:154 emitted IGMPv3 only for a literal 3, IGMPv2 otherwise.
+	legacyIGMPVersion = 2
+)
+
+// legacyDHCPOptions is the udhcpc argument list udm-iptvd:13 hardcoded.
+var legacyDHCPOptions = []string{"-O", "staticroutes", "-V", "IPTV_RG"}
+
+// legacyBase is what the shell daemon ran with when the configuration file
+// set nothing. Where the shell's own fallback was an empty string that could
+// not run at all, this keeps the value the packaging offered: udm-iptvd:17
+// left the WAN interface empty, which fails on ip link, and :22 left the
+// downstream list empty, which disables every downstream.
+func legacyBase() Config {
+	value := genericBase()
+	value.Profile = profileLegacy
+	value.WAN.VLAN = legacyVLAN
+	value.WAN.VLANInterface = legacyVLANInterface
+	value.Proxy.Program = legacyProxyProgram
+	value.Proxy.IGMPVersion = legacyIGMPVersion
+	// Legacy installations never selected telemetry; do not opt them in.
+	value.Telemetry.Enabled = false
+
+	return value
+}
+
+// applyLegacyWAN reproduces udm-iptvd's uplink behaviour. udhcpc only ever
+// ran inside the VLAN branch at :46, so an untagged installation performed no
+// DHCP whatever the variable said, and :80 applied the static address only
+// when DHCP was disabled by name.
+func applyLegacyWAN(value *Config, values map[string]string) {
+	value.WAN.Interface = fallback(values["IPTV_WAN_INTERFACE"], value.WAN.Interface)
+	if vlan, err := strconv.Atoi(values["IPTV_WAN_VLAN"]); err == nil {
+		value.WAN.VLAN = vlan
+	}
+	value.WAN.VLANInterface = fallback(values["IPTV_WAN_VLAN_INTERFACE"], value.WAN.VLANInterface)
+	value.WAN.VLANMAC = values["IPTV_WAN_VLAN_MAC"]
+	disabled := values["IPTV_WAN_DHCP"] == "false"
+	value.WAN.DHCP = !disabled && value.WAN.VLAN > 0
+	if value.WAN.DHCP {
+		value.WAN.DHCPOptions = strings.Fields(fallback(values["IPTV_WAN_DHCP_OPTIONS"], strings.Join(legacyDHCPOptions, " ")))
+	}
+	if disabled {
+		value.WAN.StaticAddress = values["IPTV_WAN_STATIC_IP"]
+	}
+	value.WAN.AllowDefaultRoute = value.WAN.DHCP && !slices.Contains(strings.Fields(values["NO_GATEWAY"]), value.WAN.Interface)
+	value.WAN.NATDestinations = normalizeLegacyPrefixes(strings.Fields(values["IPTV_WAN_RANGES"]))
+	value.WAN.StaticRoutes = strings.Fields(values["IPTV_STATIC_ROUTES"])
+	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], "br0"))
+}
+
+// applyLegacyProxy reproduces udm-iptvd's proxy selection. Quickleave was
+// asymmetric: :129 enabled it for igmpproxy unless the variable said false,
+// while :162 enabled it for improxy only when the variable said false.
+func applyLegacyProxy(value *Config, values map[string]string) {
+	value.Proxy.Program = fallback(values["IPTV_IGMPPROXY_PROGRAM"], legacyProxyProgram)
+	if value.Proxy.Program != "improxy" {
+		value.Proxy.Program = legacyProxyProgram
+	}
+	value.Proxy.IGMPVersion = legacyIGMPVersion
+	if values["IPTV_IGMPPROXY_IGMP_VERSION"] == "3" {
+		value.Proxy.IGMPVersion = DefaultIGMPVersion
+	}
+	quickleave := values["IPTV_IGMPPROXY_DISABLE_QUICKLEAVE"]
+	value.Proxy.QuickLeave = quickleave == "false" || (quickleave == "" && value.Proxy.Program == legacyProxyProgram)
+	value.Proxy.Debug = values["IPTV_IGMPPROXY_DEBUG"] == "true"
+}
+
 // ImportLegacy converts the former shell configuration without executing it.
 func ImportLegacy(path string) (Config, error) {
 	data, err := os.ReadFile(path)
@@ -267,36 +333,9 @@ func ImportLegacy(path string) (Config, error) {
 		}
 		values[key] = raw
 	}
-	value := Default()
-	// Legacy installations never selected telemetry; do not opt them in on migration.
-	value.Telemetry.Enabled = false
-	value.Profile = profileLegacy
-	value.WAN.Interface = fallback(values["IPTV_WAN_INTERFACE"], value.WAN.Interface)
-	if vlan, parseErr := strconv.Atoi(fallback(values["IPTV_WAN_VLAN"], "4")); parseErr == nil {
-		value.WAN.VLAN = vlan
-	}
-	value.WAN.VLANInterface = fallback(values["IPTV_WAN_VLAN_INTERFACE"], value.WAN.VLANInterface)
-	value.WAN.VLANMAC = values["IPTV_WAN_VLAN_MAC"]
-	value.WAN.DHCP = values["IPTV_WAN_DHCP"] != "false"
-	if values["IPTV_WAN_DHCP"] == "" && value.WAN.VLAN == 0 {
-		value.WAN.DHCP = false
-	}
-	if options, found := values["IPTV_WAN_DHCP_OPTIONS"]; found {
-		value.WAN.DHCPOptions = strings.Fields(options)
-	}
-	value.WAN.AllowDefaultRoute = value.WAN.DHCP && !slices.Contains(strings.Fields(values["NO_GATEWAY"]), value.WAN.Interface)
-	value.WAN.StaticAddress = values["IPTV_WAN_STATIC_IP"]
-	if destinations, found := values["IPTV_WAN_RANGES"]; found {
-		value.WAN.NATDestinations = normalizeLegacyPrefixes(strings.Fields(destinations))
-	}
-	value.WAN.StaticRoutes = strings.Fields(values["IPTV_STATIC_ROUTES"])
-	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], "br0"))
-	value.Proxy.Program = fallback(values["IPTV_IGMPPROXY_PROGRAM"], "igmpproxy")
-	if version, parseErr := strconv.Atoi(fallback(values["IPTV_IGMPPROXY_IGMP_VERSION"], "3")); parseErr == nil {
-		value.Proxy.IGMPVersion = version
-	}
-	value.Proxy.QuickLeave = values["IPTV_IGMPPROXY_DISABLE_QUICKLEAVE"] == "false"
-	value.Proxy.Debug = values["IPTV_IGMPPROXY_DEBUG"] == "true"
+	value := legacyBase()
+	applyLegacyWAN(&value, values)
+	applyLegacyProxy(&value, values)
 	legacyLANSources := normalizeLegacyPrefixes(strings.Fields(values["IPTV_LAN_RANGES"]))
 	// Preserve old igmpproxy semantics during migration; new configurations keep
 	// source allowlists separate from NAT destinations.
