@@ -103,7 +103,7 @@ func (h *firmwareHarness) installPreviousPackage(name, image string) {
 	// Exercise a package-version upgrade without depending on a past Go release.
 	h.inside(name, "sh", "-ec", `
 dpkg-deb -R /package.deb /run/previous-package
-sed -i '/^Version:/s/$/~firmware-test/' /run/previous-package/DEBIAN/control
+sed -i '/^Version:/s/$/~firmwaretest/' /run/previous-package/DEBIAN/control
 dpkg-deb -Zxz --root-owner-group -b /run/previous-package /run/previous.deb
 apt-get install -y /run/previous.deb`)
 	h.healthy(name)
