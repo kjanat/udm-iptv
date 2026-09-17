@@ -46,9 +46,27 @@ jobs:
           assets=(dist/udm-iptv-linux-arm64 dist/*.deb dist/SHA256SUMS)
           for asset in "${assets[@]}"; do test -f "${asset}"; done
 
+          prerelease=()
+          latest=(--latest=true)
+          case "${tag}" in
+            *preview*|*rc*|*-alpha*|*beta*)
+              prerelease=(--prerelease)
+              latest=(--latest=false)
+              ;;
+            *) ;;
+          esac
+
+          previous=$(gh release list --limit 100 --json tagName,isDraft,isPrerelease |
+            jq -r --arg tag "${tag}" --argjson pre "${#prerelease[@]}" \
+              '[.[] | select(.tagName != $tag and .isDraft == false and ($pre != 0 or .isPrerelease == false))][0].tagName // empty')
+          notes_start=()
+          if [[ -n "${previous}" ]]; then
+            notes_start=(--notes-start-tag "${previous}")
+          fi
+
           state=$(gh release view "${tag}" --json isDraft --jq .isDraft 2>/dev/null || true)
           case "${state}" in
-            "") gh release create "${tag}" --draft --generate-notes --title "udm-iptv ${tag}" --verify-tag ;;
+            "") gh release create "${tag}" --draft "${prerelease[@]}" "${latest[@]}" --generate-notes "${notes_start[@]}" --title "udm-iptv ${tag}" --verify-tag ;;
             true) ;;
             false)
               echo "Release ${tag} is already published."
@@ -60,4 +78,4 @@ jobs:
               ;;
           esac
           gh release upload "${tag}" "${assets[@]}" --clobber
-          gh release edit "${tag}" --draft=false
+          gh release edit "${tag}" --draft=false "${prerelease[@]}" "${latest[@]}"
