@@ -54,7 +54,7 @@ type SettingsSnapshot struct {
 	VLAN          int      `json:"vlan"`
 	DHCP          bool     `json:"dhcp"`
 	StaticAddress bool     `json:"static_address_configured"`
-	DefaultRoute  bool     `json:"allow_default_route"`
+	DHCPRoutes    string   `json:"dhcp_routes"`
 	Proxy         string   `json:"proxy"`
 	IGMP          int      `json:"igmp_version"`
 	QuickLeave    bool     `json:"quickleave"`
@@ -77,7 +77,7 @@ func snapshot(value config.Config) SettingsSnapshot {
 	}
 	result := SettingsSnapshot{
 		Profile: profile, VLAN: value.WAN.VLAN, DHCP: value.WAN.DHCP,
-		StaticAddress: value.WAN.StaticAddress != "", DefaultRoute: value.WAN.AllowDefaultRoute,
+		StaticAddress: value.WAN.StaticAddress != "", DHCPRoutes: string(value.WAN.DHCPRoutes),
 		Proxy: proxy, IGMP: value.Proxy.IGMPVersion, QuickLeave: value.Proxy.QuickLeave,
 		Debug: value.Proxy.Debug, Downstreams: len(value.LAN.Interfaces),
 	}

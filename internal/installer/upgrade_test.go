@@ -3,6 +3,7 @@ package installer
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -262,3 +263,19 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func TestDecompressBundleRejectsInflatedBlock(t *testing.T) {
+	t.Parallel()
+	inflated := binary.AppendUvarint(nil, uint64(attestationDecodedLimit)+1)
+	inflated = append(inflated, 0x00, 0x01, 0x02)
+	size, err := snappy.DecodedLen(inflated)
+	if err != nil || size <= attestationDecodedLimit {
+		t.Fatalf("fixture declares %d bytes (err %v), so this asserts nothing", size, err)
+	}
+	if got := decompressBundle(inflated); !bytes.Equal(got, inflated) {
+		t.Fatalf("oversized block was decoded into %d bytes", len(got))
+	}
+	if _, ok := parseBundle(inflated); ok {
+		t.Fatal("oversized block yielded a bundle")
+	}
+}

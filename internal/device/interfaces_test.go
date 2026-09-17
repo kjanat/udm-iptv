@@ -106,6 +106,18 @@ eth9 00000000 0100000A 0003 0 0 100 00000000
 	}
 }
 
+func TestDefaultRouteInterfaceIgnoresZeroBasedPrefixes(t *testing.T) {
+	t.Parallel()
+	routes := `Iface Destination Gateway Flags RefCnt Use Metric Mask
+tun0 00000000 0100000A 0003 0 0 50 00000080
+tun1 00000000 0100000A 0003 0 0 60 000000FF
+eth8 00000000 0100000A 0003 0 0 100 00000000
+`
+	if got := defaultRouteInterface(strings.NewReader(routes)); got != "eth8" {
+		t.Fatalf("split-default route selected %q, want eth8", got)
+	}
+}
+
 func TestUXGDownstreamInterfacesIncludeSubinterfaces(t *testing.T) {
 	t.Parallel()
 	interfaces := []net.Interface{{Name: "eth0"}, {Name: "eth0.10"}, {Name: "br0"}, {Name: "eth8"}}

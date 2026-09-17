@@ -55,10 +55,13 @@ That is the small program that asks your provider for an address.
 
 The defaults from your provider profile are usually right.
 Change these only if your provider documents specific options.`},
-	"default-route": {"DHCP default-route fallback", `The provider may hand out a default route on the TV lane.
-Accepting it can send all your internet traffic through the TV lane.
+	"dhcp-routes": {"Routes from the lease", `The provider tells the router which networks the TV lane reaches.
 
-Leave this on No unless your provider requires it.`},
+Never a default route is right almost everywhere. The TV lane still gets the
+networks your provider lists, but it cannot become the way out for everything.
+Including a default route can send all your internet traffic through the TV
+lane, so pick it only when your provider says to.
+No routes suits a lane that should carry multicast and nothing else.`},
 	"static-address": {"Static IPTV address", `The fixed address your provider gave you for the TV lane.
 Write it with its network size, for example 10.0.0.2/24.
 

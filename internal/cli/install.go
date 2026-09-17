@@ -194,8 +194,14 @@ func (application *Application) uninstallCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var cleanup installer.CleanupError
 			err = installer.Uninstall(command.Context(), application.ConfigPath, application.StateDir, keepConfig)
-			if err != nil {
+			switch {
+			case errors.As(err, &cleanup):
+				if err := writef(application.Err, "Warning: %s\n", cleanup.Err); err != nil {
+					return err
+				}
+			case err != nil:
 				return fmt.Errorf("remove the installation in %s: %w", application.StateDir, err)
 			}
 

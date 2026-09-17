@@ -40,8 +40,10 @@ var (
 	errProxyProgram         = errors.New("proxy must be improxy or igmpproxy")
 	errMissingProxySources  = errors.New("igmpproxy requires at least one proxy source range")
 	errIGMPVersion          = errors.New("IGMP version must be 2 or 3")
-	errVLANMAC              = errors.New("VLAN MAC address is invalid")
+	errVLANMAC              = errors.New("VLAN MAC address must be a six-byte Ethernet address")
 	errStaticAddress        = errors.New("static address must be an IPv4 CIDR address")
+	errDHCPWithStatic       = errors.New("DHCP and a static address are mutually exclusive")
+	errRoutePolicy          = errors.New("DHCP route policy must be no-default, allow-default or none")
 	errInvalidLANInterface  = errors.New("invalid LAN interface")
 	errInvalidNetworkPrefix = errors.New("invalid network prefix")
 	errNotAnInterfaceName   = errors.New("is not a valid Linux interface name")
@@ -63,6 +65,28 @@ type configJSON struct {
 	LAN       LAN             `json:"lan"`
 	Proxy     Proxy           `json:"proxy"`
 	Telemetry json.RawMessage `json:"telemetry"`
+}
+
+// UnmarshalJSON accepts the allowDefaultRoute boolean that installations
+// written before dhcpRoutes still carry on disk.
+func (value *WAN) UnmarshalJSON(data []byte) error {
+	type plain WAN
+	legacy := struct {
+		*plain
+
+		AllowDefaultRoute *bool `json:"allowDefaultRoute"`
+	}{plain: (*plain)(value)}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return fmt.Errorf("parse WAN configuration: %w", err)
+	}
+	if value.DHCPRoutes == "" {
+		value.DHCPRoutes = RoutesNoDefault
+		if legacy.AllowDefaultRoute != nil && *legacy.AllowDefaultRoute {
+			value.DHCPRoutes = RoutesAllowDefault
+		}
+	}
+
+	return nil
 }
 
 func decodeConfig(data []byte) (Config, error) {
@@ -110,16 +134,47 @@ type Telemetry struct {
 // WAN holds the configuration for the WAN interface, including VLAN settings,
 // DHCP options, static address, NAT destinations, and static routes.
 type WAN struct {
-	Interface         string   `json:"interface"`
-	VLAN              int      `json:"vlan"`
-	VLANInterface     string   `json:"vlanInterface"`
-	VLANMAC           string   `json:"vlanMAC,omitempty"`
-	DHCP              bool     `json:"dhcp"`
-	DHCPOptions       []string `json:"dhcpOptions,omitempty"`
-	AllowDefaultRoute bool     `json:"allowDefaultRoute"`
-	StaticAddress     string   `json:"staticAddress,omitempty"`
-	NATDestinations   []string `json:"natDestinations,omitempty"`
-	StaticRoutes      []string `json:"staticRoutes,omitempty"`
+	Interface       string      `json:"interface"`
+	VLAN            int         `json:"vlan"`
+	VLANInterface   string      `json:"vlanInterface"`
+	VLANMAC         string      `json:"vlanMAC,omitempty"`
+	DHCP            bool        `json:"dhcp"`
+	DHCPOptions     []string    `json:"dhcpOptions,omitempty"`
+	DHCPRoutes      RoutePolicy `json:"dhcpRoutes"`
+	StaticAddress   string      `json:"staticAddress,omitempty"`
+	NATDestinations []string    `json:"natDestinations,omitempty"`
+	StaticRoutes    []string    `json:"staticRoutes,omitempty"`
+}
+
+// RoutePolicy selects which routes a DHCP lease may install on the IPTV path.
+// Whether a default route is permitted is a policy about the route, not about
+// the option that carried it: a server can advertise one through RFC3442
+// option 121 or through the Router option, and the policy treats both alike.
+type RoutePolicy string
+
+const (
+	// RoutesNoDefault installs the advertised RFC3442 routes except a default
+	// route, and adds no Router-option default.
+	RoutesNoDefault RoutePolicy = "no-default"
+	// RoutesAllowDefault also installs a default route, whether the lease
+	// advertises it through RFC3442 or through the Router option.
+	RoutesAllowDefault RoutePolicy = "allow-default"
+	// RoutesNone installs no route from a lease at all. udm-iptvd's NO_GATEWAY
+	// returned before it read either option, so it suppressed the specific
+	// routes too.
+	RoutesNone RoutePolicy = "none"
+)
+
+// AllowsDefault reports whether a lease may install a default route.
+func (policy RoutePolicy) AllowsDefault() bool { return policy == RoutesAllowDefault }
+
+func (policy RoutePolicy) valid() bool {
+	switch policy {
+	case RoutesNoDefault, RoutesAllowDefault, RoutesNone:
+		return true
+	default:
+		return false
+	}
 }
 
 // LAN holds the configuration for the LAN interface, including the list of
@@ -143,7 +198,7 @@ type Proxy struct {
 // choice and telemetry defaults.
 func genericBase() Config {
 	return Config{
-		WAN:       WAN{Interface: "eth8", VLANInterface: "iptv"},
+		WAN:       WAN{Interface: "eth8", VLANInterface: "iptv", DHCPRoutes: RoutesNoDefault},
 		LAN:       LAN{Interfaces: []string{"br0"}},
 		Proxy:     Proxy{Program: "improxy", IGMPVersion: DefaultIGMPVersion},
 		Telemetry: defaultTelemetry(),
@@ -278,7 +333,8 @@ func validateProxy(value Config) error {
 
 func validateWANAddressing(value Config) error {
 	if value.WAN.VLANMAC != "" {
-		if _, err := net.ParseMAC(value.WAN.VLANMAC); err != nil {
+		address, err := net.ParseMAC(value.WAN.VLANMAC)
+		if err != nil || len(address) != 6 {
 			return errVLANMAC
 		}
 	}
@@ -288,8 +344,32 @@ func validateWANAddressing(value Config) error {
 			return errStaticAddress
 		}
 	}
+	if value.WAN.DHCP && value.WAN.StaticAddress != "" {
+		return errDHCPWithStatic
+	}
+	if !value.WAN.DHCPRoutes.valid() {
+		return fmt.Errorf("%w %q", errRoutePolicy, value.WAN.DHCPRoutes)
+	}
 
 	return nil
+}
+
+// Target returns the interface that carries IPTV traffic: the VLAN when
+// tagging is enabled, otherwise the physical uplink.
+func (value Config) Target() string {
+	if value.WAN.VLAN > 0 {
+		return value.WAN.VLANInterface
+	}
+
+	return value.WAN.Interface
+}
+
+// NormalizeAddressing drops the static address once DHCP owns the interface,
+// so switching the addressing mode stays valid.
+func NormalizeAddressing(value *Config) {
+	if value.WAN.DHCP {
+		value.WAN.StaticAddress = ""
+	}
 }
 
 func validateLANNames(value Config) error {
@@ -394,9 +474,9 @@ func applyLegacyWAN(value *Config, values map[string]string) {
 	if disabled {
 		value.WAN.StaticAddress = values["IPTV_WAN_STATIC_IP"]
 	}
-	value.WAN.AllowDefaultRoute = value.WAN.DHCP && !slices.Contains(strings.Fields(values["NO_GATEWAY"]), value.WAN.Interface)
+	value.WAN.DHCPRoutes = legacyRoutePolicy(*value, values["NO_GATEWAY"])
 	value.WAN.NATDestinations = normalizeLegacyPrefixes(strings.Fields(values["IPTV_WAN_RANGES"]))
-	value.WAN.StaticRoutes = strings.Fields(values["IPTV_STATIC_ROUTES"])
+	value.WAN.StaticRoutes = normalizeLegacyPrefixes(strings.Fields(values["IPTV_STATIC_ROUTES"]))
 	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], "br0"))
 }
 
@@ -457,15 +537,11 @@ func parseLegacyAssignments(text string) (map[string]string, error) {
 		if !ok || !legacyKey(key) {
 			continue
 		}
-		raw = strings.TrimSpace(raw)
-		if quotedLegacyValue(raw) {
-			decoded, decodeErr := strconv.Unquote(raw)
-			if decodeErr != nil {
-				return nil, fmt.Errorf("parse %s: %w", key, decodeErr)
-			}
-			raw = decoded
+		decoded, err := decodeLegacyValue(key, strings.TrimSpace(raw))
+		if err != nil {
+			return nil, err
 		}
-		values[key] = raw
+		values[key] = decoded
 	}
 
 	return values, nil
@@ -475,8 +551,46 @@ func legacyKey(key string) bool {
 	return strings.HasPrefix(key, "IPTV_") || key == "NO_GATEWAY"
 }
 
-func quotedLegacyValue(raw string) bool {
-	return len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"'
+// udm-iptvd's hook returned before it read option 121 or the Router option, so
+// a listed interface installed no route at all.
+func legacyRoutePolicy(value Config, noGateway string) RoutePolicy {
+	switch {
+	case legacyGatewayOptOut(value, noGateway):
+		return RoutesNone
+	case value.WAN.DHCP:
+		return RoutesAllowDefault
+	default:
+		return RoutesNoDefault
+	}
+}
+
+// udhcpc ran on the VLAN when tagging was enabled, so the legacy hook saw that
+// name rather than the physical uplink. Either spelling opts out.
+func legacyGatewayOptOut(value Config, noGateway string) bool {
+	names := strings.Fields(noGateway)
+
+	return slices.Contains(names, value.WAN.Interface) || slices.Contains(names, value.Target())
+}
+
+// Legacy configuration was sourced by /bin/sh, where single quotes suppress
+// every expansion and escape.
+func decodeLegacyValue(key, raw string) (string, error) {
+	if quotedLegacyValue(raw, '\'') {
+		return raw[1 : len(raw)-1], nil
+	}
+	if !quotedLegacyValue(raw, '"') {
+		return raw, nil
+	}
+	decoded, err := strconv.Unquote(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse %s: %w", key, err)
+	}
+
+	return decoded, nil
+}
+
+func quotedLegacyValue(raw string, quote byte) bool {
+	return len(raw) >= 2 && raw[0] == quote && raw[len(raw)-1] == quote
 }
 
 func fallback(value, defaultValue string) string {

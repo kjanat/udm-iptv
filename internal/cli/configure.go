@@ -50,7 +50,8 @@ type configureFlags struct {
 	vlan, igmpVersion                    int
 	dhcpOptions, natDestinations         []string
 	proxySources, lanInterfaces          []string
-	dhcp, allowDefaultRoute              bool
+	dhcpRoutes                           string
+	dhcp                                 bool
 	quickLeave, debug                    bool
 	telemetry                            config.Telemetry
 }
@@ -64,7 +65,7 @@ func (f *configureFlags) overrides(value *config.Config) []override {
 		{"dhcp", func() { value.WAN.DHCP = f.dhcp }},
 		{"dhcp-option", func() { value.WAN.DHCPOptions = f.dhcpOptions }},
 		{"static-address", func() { value.WAN.StaticAddress = f.staticAddress }},
-		{"allow-default-route", func() { value.WAN.AllowDefaultRoute = f.allowDefaultRoute }},
+		{"dhcp-routes", func() { value.WAN.DHCPRoutes = config.RoutePolicy(f.dhcpRoutes) }},
 		{"nat-destination", func() { value.WAN.NATDestinations = f.natDestinations }},
 		{"proxy-source", func() { value.Proxy.SourceRanges = f.proxySources }},
 		{"lan-interface", func() { value.LAN.Interfaces = f.lanInterfaces }},
@@ -99,6 +100,9 @@ func (f *configureFlags) apply(command *cobra.Command, value *config.Config) err
 			field.set()
 		}
 	}
+	if !flags.Changed("static-address") {
+		config.NormalizeAddressing(value)
+	}
 
 	return nil
 }
@@ -130,7 +134,7 @@ func (f *configureFlags) bind(command *cobra.Command) {
 	flags.BoolVar(&f.dhcp, "dhcp", false, "obtain the IPTV address through DHCP")
 	flags.StringSliceVar(&f.dhcpOptions, "dhcp-option", nil, "argument passed to udhcpc; repeatable")
 	flags.StringVar(&f.staticAddress, "static-address", "", "static IPTV address in CIDR notation")
-	flags.BoolVar(&f.allowDefaultRoute, "allow-default-route", false, "allow DHCP router fallback without RFC3442 routes")
+	flags.StringVar(&f.dhcpRoutes, "dhcp-routes", string(config.RoutesNoDefault), "routes to accept from a lease: no-default, allow-default or none")
 	flags.StringSliceVar(&f.natDestinations, "nat-destination", nil, "destination prefix to masquerade; repeatable")
 	flags.StringSliceVar(&f.proxySources, "proxy-source", nil, "allowed multicast source prefix; repeatable")
 	flags.StringSliceVar(&f.lanInterfaces, "lan-interface", nil, "downstream LAN interface; repeatable")

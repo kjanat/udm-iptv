@@ -84,10 +84,10 @@ func leaseRouteIdentity(route netlink.Route) string {
 	return fmt.Sprintf("%s/%d/%d/%s", leaseRouteKey(route), route.Protocol, route.Scope, route.Gw)
 }
 
-func removeOldLeaseAddresses(link netlink.Link, desired *netlink.Addr, ops leaseOperations) (bool, error) {
+func removeOtherAddresses(link netlink.Link, desired *netlink.Addr, ops leaseOperations) (bool, error) {
 	addresses, err := ops.addresses(link, netlink.FAMILY_V4)
 	if err != nil {
-		return false, fmt.Errorf("read assigned DHCP addresses: %w", err)
+		return false, fmt.Errorf("read assigned addresses: %w", err)
 	}
 	removed := false
 	for _, address := range addresses {
@@ -96,7 +96,7 @@ func removeOldLeaseAddresses(link netlink.Link, desired *netlink.Addr, ops lease
 		}
 		err := ops.deleteAddress(link, &address)
 		if err != nil && !errors.Is(err, unix.EADDRNOTAVAIL) {
-			return removed, fmt.Errorf("remove obsolete DHCP address: %w", err)
+			return removed, fmt.Errorf("remove obsolete address: %w", err)
 		}
 		removed = true
 	}

@@ -10,6 +10,8 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 var (
@@ -35,7 +37,7 @@ func TestLeaseFailuresKeepOperationAndCause(t *testing.T) {
 			case "retire previous DHCP address":
 				ops.addresses = func(netlink.Link, int) ([]netlink.Addr, error) { return nil, want }
 			}
-			err := applyLease(testLease(), true, ops)
+			err := applyLease(testLease(), config.RoutesAllowDefault, ops)
 			if !errors.Is(err, want) || !strings.Contains(err.Error(), stage) {
 				t.Fatalf("missing cause or operation: %v", err)
 			}
@@ -155,7 +157,7 @@ func TestInvalidLeaseDoesNotMutateNetwork(t *testing.T) {
 		lease := testLease()
 		change(&lease)
 		fixture := &leaseFixture{}
-		err := applyLease(lease, true, fixture.ops())
+		err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 		if err == nil {
 			t.Errorf("invalid lease accepted: %+v", lease)
 		}
@@ -169,13 +171,13 @@ func TestUnchangedRenewalDoesNotReplaceOrDeleteRoutes(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	err := applyLease(lease, true, fixture.ops())
+	err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {
 		fixture.changes = nil
-		err := applyLease(lease, true, fixture.ops())
+		err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -193,7 +195,7 @@ func TestChangedLeaseAppliesBeforeRemovingOldState(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		fixture := &leaseFixture{}
 		lease := testLease()
-		if err := applyLease(lease, true, fixture.ops()); err != nil {
+		if err := applyLease(lease, config.RoutesAllowDefault, fixture.ops()); err != nil {
 			t.Fatal(err)
 		}
 		old := fixture.routes[0]
@@ -203,7 +205,7 @@ func TestChangedLeaseAppliesBeforeRemovingOldState(t *testing.T) {
 		fixture.routes = append(fixture.routes, unrelated)
 		fixture.changes, fixture.failReplace = nil, fail
 		lease.Address, lease.StaticRoutes[0] = "192.0.2.3", "198.51.100.0/24"
-		err := applyLease(lease, true, fixture.ops())
+		err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 		if fail {
 			assertFailedReplacementKeepsOldState(t, fixture, err, []netlink.Route{old, unrelated})
 
@@ -243,40 +245,71 @@ func assertReplacementRetiredOldState(t *testing.T, fixture *leaseFixture, err e
 	}
 }
 
-func TestLeaseRoutePolicies(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name         string
-		staticRoutes []string
-		prefixLength int
-		allowDefault bool
-		want         []string
-	}{
+type routePolicyCase struct {
+	name         string
+	staticRoutes []string
+	prefixLength int
+	policy       config.RoutePolicy
+	want         []string
+}
+
+func routePolicyCases() []routePolicyCase {
+	return []routePolicyCase{
 		{
 			name:         "host lease keeps the gateway reachable",
 			staticRoutes: []string{"213.75.112.0/21", "192.0.2.1"},
 			prefixLength: 32,
-			allowDefault: true,
+			policy:       config.RoutesAllowDefault,
 			want:         []string{"192.0.2.1/32 on-link metric 252", "213.75.112.0/21 via 192.0.2.1 metric 252"},
 		},
-		{name: "router fallback stays off when not permitted", prefixLength: 24},
+		{name: "router option stays off when no default is permitted", prefixLength: 24, policy: config.RoutesNoDefault},
 		{
-			name:         "router fallback when permitted",
+			name:         "router option when a default is permitted",
 			prefixLength: 24,
-			allowDefault: true,
+			policy:       config.RoutesAllowDefault,
 			want:         []string{"0.0.0.0/0 via 192.0.2.254 metric 252"},
 		},
 		{
-			name:         "explicit RFC3442 default survives the policy",
+			name:         "an RFC3442 default obeys the policy like the router option",
 			staticRoutes: []string{"0.0.0.0/0", "192.0.2.1"},
 			prefixLength: 24,
+			policy:       config.RoutesNoDefault,
+		},
+		{
+			name:         "an RFC3442 default installs when a default is permitted",
+			staticRoutes: []string{"0.0.0.0/0", "192.0.2.1"},
+			prefixLength: 24,
+			policy:       config.RoutesAllowDefault,
 			want:         []string{"0.0.0.0/0 via 192.0.2.1 metric 252"},
 		},
-	} {
+		{
+			name:         "suppressing the default keeps the specific RFC3442 routes",
+			staticRoutes: []string{"0.0.0.0/0", "192.0.2.1", "213.75.112.0/21", "192.0.2.1"},
+			prefixLength: 24,
+			policy:       config.RoutesNoDefault,
+			want:         []string{"213.75.112.0/21 via 192.0.2.1 metric 253"},
+		},
+		{
+			name:         "a migrated NO_GATEWAY opt-out installs no RFC3442 route",
+			staticRoutes: []string{"0.0.0.0/0", "192.0.2.1", "213.75.112.0/21", "192.0.2.1"},
+			prefixLength: 24,
+			policy:       config.RoutesNone,
+		},
+		{
+			name:         "a migrated NO_GATEWAY opt-out installs no router option",
+			prefixLength: 24,
+			policy:       config.RoutesNone,
+		},
+	}
+}
+
+func TestLeaseRoutePolicies(t *testing.T) {
+	t.Parallel()
+	for _, test := range routePolicyCases() {
 		lease := testLease()
 		lease.Routers = []string{"192.0.2.254"}
 		lease.StaticRoutes = test.staticRoutes
-		routes, err := leaseRoutes(lease, 52, test.prefixLength, test.allowDefault)
+		routes, err := leaseRoutes(lease, 52, test.prefixLength, test.policy)
 		if err != nil {
 			t.Fatalf("%s: %v", test.name, err)
 		}
@@ -303,12 +336,12 @@ func TestDeconfigRemovesLeaseState(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	err := applyLease(lease, true, fixture.ops())
+	err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease.Action = "deconfig"
-	err = applyLease(lease, true, fixture.ops())
+	err = applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,12 +354,12 @@ func TestLeaseSurvivesPrimaryAddressCleanup(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{dropSecondary: true}
 	lease := testLease()
-	err := applyLease(lease, true, fixture.ops())
+	err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease.Address = "192.0.2.3"
-	err = applyLease(lease, true, fixture.ops())
+	err = applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,13 +372,13 @@ func TestGatewayChangeReplacesRouteWithoutDeletingReplacement(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	err := applyLease(lease, true, fixture.ops())
+	err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.changes = nil
 	lease.StaticRoutes[1] = "192.0.2.254"
-	err = applyLease(lease, true, fixture.ops())
+	err = applyLease(lease, config.RoutesAllowDefault, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}

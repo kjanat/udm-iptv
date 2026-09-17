@@ -277,6 +277,7 @@ func ConfigureSuggested(ctx context.Context, value *config.Config, catalog confi
 	if err := session.walk(ctx); err != nil {
 		return err
 	}
+	config.NormalizeAddressing(&draft)
 	*value = draft
 
 	return nil
@@ -392,9 +393,13 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 			huh.NewInput().Key("dhcp-options").Title("DHCP client options").
 				Description("Arguments passed to udhcpc.").
 				Value(&fields.dhcpOptions),
-			huh.NewConfirm().Key("default-route").Title("Allow a DHCP default-route fallback?").
-				Description("Usually No. Enabling can create a second default route.").
-				Affirmative("Yes").Negative("No").Value(&value.WAN.AllowDefaultRoute),
+			huh.NewSelect[config.RoutePolicy]().Key("dhcp-routes").Title("Routes to accept from the lease").
+				Description("Usually the advertised routes only. A router fallback can create a second default route.").
+				Options(
+					huh.NewOption("Advertised routes, but never a default route", config.RoutesNoDefault),
+					huh.NewOption("Advertised routes, including a default route", config.RoutesAllowDefault),
+					huh.NewOption("No routes from the lease", config.RoutesNone),
+				).Value(&value.WAN.DHCPRoutes),
 		).title("DHCP options").hide(func() bool { return !value.WAN.DHCP }),
 		newPage(
 			huh.NewInput().Key("static-address").Title("Static IPTV address").

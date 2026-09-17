@@ -325,7 +325,7 @@ func defaultRouteInterface(reader io.Reader) string {
 	selectedMetric := int64(^uint64(0) >> 1)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < 8 || fields[1] != "00000000" {
+		if len(fields) < 8 || fields[1] != "00000000" || fields[7] != "00000000" {
 			continue
 		}
 		flags, flagErr := strconv.ParseUint(fields[3], 16, 64)

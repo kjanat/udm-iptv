@@ -10,6 +10,8 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 // CI runs this test with privileges; all changes live in a private network
@@ -35,7 +37,7 @@ func TestKernelLeaseRenewal(t *testing.T) {
 	}
 	invalid := lease
 	invalid.StaticRoutes = []string{"198.51.100.0/24", "192.0.2.1", "invalid"}
-	if err := ApplyLease(invalid, true); err == nil {
+	if err := ApplyLease(invalid, config.RoutesAllowDefault); err == nil {
 		t.Fatal("invalid option accepted")
 	}
 	checkLease(t, link, lease.Address, 1)
@@ -90,7 +92,7 @@ func enterPrivateNamespace(t *testing.T) {
 
 func mustApplyLease(t *testing.T, lease Lease) {
 	t.Helper()
-	if err := ApplyLease(lease, true); err != nil {
+	if err := ApplyLease(lease, config.RoutesAllowDefault); err != nil {
 		t.Fatal(err)
 	}
 }

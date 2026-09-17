@@ -38,26 +38,26 @@ This describes kernel address classification. It does not establish manual confi
 
 ### 1. Fields
 
-| Field                   | Role                                     | Can it be measured?                                                           |
-| ----------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| `wan.interface`         | physical uplink                          | UDAPI parent relationships plus kernel topology                               |
-| `wan.vlan`              | 802.1Q path                              | existing UDAPI/kernel VLAN state first; unresolved candidates may need trials |
-| `wan.vlanInterface`     | local name (`iptv`)                      | default, not ISP-specific                                                     |
-| `wan.vlanMAC`           | spoofed ISP box MAC                      | only if required by the ISP; cannot be guessed                                |
-| `wan.dhcp`              | lease vs static                          | DHCPACK or existing lease evidence; timeout leaves mode unknown               |
-| `wan.dhcpOptions`       | udhcpc (`-O staticroutes`, `-V IPTV_RG`) | existing client configuration first; distinguish sent options from responses  |
-| `wan.allowDefaultRoute` | default route via the IPTV path          | policy decision informed by advertised routes and existing connectivity       |
-| `wan.staticAddress`     | static address                           | requires confirmed static configuration; an assigned address is insufficient  |
-| `wan.natDestinations`   | MASQUERADE `-d`                          | route candidates from option 121; NAT need requires separate evidence         |
-| `wan.staticRoutes`      | additional unicast routes                | yes, same lease                                                               |
-| `lan.interfaces`        | where the TV is connected                | yes, `br*` + IGMP joins                                                       |
-| `proxy.program`         | improxy / igmpproxy                      | local, not ISP-specific                                                       |
-| `proxy.igmpVersion`     | 2 or 3                                   | per-interface compatibility evidence, subject to proxy capabilities           |
-| `proxy.quickLeave`      | local                                    | no (multiple boxes)                                                           |
-| `proxy.debug`           | local                                    | no                                                                            |
-| `proxy.sourceRanges`    | igmpproxy `altnet`                       | exact observed/advertised sources; wider ranges require justification         |
-| `profile`               | catalog ID                               | fingerprint after measurement                                                 |
-| PCP 5 (KPN fiber)       | 802.1p                                   | absent from config, present in the KPN specification                          |
+| Field                 | Role                                     | Can it be measured?                                                           |
+| --------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
+| `wan.interface`       | physical uplink                          | UDAPI parent relationships plus kernel topology                               |
+| `wan.vlan`            | 802.1Q path                              | existing UDAPI/kernel VLAN state first; unresolved candidates may need trials |
+| `wan.vlanInterface`   | local name (`iptv`)                      | default, not ISP-specific                                                     |
+| `wan.vlanMAC`         | spoofed ISP box MAC                      | only if required by the ISP; cannot be guessed                                |
+| `wan.dhcp`            | lease vs static                          | DHCPACK or existing lease evidence; timeout leaves mode unknown               |
+| `wan.dhcpOptions`     | udhcpc (`-O staticroutes`, `-V IPTV_RG`) | existing client configuration first; distinguish sent options from responses  |
+| `wan.dhcpRoutes`      | default route via the IPTV path          | policy decision informed by advertised routes and existing connectivity       |
+| `wan.staticAddress`   | static address                           | requires confirmed static configuration; an assigned address is insufficient  |
+| `wan.natDestinations` | MASQUERADE `-d`                          | route candidates from option 121; NAT need requires separate evidence         |
+| `wan.staticRoutes`    | additional unicast routes                | yes, same lease                                                               |
+| `lan.interfaces`      | where the TV is connected                | yes, `br*` + IGMP joins                                                       |
+| `proxy.program`       | improxy / igmpproxy                      | local, not ISP-specific                                                       |
+| `proxy.igmpVersion`   | 2 or 3                                   | per-interface compatibility evidence, subject to proxy capabilities           |
+| `proxy.quickLeave`    | local                                    | no (multiple boxes)                                                           |
+| `proxy.debug`         | local                                    | no                                                                            |
+| `proxy.sourceRanges`  | igmpproxy `altnet`                       | exact observed/advertised sources; wider ranges require justification         |
+| `profile`             | catalog ID                               | fingerprint after measurement                                                 |
+| PCP 5 (KPN fiber)     | 802.1p                                   | absent from config, present in the KPN specification                          |
 
 ---
 
@@ -95,7 +95,7 @@ Initial trial timeout ~30s per combination; timeouts are inconclusive. Do not ru
 
 Preserve existing addresses, DHCP clients, routes, policy rules, DNS, and interfaces. Clean up only trial-owned state on success, failure, cancellation, and timeout; retain a successful result as evidence for a later explicit apply step. Never install a trial default route into live routing, whether advertised in option 3 or option 121, and prevent more-specific trial routes from redirecting existing traffic.
 
-Implementation prerequisite: `internal/network/network.go` currently processes `lease.StaticRoutes` before checking `allowDefaultRoute`. An option-121 default therefore bypasses that setting. Correct and test this behavior before active discovery; the existing lease hook must not be reused as trial isolation.
+Implementation prerequisite: `wan.dhcpRoutes` decides whether a lease may install a default route, independently of the option that advertised it. `no-default` installs the advertised RFC3442 routes but drops a `0.0.0.0/0` among them and adds no Router-option default; `allow-default` installs a default route from either option; `none` reproduces udm-iptvd's `NO_GATEWAY`, which suppressed the specific routes too. Discovery must never install a trial route into live routing whichever policy applies, and the existing lease hook must not be reused as trial isolation.
 
 Current catalog VLAN IDs: `0, 4, 20, 35, 4000`.
 

@@ -9,7 +9,7 @@ import (
 
 var (
 	macPattern = regexp.MustCompile(`(?i)(?:\b[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b|\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b`)
-	ipPattern  = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b|\b[0-9a-fA-F:]{2,}%?[0-9A-Za-z_.-]*\b`)
+	ipPattern  = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b|::[0-9a-fA-F.:]*%?[0-9A-Za-z_.-]*|\b[0-9a-fA-F:]{2,}%?[0-9A-Za-z_.-]*\b`)
 )
 
 // Sanitize redacts MAC addresses from diagnostic text.
