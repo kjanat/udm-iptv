@@ -30,24 +30,23 @@ func (application *Application) installCommand() *cobra.Command {
 			return config.ImportFirstLegacy(legacyCandidates(application.StateDir))
 		},
 		defaults: device.Defaults, prompt: application.configureForm,
-		suggest:    application.suggestProvider,
-		executable: os.Executable, requireRoot: requireRoot,
+		promptFresh: application.configureFreshForm,
+		executable:  os.Executable, requireRoot: requireRoot,
 		backend: application.installBackend(),
 	})
 }
 
-// promptForInstall suggests a provider profile for a fresh install, warns
-// about a dry run, then prompts for the remaining configuration.
+// promptForInstall warns about a dry run, then prompts for the configuration.
+// A fresh install asks the reporting question before anything is looked up. A
+// dry run looks nothing up, because it saves and applies nothing.
 func promptForInstall(ctx context.Context, deps installDependencies, out io.Writer, value *config.Config, fresh, dryRun bool) error {
-	if fresh && !dryRun && deps.suggest != nil {
-		if err := deps.suggest(ctx, *value); err != nil {
-			return err
-		}
-	}
 	if dryRun {
 		if err := writeString(out, "Preview: nothing will be saved or applied.\n"); err != nil {
 			return err
 		}
+	}
+	if fresh && !dryRun && deps.promptFresh != nil {
+		return deps.promptFresh(ctx, value)
 	}
 
 	return deps.prompt(ctx, value)
@@ -104,7 +103,7 @@ type installDependencies struct {
 	legacy      func() (config.Config, bool, error)
 	defaults    func() config.Config
 	prompt      func(context.Context, *config.Config) error
-	suggest     func(context.Context, config.Config) error
+	promptFresh func(context.Context, *config.Config) error
 	executable  func() (string, error)
 	requireRoot func() error
 	backend     installer.Backend

@@ -45,6 +45,17 @@ func runWizard(session *ui.Session) ui.RunForm {
 }
 
 func (application *Application) configureForm(ctx context.Context, value *config.Config) error {
+	return application.runConfigureForm(ctx, value, nil)
+}
+
+// configureFreshForm asks the reporting question first and only then looks the
+// provider up, so a fresh installation never discloses anything before the
+// user has answered.
+func (application *Application) configureFreshForm(ctx context.Context, value *config.Config) error {
+	return application.runConfigureForm(ctx, value, application.suggestProvider)
+}
+
+func (application *Application) runConfigureForm(ctx context.Context, value *config.Config, discover ui.Discover) error {
 	catalog := config.DefaultCatalog()
 	for i := range catalog.Profiles {
 		catalog.Profiles[i].Config = device.WithInterfaces(catalog.Profiles[i].Config)
@@ -55,7 +66,13 @@ func (application *Application) configureForm(ctx context.Context, value *config
 	})
 	defer session.Close()
 
-	if err := ui.ConfigureSuggested(ctx, value, catalog, runWizard(session), application.providerSuggestion, detectedPorts()...); err != nil {
+	var err error
+	if discover == nil {
+		err = ui.ConfigureSuggested(ctx, value, catalog, runWizard(session), application.providerSuggestion, detectedPorts()...)
+	} else {
+		err = ui.ConfigureFresh(ctx, value, catalog, runWizard(session), discover, detectedPorts()...)
+	}
+	if err != nil {
 		return fmt.Errorf("collect the configuration: %w", err)
 	}
 
@@ -64,25 +81,26 @@ func (application *Application) configureForm(ctx context.Context, value *config
 
 // Suggestions never replace saved/imported settings or explicit --profile values.
 // Failed or disabled discovery leaves the ordinary provider selector untouched.
-func (application *Application) suggestProvider(ctx context.Context, value config.Config) error {
+// settings are the answers the user has just given, never the defaults.
+func (application *Application) suggestProvider(ctx context.Context, settings config.Telemetry) (string, error) {
 	application.providerSuggestion = ""
-	if application.networkIdentity == nil || !value.Telemetry.Enabled || !value.Telemetry.NetworkIdentity {
-		return nil
+	if application.networkIdentity == nil || !settings.Enabled || !settings.NetworkIdentity {
+		return "", nil
 	}
 	err := writeString(application.Err, "Checking provider using ipify and reverse DNS…\n")
 	if err != nil {
-		return err
+		return "", err
 	}
 	identity := application.networkIdentity(ctx)
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("look up the provider: %w", err)
+		return "", fmt.Errorf("look up the provider: %w", err)
 	}
 	application.providerSuggestion = suggestedProvider(identity)
 	if application.providerSuggestion == "" {
-		return writeString(application.Err, "Provider unknown. Choose manually.\n")
+		return "", writeString(application.Err, "Provider unknown. Choose manually.\n")
 	}
 
-	return writef(application.Err, "Suggested: %s (PTR hint, unverified). Confirm your TV provider.\n", application.providerSuggestion)
+	return application.providerSuggestion, writef(application.Err, "Suggested: %s (PTR hint, unverified). Confirm your TV provider.\n", application.providerSuggestion)
 }
 
 func suggestedProvider(identity telemetry.NetworkIdentity) string {

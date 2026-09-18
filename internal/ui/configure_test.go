@@ -372,7 +372,7 @@ func TestHelpOverlayExplainsFocusedQuestion(t *testing.T) {
 func TestEnterOnManualNetworkEntryOpensPicker(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, selectedPort, selectedLAN := configurationGroups(&value, []Port{{Name: "br0", AddressesKnown: true}, {Name: "eth9", AddressesKnown: true}}, "", &fields)
+	groups, selectedPort, selectedLAN := configurationGroups(&value, []Port{{Name: "br0", AddressesKnown: true}, {Name: "eth9", AddressesKnown: true}}, "", &fields, true)
 	*selectedPort = "eth8"
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.Init()
@@ -404,7 +404,7 @@ func TestEnterOnManualNetworkEntryOpensPicker(t *testing.T) {
 func TestCtrlCAsksBeforeLeaving(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _ := configurationGroups(&value, nil, "", &fields)
+	groups, _, _ := configurationGroups(&value, nil, "", &fields, true)
 	var events []string
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.observer = func(event Event, question string) { events = append(events, string(event)+":"+question) }
@@ -440,7 +440,7 @@ func TestCtrlCAsksBeforeLeaving(t *testing.T) {
 func TestEscapeLeavesUnlessFiltering(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}, {Name: "eth9"}}, "", &fields)
+	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}, {Name: "eth9"}}, "", &fields, true)
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -469,7 +469,7 @@ func TestEscapeLeavesUnlessFiltering(t *testing.T) {
 func TestCloseButtonAndPopupButtonsAreClickable(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _ := configurationGroups(&value, nil, "", &fields)
+	groups, _, _ := configurationGroups(&value, nil, "", &fields, true)
 	frame := NewFrame(wizardForm(groups...), "Preview")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -512,7 +512,7 @@ func TestFrameScalesWithTerminal(t *testing.T) {
 	}
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _ := configurationGroups(&value, nil, "", &fields)
+	groups, _, _ := configurationGroups(&value, nil, "", &fields, true)
 	frame := NewFrame(wizardForm(groups...), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 300, Height: 80})
@@ -570,5 +570,66 @@ func TestVLANFieldAcceptsDigitsOnly(t *testing.T) {
 	}
 	if _, cmd := frame.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil {
 		t.Fatal("enter dropped on the VLAN field")
+	}
+}
+
+// A default-enabled setting must not authorise the first lookup on its own, so
+// ConfigureFresh asks the reporting question before it calls discover, and
+// hands discover the answer rather than the defaults.
+func TestConfigureFreshAsksBeforeItLooksUp(t *testing.T) {
+	t.Parallel()
+	value := config.Default()
+	if !value.Telemetry.Enabled || !value.Telemetry.NetworkIdentity {
+		t.Fatal("defaults no longer enable reporting, so this asserts nothing")
+	}
+	var order []string
+	var answered config.Telemetry
+	lookups := 0
+	discover := func(_ context.Context, settings config.Telemetry) (string, error) {
+		lookups++
+		answered = settings
+		order = append(order, "lookup")
+
+		return "kpn", nil
+	}
+	run := func(_ context.Context, wizard *Wizard) error {
+		order = append(order, focusedKey(wizard.Form))
+
+		return nil
+	}
+	if err := ConfigureFresh(t.Context(), &value, config.DefaultCatalog(), run, discover); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) < 2 || order[0] != "telemetry" || order[1] != "lookup" {
+		t.Fatalf("lookup did not follow the reporting question: %v", order)
+	}
+	if lookups != 1 {
+		t.Fatalf("discover called %d times", lookups)
+	}
+	if answered != value.Telemetry {
+		t.Fatalf("discover saw %+v, the wizard saved %+v", answered, value.Telemetry)
+	}
+	if slices.Contains(order[2:], "telemetry") {
+		t.Fatalf("the reporting question was asked twice: %v", order)
+	}
+}
+
+// A fresh wizard has already asked about reporting, so the settings pages must
+// not ask again; a saved configuration is edited with the question in place.
+func TestSettingsPagesAskReportingOnlyWhenNotAlreadyAnswered(t *testing.T) {
+	t.Parallel()
+	value := config.DefaultKPN()
+	fields := newFormValues(value)
+	for askConsent, want := range map[bool]bool{true: true, false: false} {
+		groups, _, _ := configurationGroups(&value, nil, "", &fields, askConsent)
+		found := false
+		for _, group := range groups {
+			if group.contains("telemetry") {
+				found = true
+			}
+		}
+		if found != want {
+			t.Fatalf("askConsent=%t produced the reporting question: %t", askConsent, found)
+		}
 	}
 }

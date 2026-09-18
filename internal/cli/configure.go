@@ -213,13 +213,12 @@ func (application *Application) configureCommand() *cobra.Command {
 	return command
 }
 
-// askForConfiguration opens the wizard, preceded by provider detection when
-// nothing is configured yet and the user named no profile.
+// askForConfiguration opens the wizard. A fresh configuration asks the
+// reporting question first and looks the provider up from the answer, so an
+// explicitly named profile needs no lookup at all.
 func (application *Application) askForConfiguration(command *cobra.Command, value *config.Config, fresh bool) error {
 	if fresh && !command.Flags().Changed("profile") {
-		if err := application.suggestProvider(command.Context(), *value); err != nil {
-			return err
-		}
+		return application.configureFreshForm(command.Context(), value)
 	}
 
 	return application.configureForm(command.Context(), value)

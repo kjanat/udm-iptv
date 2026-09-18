@@ -78,7 +78,7 @@ type installDependenciesBuilder struct {
 	legacyErr    error
 	defaults     func() config.Config
 	prompt       func(context.Context, *config.Config) error
-	suggest      func(context.Context, config.Config) error
+	promptFresh  func(context.Context, *config.Config) error
 	executable   string
 	requireRoot  func() error
 	backend      installer.Backend
@@ -105,7 +105,7 @@ func (b installDependenciesBuilder) build() installDependencies {
 		},
 		defaults:    b.defaults,
 		prompt:      b.prompt,
-		suggest:     b.suggest,
+		promptFresh: b.promptFresh,
 		executable:  func() (string, error) { return b.executable, nil },
 		requireRoot: b.requireRoot,
 		backend:     b.backend,
@@ -154,7 +154,7 @@ func runInstallPreviewCase(t *testing.T, testCase installPreviewCase) {
 
 			return nil
 		},
-		suggest: func(context.Context, config.Config) error {
+		promptFresh: func(context.Context, *config.Config) error {
 			t.Fatal("dry-run called external detection")
 
 			return nil
