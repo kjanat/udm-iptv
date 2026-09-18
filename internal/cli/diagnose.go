@@ -37,7 +37,7 @@ const (
 
 var (
 	captureFormats     = []string{formatText, formatJSONL, formatBoth}
-	captureVerbosities = []string{"summary", "normal", "debug"}
+	captureVerbosities = []string{"summary", "normal", flagDebug}
 )
 
 var (
@@ -147,7 +147,7 @@ func checkDiagnoseOptions(command *cobra.Command, options diagnostics.Options) e
 func (application *Application) diagnoseCommand() *cobra.Command {
 	options := diagnostics.Options{Format: formatText, Verbosity: "normal"}
 	command := &cobra.Command{
-		Use: "diagnose", Short: "Collect privacy-conscious IPTV diagnostics", Args: cobra.NoArgs,
+		Use: "diagnose", Short: "Collect IPTV diagnostics", Args: cobra.NoArgs,
 		PreRunE: func(command *cobra.Command, _ []string) error {
 			return checkDiagnoseOptions(command, options)
 		},
@@ -169,7 +169,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 	flags.BoolVar(&options.Follow, "follow", false, "follow the capture in an interactive terminal view")
 	flags.StringVar(&options.FollowFile, "follow-file", "", "follow an existing text capture")
 	_ = flags.MarkHidden("follow-file")
-	_ = command.RegisterFlagCompletionFunc("format", completeValues("text\tshare-ready report", "jsonl\tstructured events", "both\tcapture formats"))
+	_ = command.RegisterFlagCompletionFunc("format", completeValues("text\treadable report", "jsonl\tstructured events", "both\tcapture formats"))
 	_ = command.RegisterFlagCompletionFunc("verbosity", completeValues("summary\tsample every 2 minutes", "normal\tsample every 15 seconds", "debug\tsample every 5 seconds"))
 
 	return command
@@ -204,15 +204,20 @@ func wantsText(format string) bool { return format == formatText || format == fo
 
 func wantsJSON(format string) bool { return format == formatJSONL || format == formatBoth }
 
+// captureFollowPath prefers the structured file, which the viewer turns
+// into a status area and a timeline; a text capture is shown as is.
 func captureFollowPath(options diagnostics.Options) string {
-	if options.TextPath != "" {
-		return options.TextPath
+	if options.JSONPath != "" {
+		return options.JSONPath
 	}
 
-	return options.JSONPath
+	return options.TextPath
 }
 
 func (application *Application) startCapture(ctx context.Context, options diagnostics.Options) error {
+	if options.Follow && !wantsJSON(options.Format) {
+		options.Format = formatBoth
+	}
 	options, directory, err := application.prepareCaptureFiles(options)
 	if err != nil {
 		return err
@@ -324,7 +329,7 @@ func (application *Application) reportCaptureStarted(options diagnostics.Options
 		fmt.Sprintf("Expected completion: %s (%s from now).\n", completion.Format(time.RFC3339), options.Capture.Round(time.Second)),
 	}
 	if options.TextPath != "" {
-		lines = append(lines, fmt.Sprintf("Share-ready text: %s\n", options.TextPath))
+		lines = append(lines, fmt.Sprintf("Text: %s\n", options.TextPath))
 	}
 	if options.JSONPath != "" {
 		lines = append(lines, fmt.Sprintf("Structured JSON Lines: %s\n", options.JSONPath))

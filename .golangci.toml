@@ -26,6 +26,7 @@ enable  = [
   "fatcontext",
   "gocheckcompilerdirectives",
   "gocritic",
+  "govet",
   "makezero",
   "mnd",
   "musttag",
@@ -36,8 +37,9 @@ enable  = [
   "nolintlint",
   "nonamedreturns",
   "revive",
+  "staticcheck",
   "unparam",
-  "wrapcheck",
+  "wrapcheck"
 ]
 # tombi: format.rules.array-values-order = "ascending"
 disable = [
@@ -52,7 +54,6 @@ disable = [
   "nlreturn",
   "noinlineerr",
   "paralleltest",
-  "tagliatelle",
   "testpackage",
   "tparallel",
   "varnamelen",
@@ -89,26 +90,7 @@ forbid = [                                                                      
 ]
 
 [linters.settings.goconst]
-ignore-string-values = [
-  "build",
-  "completed",
-  "custom",
-  "daemon",
-  "exec",
-  "firmware",
-  "freedom",
-  "igmpproxy",
-  "image",
-  "improxy",
-  "kpn",
-  "log",
-  "publish",
-  "timeout",
-  "tweak",
-  "unknown",
-  "xs4all",
-]
-ignore-tests         = true
+ignore-tests = true
 
 [linters.settings.gosec]
 # udm-iptv is a local CLI/daemon administered by its own operator: file
@@ -128,6 +110,32 @@ checks = ["all"]
 allow-unused        = false
 require-explanation = true
 require-specific    = true
+
+[linters.settings.tagliatelle.case]
+use-field-name = false
+ignored-fields = ["Schema", "Group"]
+
+[linters.settings.tagliatelle.case.extended-rules.json]
+case                 = "goCamel"
+extra-initialisms    = true
+initialism-overrides = { MAC = true, PID = true }
+
+[[linters.settings.tagliatelle.case.overrides]]
+pkg            = "internal/telemetry"
+use-field-name = false
+
+[linters.settings.tagliatelle.case.overrides.extended-rules.json]
+case = "snake"
+
+[[linters.settings.tagliatelle.case.overrides]]
+pkg            = "internal/firmware"
+use-field-name = false
+ignored-fields = ["SHA256", "Links", "Embedded"]
+
+[[linters.settings.tagliatelle.case.overrides]]
+pkg            = "internal/installer"
+use-field-name = false
+ignored-fields = ["BundleURL"]
 
 [linters.exclusions]  # tombi: format.rules.table-keys-order = "ascending"
 generated   = "strict"

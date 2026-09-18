@@ -44,18 +44,18 @@ func runWizard(session *ui.Session) ui.RunForm {
 	}
 }
 
-func (application *Application) configureForm(ctx context.Context, value *config.Config) error {
-	return application.runConfigureForm(ctx, value, nil)
+func (application *Application) configureForm(ctx context.Context, value *config.Config, answered ui.Answered) error {
+	return application.runConfigureForm(ctx, value, nil, answered)
 }
 
 // configureFreshForm asks the reporting question first and only then looks the
 // provider up, so a fresh installation never discloses anything before the
 // user has answered.
-func (application *Application) configureFreshForm(ctx context.Context, value *config.Config) error {
-	return application.runConfigureForm(ctx, value, application.suggestProvider)
+func (application *Application) configureFreshForm(ctx context.Context, value *config.Config, answered ui.Answered) error {
+	return application.runConfigureForm(ctx, value, application.suggestProvider, answered)
 }
 
-func (application *Application) runConfigureForm(ctx context.Context, value *config.Config, discover ui.Discover) error {
+func (application *Application) runConfigureForm(ctx context.Context, value *config.Config, discover ui.Discover, answered ui.Answered) error {
 	catalog := config.DefaultCatalog()
 	for i := range catalog.Profiles {
 		catalog.Profiles[i].Config = device.WithInterfaces(catalog.Profiles[i].Config)
@@ -68,9 +68,9 @@ func (application *Application) runConfigureForm(ctx context.Context, value *con
 
 	var err error
 	if discover == nil {
-		err = ui.ConfigureSuggested(ctx, value, catalog, runWizard(session), application.providerSuggestion, detectedPorts()...)
+		err = ui.ConfigureSuggested(ctx, value, catalog, runWizard(session), application.providerSuggestion, answered, detectedPorts()...)
 	} else {
-		err = ui.ConfigureFresh(ctx, value, catalog, runWizard(session), discover, detectedPorts()...)
+		err = ui.ConfigureFresh(ctx, value, catalog, runWizard(session), discover, answered, detectedPorts()...)
 	}
 	if err != nil {
 		return fmt.Errorf("collect the configuration: %w", err)
@@ -142,7 +142,7 @@ func (application *Application) previewCommandWith(prompt func(context.Context, 
 	var profile string
 	command := &cobra.Command{
 		Use:   "preview",
-		Short: "Try the configuration wizard using example data; discard all changes",
+		Short: "Try the configuration wizard using example data",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			value, err := config.FromProfile(profile, config.Default())
@@ -160,7 +160,7 @@ func (application *Application) previewCommandWith(prompt func(context.Context, 
 			return writef(application.Out, "%s\n", data)
 		},
 	}
-	command.Flags().StringVar(&profile, "profile", "kpn", "provider profile for the example configuration")
+	command.Flags().StringVar(&profile, "profile", config.ProfileKPN, "provider profile for the example configuration")
 
 	return command
 }

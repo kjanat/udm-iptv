@@ -25,8 +25,8 @@ const (
 	DefaultKPNVLAN = 4
 	// DefaultIGMPVersion picks IGMPv3, which works for most current receivers.
 	DefaultIGMPVersion = 3
-	// DefaultTraceRate samples one in ten operations for tracing.
-	DefaultTraceRate = 0.1
+	// DefaultTraceRate traces every operation; the per-minute limit bounds volume.
+	DefaultTraceRate = 1
 	// hostPrefixBits is the /32 prefix length for a single IPv4 host address.
 	hostPrefixBits = 32
 )
@@ -70,8 +70,7 @@ type configJSON struct {
 	Telemetry json.RawMessage `json:"telemetry"`
 }
 
-// UnmarshalJSON accepts the allowDefaultRoute boolean that installations
-// written before dhcpRoutes still carry on disk.
+// UnmarshalJSON also accepts a saved allowDefaultRoute boolean.
 func (value *WAN) UnmarshalJSON(data []byte) error {
 	type plain WAN
 	legacy := struct {
@@ -162,9 +161,7 @@ const (
 	// RoutesAllowDefault also installs a default route, whether the lease
 	// advertises it through RFC3442 or through the Router option.
 	RoutesAllowDefault RoutePolicy = "allow-default"
-	// RoutesNone installs no route from a lease at all. udm-iptvd's NO_GATEWAY
-	// returned before it read either option, so it suppressed the specific
-	// routes too.
+	// RoutesNone installs no route from a lease at all.
 	RoutesNone RoutePolicy = "none"
 )
 
@@ -203,7 +200,7 @@ func genericBase() Config {
 	return Config{
 		WAN:       WAN{Interface: "eth8", VLANInterface: "iptv", DHCPRoutes: RoutesNoDefault},
 		LAN:       LAN{Interfaces: []string{"br0"}},
-		Proxy:     Proxy{Program: "improxy", IGMPVersion: DefaultIGMPVersion},
+		Proxy:     Proxy{Program: ProxyImproxy, IGMPVersion: DefaultIGMPVersion},
 		Telemetry: defaultTelemetry(),
 	}
 }
@@ -217,7 +214,7 @@ func defaultTelemetry() Telemetry {
 // wherever the caller wants the shared defaults rather than a market.
 func Default() Config {
 	value := genericBase()
-	value.Profile = profileCustom
+	value.Profile = ProfileCustom
 
 	return value
 }
@@ -226,7 +223,7 @@ func Default() Config {
 // primary market, so it seeds a fresh installation before the wizard runs.
 // Callers that only want the shared defaults want Default instead.
 func DefaultKPN() Config {
-	kpn, _ := embedded().Profile("kpn")
+	kpn, _ := embedded().Profile(ProfileKPN)
 
 	return kpn.Config
 }
@@ -323,10 +320,10 @@ func validateLANPresence(value Config) error {
 // Only igmpproxy filters by source, through altnet. improxy has no equivalent
 // and ignores SourceRanges entirely, so it is the one backend that needs none.
 func validateProxy(value Config) error {
-	if value.Proxy.Program != "improxy" && value.Proxy.Program != "igmpproxy" {
+	if value.Proxy.Program != ProxyImproxy && value.Proxy.Program != ProxyIgmpproxy {
 		return errProxyProgram
 	}
-	if value.Proxy.Program == "igmpproxy" && len(value.Proxy.SourceRanges) == 0 {
+	if value.Proxy.Program == ProxyIgmpproxy && len(value.Proxy.SourceRanges) == 0 {
 		return errMissingProxySources
 	}
 	for _, prefix := range value.Proxy.SourceRanges {
@@ -432,29 +429,17 @@ func ValidateInterfaceName(name string) error {
 	return nil
 }
 
-// Defaults the shell daemon applied to a variable the configuration file did
-// not set. Its parameter expansions all use ${VAR:-…}, so an empty assignment
-// and a missing line mean the same thing. Line numbers refer to udm-iptvd in
-// the shell implementation.
+// A legacy file's ${VAR:-…} expansions treat an empty assignment and a
+// missing line alike, so these apply to both.
 const (
-	// udm-iptvd:18 defaulted the VLAN to 0, meaning untagged IPTV.
-	legacyVLAN = 0
-	// udm-iptvd:12 defaulted the VLAN interface name.
+	legacyVLAN          = 0
 	legacyVLANInterface = "iptv"
-	// udm-iptvd:24 and :185 selected igmpproxy for anything but "improxy".
-	legacyProxyProgram = "igmpproxy"
-	// udm-iptvd:154 emitted IGMPv3 only for a literal 3, IGMPv2 otherwise.
-	legacyIGMPVersion = 2
+	legacyProxyProgram  = ProxyIgmpproxy
+	legacyIGMPVersion   = 2
 )
 
-// legacyDHCPOptions is the udhcpc argument list udm-iptvd:13 hardcoded.
 var legacyDHCPOptions = []string{"-O", "staticroutes", "-V", "IPTV_RG"}
 
-// legacyBase is what the shell daemon ran with when the configuration file
-// set nothing. Where the shell's own fallback was an empty string that could
-// not run at all, this keeps the value the packaging offered: udm-iptvd:17
-// left the WAN interface empty, which fails on ip link, and :22 left the
-// downstream list empty, which disables every downstream.
 func legacyBase() Config {
 	value := genericBase()
 	value.Profile = profileLegacy
@@ -466,10 +451,8 @@ func legacyBase() Config {
 	return value
 }
 
-// applyLegacyWAN reproduces udm-iptvd's uplink behaviour. udhcpc only ever
-// ran inside the VLAN branch at :46, so an untagged installation performed no
-// DHCP whatever the variable said, and :80 applied the static address only
-// when DHCP was disabled by name.
+// A legacy file runs DHCP only on a tagged uplink, and applies its static
+// address only when DHCP is disabled by name.
 func applyLegacyWAN(value *Config, values map[string]string) {
 	value.WAN.Interface = fallback(values["IPTV_WAN_INTERFACE"], value.WAN.Interface)
 	if vlan, err := strconv.Atoi(values["IPTV_WAN_VLAN"]); err == nil {
@@ -491,12 +474,10 @@ func applyLegacyWAN(value *Config, values map[string]string) {
 	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], "br0"))
 }
 
-// applyLegacyProxy reproduces udm-iptvd's proxy selection. Quickleave was
-// asymmetric: :129 enabled it for igmpproxy unless the variable said false,
-// while :162 enabled it for improxy only when the variable said false.
+// A legacy file's quickleave defaults on for igmpproxy and off for improxy.
 func applyLegacyProxy(value *Config, values map[string]string) {
 	value.Proxy.Program = fallback(values["IPTV_IGMPPROXY_PROGRAM"], legacyProxyProgram)
-	if value.Proxy.Program != "improxy" {
+	if value.Proxy.Program != ProxyImproxy {
 		value.Proxy.Program = legacyProxyProgram
 	}
 	value.Proxy.IGMPVersion = legacyIGMPVersion
@@ -522,9 +503,7 @@ func ImportLegacy(path string) (Config, error) {
 	applyLegacyWAN(&value, values)
 	applyLegacyProxy(&value, values)
 	legacyLANSources := normalizeLegacyPrefixes(strings.Fields(values["IPTV_LAN_RANGES"]))
-	// Preserve old igmpproxy semantics during migration; new configurations keep
-	// source allowlists separate from NAT destinations.
-	if value.Proxy.Program == "igmpproxy" {
+	if value.Proxy.Program == ProxyIgmpproxy {
 		value.Proxy.SourceRanges = mergePrefixes(value.WAN.NATDestinations, legacyLANSources)
 	}
 	if profile, found := InferLegacyProfile(value); found {
@@ -562,8 +541,6 @@ func legacyKey(key string) bool {
 	return strings.HasPrefix(key, "IPTV_") || key == "NO_GATEWAY"
 }
 
-// udm-iptvd's hook returned before it read option 121 or the Router option, so
-// a listed interface installed no route at all.
 func legacyRoutePolicy(value Config, noGateway string) RoutePolicy {
 	switch {
 	case legacyGatewayOptOut(value, noGateway):
@@ -575,16 +552,14 @@ func legacyRoutePolicy(value Config, noGateway string) RoutePolicy {
 	}
 }
 
-// udhcpc ran on the VLAN when tagging was enabled, so the legacy hook saw that
-// name rather than the physical uplink. Either spelling opts out.
+// NO_GATEWAY names either the physical uplink or the VLAN interface.
 func legacyGatewayOptOut(value Config, noGateway string) bool {
 	names := strings.Fields(noGateway)
 
 	return slices.Contains(names, value.WAN.Interface) || slices.Contains(names, value.Target())
 }
 
-// Legacy configuration was sourced by /bin/sh, where single quotes suppress
-// every expansion and escape.
+// /bin/sh keeps a single-quoted value literal, escapes included.
 func decodeLegacyValue(key, raw string) (string, error) {
 	if quotedLegacyValue(raw, '\'') {
 		return raw[1 : len(raw)-1], nil

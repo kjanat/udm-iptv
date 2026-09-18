@@ -76,8 +76,8 @@ func TestInspectSwitchSeparatesUnavailableFromEmpty(t *testing.T) {
 func TestFormatReceiversSeparatesUnavailableFromZero(t *testing.T) {
 	t.Parallel()
 	none := 0
-	usage := multicastInfo{Routes: 5, Packets: 20173}
-	idle := multicastInfo{}
+	usage := MulticastInfo{Routes: 5, Packets: 20173}
+	idle := MulticastInfo{}
 	if got := formatReceivers(&usage, &none); got != "5 multicast routes (20173 packets), 0 IGMP groups on LAN" {
 		t.Fatal(got)
 	}

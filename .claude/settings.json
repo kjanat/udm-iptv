@@ -1,18 +1,18 @@
 {
-	"permissions": {
-		"allow": [
-			"Bash(dprint *)",
-			"Bash(go build *)",
-			"Bash(go run *)",
-			"Bash(go test *)",
-			"Bash(go vet *)",
-			"Bash(golangci-lint *)",
-			"Bash(tombi *)"
-		],
-		"deny": [
-			"Bash(gofmt *)",
-			"Bash(gofumpt *)",
-			"Bash(prettier *)"
-		]
-	}
+  "permissions": {
+    "allow": [
+      "Bash(dprint *)",
+      "Bash(go build *)",
+      "Bash(go run *)",
+      "Bash(go test *)",
+      "Bash(go vet *)",
+      "Bash(golangci-lint *)",
+      "Bash(tombi *)"
+    ],
+    "deny": [
+      "Bash(gofmt *)",
+      "Bash(gofumpt *)",
+      "Bash(prettier *)"
+    ]
+  }
 }

@@ -597,7 +597,7 @@ func TestConfigureFreshAsksBeforeItLooksUp(t *testing.T) {
 
 		return nil
 	}
-	if err := ConfigureFresh(t.Context(), &value, config.DefaultCatalog(), run, discover); err != nil {
+	if err := ConfigureFresh(t.Context(), &value, config.DefaultCatalog(), run, discover, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(order) < 2 || order[0] != "telemetry" || order[1] != "lookup" {
@@ -630,6 +630,65 @@ func TestSettingsPagesAskReportingOnlyWhenNotAlreadyAnswered(t *testing.T) {
 		}
 		if found != want {
 			t.Fatalf("askConsent=%t produced the reporting question: %t", askConsent, found)
+		}
+	}
+}
+
+func visibleKeys(wizard *Wizard) []string {
+	var visible []string
+	for _, p := range wizard.pages {
+		if p.visible() {
+			visible = append(visible, p.keys...)
+		}
+	}
+
+	return visible
+}
+
+func runAnswered(t *testing.T, value *config.Config, answered Answered) [][]string {
+	t.Helper()
+	var forms [][]string
+	run := func(_ context.Context, wizard *Wizard) error {
+		forms = append(forms, visibleKeys(wizard))
+
+		return nil
+	}
+	if err := ConfigureSuggested(t.Context(), value, config.DefaultCatalog(), run, "", answered); err != nil {
+		t.Fatal(err)
+	}
+
+	return forms
+}
+
+var settingsAnswered = Answered{"profile", "wan-port", "vlan", "dhcp", "vlan-interface", "vlan-mac", "dhcp-options", "dhcp-routes", "lan", "nat", "proxy", "igmp", "quickleave", "debug"}
+
+func TestAnsweredFieldsSkipTheirPages(t *testing.T) {
+	t.Parallel()
+	value := config.DefaultKPN()
+	forms := runAnswered(t, &value, settingsAnswered)
+	if len(forms) != 2 || !slices.Equal(forms[0], []string{"telemetry"}) || !slices.Equal(forms[1], []string{"accept"}) {
+		t.Fatalf("forms asked %q", forms)
+	}
+	if value.Profile != "kpn" || value.WAN.VLAN != config.DefaultKPNVLAN {
+		t.Fatalf("draft changed: %+v", value)
+	}
+}
+
+func TestAnsweredConsentSkipsTheSettingsFormEntirely(t *testing.T) {
+	t.Parallel()
+	value := config.DefaultKPN()
+	forms := runAnswered(t, &value, append(slices.Clone(settingsAnswered), "telemetry"))
+	if len(forms) != 1 || !slices.Equal(forms[0], []string{"accept"}) {
+		t.Fatalf("forms asked %q", forms)
+	}
+}
+
+func TestFieldKeysCoverTheForm(t *testing.T) {
+	t.Parallel()
+	keys := FieldKeys()
+	for _, want := range []string{"profile", "wan-port", "vlan", "dhcp", "lan", "nat", "proxy", "telemetry"} {
+		if !slices.Contains(keys, want) {
+			t.Errorf("FieldKeys lacks %q: %q", want, keys)
 		}
 	}
 }

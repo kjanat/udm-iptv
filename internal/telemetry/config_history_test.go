@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,32 @@ func researchReporter(t *testing.T) (*Reporter, *recordingTransport) {
 	t.Cleanup(r.Close)
 
 	return r, transport
+}
+
+func TestObservationCheckInNamesTheInstallation(t *testing.T) {
+	r, transport := researchReporter(t)
+	if err := r.RecordObservation(context.Background(), Observation{Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	r.ObservationCheckIn(true)
+	r.ObservationCheckIn(false)
+	r.client.Flush(time.Second)
+	var checkIns []*sentry.Event
+	for _, event := range transport.events {
+		if event.CheckIn != nil {
+			checkIns = append(checkIns, event)
+		}
+	}
+	assertEqual(t, "check-ins", len(checkIns), 2)
+	id := r.installationID()
+	assertEqual(t, "monitor", checkIns[0].CheckIn.MonitorSlug, "observation-"+id[:12])
+	assertEqual(t, "healthy status", checkIns[0].CheckIn.Status, sentry.CheckInStatusOK)
+	assertEqual(t, "unhealthy status", checkIns[1].CheckIn.Status, sentry.CheckInStatusError)
+	if checkIns[0].MonitorConfig == nil || checkIns[0].MonitorConfig.CheckInMargin != 15 || checkIns[0].MonitorConfig.FailureIssueThreshold != 2 {
+		t.Fatalf("monitor config = %+v", checkIns[0].MonitorConfig)
+	}
+	silent, _ := newRecordingReporter(t, testSettings())
+	silent.ObservationCheckIn(true)
 }
 
 func reportAt(t *testing.T, transport *recordingTransport, index int) researchReport {
@@ -111,7 +138,7 @@ func configurationHistorySteps() []historyStep {
 		},
 		{
 			name: "save without applying", mutate: func(value *config.Config) { value.Proxy.QuickLeave = true }, applied: false,
-			revision: 2, previousRevision: 1, appliedRevision: 1, changed: []string{"quickleave"},
+			revision: 2, previousRevision: 1, appliedRevision: 1, changed: []string{"proxy.quickLeave"},
 			appliedChange: timeSet, savedChangeOf: -1, appliedChangeOf: 1,
 		},
 		{
@@ -161,13 +188,26 @@ func TestResearchSavedVersusAppliedAndMeaningfulChanges(t *testing.T) {
 	assertEqual(t, "research history permissions", info.Mode().Perm(), os.FileMode(0o600))
 }
 
-func TestResearchPublicPrefixes(t *testing.T) {
-	value := config.Default()
-	value.WAN.NATDestinations = []string{"11.22.33.0/24", "11.22.33.44/32", "10.12.0.0/16", "192.0.0.0/8", "203.0.113.0/24"}
-	report := snapshot(value)
-	if !reflect.DeepEqual(report.NAT, []string{"11.22.33.0/24"}) || report.CustomNAT != 4 {
-		t.Fatal("prefix classification failed")
+func TestConfigurationReportCarriesTheWholeConfiguration(t *testing.T) {
+	r, transport := researchReporter(t)
+	value := networkChoiceConfig()
+	if err := r.RecordConfiguration(context.Background(), value, true, nil); err != nil {
+		t.Fatal(err)
 	}
+	report := reportAt(t, transport, 0)
+	if report.Settings == nil {
+		t.Fatal("configuration missing")
+	}
+	assertEqual(t, "interface", report.Settings.WAN.Interface, "private0")
+	assertEqual(t, "vlan mac", report.Settings.WAN.VLANMAC, "aa:bb:cc:dd:ee:ff")
+	assertEqual(t, "static address", report.Settings.WAN.StaticAddress, "192.168.199.7/24")
+	if !reflect.DeepEqual(report.Settings.WAN.DHCPOptions, []string{"-V", "private-token"}) {
+		t.Fatalf("dhcp options = %v", report.Settings.WAN.DHCPOptions)
+	}
+	if !slices.Contains(report.Settings.WAN.NATDestinations, "192.168.199.0/24") {
+		t.Fatalf("custom prefix dropped: %v", report.Settings.WAN.NATDestinations)
+	}
+	assertEqual(t, "telemetry preferences", report.Settings.Telemetry.Enabled, value.Telemetry.Enabled)
 }
 
 func TestResearchSeparateProcessAndLiveRevocation(t *testing.T) {
@@ -255,15 +295,14 @@ func runNetworkChoiceCase(t *testing.T, test networkChoiceCase) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertNoSecrets(t, string(data), "private0", "aa:bb", "private-token", "192.168.199", "11.22.33.44/32", "fingerprint")
+	assertNoSecrets(t, string(data), "fingerprint")
 	assertEqual(t, "lookup performed", called, test.network)
 	assertEqual(t, "PTR name in report", strings.Contains(string(data), "Customer.KPN.NET."), test.network)
 	report := reportAt(t, transport, 0)
-	assertEqual(t, "custom-prefix count", report.Settings.CustomNAT, 2)
 	assertNetworkIdentity(t, report.Network, test)
 }
 
-func TestResearchAllowlistAndNetworkChoice(t *testing.T) {
+func TestResearchNetworkChoice(t *testing.T) {
 	for _, test := range []networkChoiceCase{
 		{name: "off", network: false},
 		{name: "on", network: true, provider: "kpn", method: "ptr-suffix", confidence: "low"},

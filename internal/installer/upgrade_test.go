@@ -279,3 +279,14 @@ func TestDecompressBundleRejectsInflatedBlock(t *testing.T) {
 		t.Fatal("oversized block yielded a bundle")
 	}
 }
+
+func TestDownloadErrorsDropTheSignedQuery(t *testing.T) {
+	t.Parallel()
+	signed := "https://objects.githubusercontent.com/github-production-release-asset/1/udm-iptv?X-Amz-Signature=deadbeef&X-Amz-Expires=300#frag"
+	if got := displayURL(signed); got != "https://objects.githubusercontent.com/github-production-release-asset/1/udm-iptv" {
+		t.Fatal(got)
+	}
+	if got := displayURL("::bad"); got != "::bad" {
+		t.Fatal(got)
+	}
+}

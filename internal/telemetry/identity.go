@@ -24,6 +24,8 @@ type NetworkIdentity struct {
 	Status     string `json:"lookup_status"`
 }
 
+const unknown = "unknown"
+
 const (
 	ipLookupClientTimeout = 2 * time.Second
 	// ipLookupTimeout bounds the combined HTTPS and PTR lookup.
@@ -47,7 +49,10 @@ func (r *Reporter) networkEnabled() bool {
 // LookupNetwork performs no request until explicitly invoked by the application.
 // Both HTTPS discovery and DNS share a bounded deadline; no credentials are used.
 func LookupNetwork(parent context.Context) NetworkIdentity {
-	client := &http.Client{Timeout: ipLookupClientTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{
+		Timeout: ipLookupClientTimeout, Transport: HTTPTransport(http.DefaultTransport),
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 
 	return lookupNetwork(parent, client, "https://api.ipify.org", net.DefaultResolver.LookupAddr)
 }
@@ -107,23 +112,8 @@ func validPointerName(value string) bool {
 	return true
 }
 
-// PTR evidence is a low-confidence operator hint, never confirmation of a
-// retail subscription. Match DNS label boundaries, not arbitrary substrings.
-var providerSuffixes = map[string]string{"kpn.net": "kpn", "xs4all.nl": "xs4all", "freedom.nl": "freedom", "solcon.nl": "solcon", "tweak.nl": "tweak", "btcentralplus.com": "bt", "bluewin.ch": "swisscom", "init7.net": "init7"}
-
-func providerFromPointerName(value string) (string, bool) {
-	name := strings.ToLower(strings.TrimSuffix(value, "."))
-	for suffix, provider := range providerSuffixes {
-		if name == suffix || strings.HasSuffix(name, "."+suffix) {
-			return provider, true
-		}
-	}
-
-	return "", false
-}
-
 func cleanIdentity(value NetworkIdentity) NetworkIdentity {
-	result := NetworkIdentity{Provider: "unknown", Method: "none", Confidence: "unknown", Status: "unavailable"}
+	result := NetworkIdentity{Provider: unknown, Method: "none", Confidence: unknown, Status: "unavailable"}
 	address, err := netip.ParseAddr(value.IP)
 	if err != nil || !publicAddress(address) {
 		return result
@@ -133,8 +123,8 @@ func cleanIdentity(value NetworkIdentity) NetworkIdentity {
 		return result
 	}
 	result.PTR, result.Status = value.PTR, "ip-and-ptr"
-	if provider, ok := providerFromPointerName(value.PTR); ok {
-		result.Provider, result.Method, result.Confidence = provider, "ptr-suffix", "low"
+	if provider, ok := config.DefaultCatalog().ProviderByPointerName(value.PTR); ok {
+		result.Provider, result.Method, result.Confidence = provider.ID, "ptr-suffix", "low"
 	}
 
 	return result

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/kjanat/udm-iptv/internal/service"
+	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
 var (
@@ -21,14 +23,19 @@ var (
 
 func (application *Application) daemonCommand() *cobra.Command {
 	command := &cobra.Command{
-		Use: "daemon", Short: "Run the IPTV service", Hidden: true, Args: cobra.NoArgs,
-		RunE: application.reporting("daemon", func(command *cobra.Command, _ []string) error {
+		Use: telemetry.OperationDaemon, Short: "Run the IPTV service", Hidden: true, Args: cobra.NoArgs,
+		RunE: application.reporting(telemetry.OperationDaemon, func(command *cobra.Command, _ []string) error {
 			err := requireRoot()
 			if err != nil {
 				return err
 			}
 
-			return (&service.Daemon{ConfigPath: application.ConfigPath, StateDir: application.StateDir, Out: application.Out, Err: application.Err, Monitor: application.monitor}).Run(command.Context())
+			daemon := &service.Daemon{
+				ConfigPath: application.ConfigPath, StateDir: application.StateDir, Out: application.Out, Err: application.Err,
+				Monitor: application.monitor, Diagnostics: application.diagnosticsJSON,
+			}
+
+			return daemon.Run(command.Context())
 		}),
 	}
 
@@ -49,8 +56,10 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 				return fmt.Errorf("read the DHCP lease from the environment: %w", err)
 			}
 			switch arguments[0] {
-			case "deconfig", "bound", "renew":
-				return network.ApplyLease(lease, policy)
+			case "deconfig":
+				return errors.Join(network.ApplyLease(lease, policy), service.RemoveLeaseState())
+			case "bound", "renew":
+				return errors.Join(network.ApplyLease(lease, policy), service.WriteLeaseState(lease))
 			case "leasefail":
 				return errLeaseAcquisitionFailed
 			case "nak":
@@ -63,6 +72,20 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 	command.Flags().StringVar(&routes, "dhcp-routes", string(config.RoutesNoDefault), "route policy when the configuration is unreadable")
 
 	return command
+}
+
+// diagnosticsJSON is the snapshot the daemon attaches to its hourly observation.
+func (application *Application) diagnosticsJSON(ctx context.Context) (json.RawMessage, error) {
+	value, err := application.collector().Snapshot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("collect diagnostics: %w", err)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode diagnostics: %w", err)
+	}
+
+	return data, nil
 }
 
 func (application *Application) waitHealthy(ctx context.Context, startup, stable time.Duration) error {

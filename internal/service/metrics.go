@@ -1,25 +1,22 @@
 package service
 
 import (
-	"bufio"
 	"context"
-	"fmt"
-	"io"
-	"os"
-	"strconv"
+	"encoding/json"
 	"strings"
 	"time"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
 
+	"github.com/kjanat/udm-iptv/internal/mroute"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
 const (
-	// ipMRCacheLimit bounds the read of /proc/net/ip_mr_cache.
-	ipMRCacheLimit = 1 << 20
 	// systemdSampleTimeout bounds each per-tick systemd property query.
 	systemdSampleTimeout = 2 * time.Second
+	// snapshotTimeout bounds the diagnostics collected for an observation.
+	snapshotTimeout = 10 * time.Second
 )
 
 func (application *Daemon) startTelemetryMetrics(parent context.Context) func() {
@@ -43,14 +40,7 @@ func (application *Daemon) startTelemetryMetrics(parent context.Context) func() 
 					continue
 				}
 				application.Monitor.Gauge(ctx, "daemon.uptime", time.Since(started).Seconds())
-				if file, err := os.Open("/proc/net/ip_mr_cache"); err == nil {
-					routes, packets, err := multicastCounters(io.LimitReader(file, ipMRCacheLimit))
-					_ = file.Close()
-					if err == nil {
-						application.Monitor.Gauge(ctx, "multicast.routes", float64(routes))
-						application.Monitor.Gauge(ctx, "multicast.packets", float64(packets))
-					}
-				}
+				application.meterMulticast(ctx)
 				lastObservation = application.sampleSystemd(ctx, started, lastObservation)
 			}
 		}
@@ -79,43 +69,54 @@ func (application *Daemon) sampleSystemd(ctx context.Context, started, lastObser
 	if time.Since(lastObservation) < time.Hour {
 		return lastObservation
 	}
+	active := properties["ActiveState"] == "active"
 	err = application.Monitor.RecordObservation(ctx, telemetry.Observation{
 		UptimeSeconds: uint64(time.Since(started).Seconds()),
-		Restarts:      ParseCounter(properties["NRestarts"]), Active: properties["ActiveState"] == "active",
+		Restarts:      ParseCounter(properties["NRestarts"]), Active: active,
+		Snapshot: application.diagnostics(ctx),
 	})
 	if err != nil {
 		return lastObservation
 	}
+	application.Monitor.ObservationCheckIn(active)
 
 	return time.Now()
 }
 
-// ipMRCacheFields is the minimum column count of a /proc/net/ip_mr_cache row,
-// through the packets column.
-const ipMRCacheFields = 4
-
-func multicastCounters(reader io.Reader) (int, uint64, error) {
-	scanner := bufio.NewScanner(reader)
-	if !scanner.Scan() {
-		return 0, 0, io.ErrUnexpectedEOF
+// meterMulticast reports every forwarded multicast route with its
+// counters, and the totals, so a stream that stops is visible per group.
+func (application *Daemon) meterMulticast(ctx context.Context) {
+	table, err := mroute.Read()
+	if err != nil {
+		return
 	}
-	var routes int
-	var packets uint64
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < ipMRCacheFields {
-			return 0, 0, io.ErrUnexpectedEOF
+	application.Monitor.Gauge(ctx, "multicast.routes", float64(len(table.Routes)))
+	application.Monitor.Gauge(ctx, "multicast.unresolved", float64(table.Unresolved))
+	application.Monitor.Gauge(ctx, "multicast.packets", float64(table.Packets()))
+	application.Monitor.Gauge(ctx, "multicast.bytes", float64(table.Bytes()))
+	for _, route := range table.Routes {
+		attributes := []telemetry.Attribute{
+			telemetry.String("group", route.Group.String()), telemetry.String("source", route.Source.String()),
+			telemetry.String("input", route.Input), telemetry.String("outputs", strings.Join(route.Outputs, ",")),
 		}
-		count, err := strconv.ParseUint(fields[ipMRCacheFields-1], 10, 64)
-		if err != nil {
-			return 0, 0, fmt.Errorf("parse multicast packet counter: %w", err)
-		}
-		routes++
-		packets += count
+		application.Monitor.Gauge(ctx, "multicast.route.packets", float64(route.Packets), attributes...)
+		application.Monitor.Gauge(ctx, "multicast.route.bytes", float64(route.Bytes), attributes...)
+		application.Monitor.Gauge(ctx, "multicast.route.wrong", float64(route.Wrong), attributes...)
 	}
-	if err := scanner.Err(); err != nil {
-		return 0, 0, fmt.Errorf("read the multicast route cache: %w", err)
+}
+
+// diagnostics collects the snapshot the observation carries, when the
+// daemon was given a collector.
+func (application *Daemon) diagnostics(ctx context.Context) json.RawMessage {
+	if application.Diagnostics == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
+	snapshot, err := application.Diagnostics(ctx)
+	if err != nil {
+		return nil
 	}
 
-	return routes, packets, nil
+	return snapshot
 }

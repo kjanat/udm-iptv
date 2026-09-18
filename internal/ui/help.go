@@ -122,8 +122,7 @@ Network identity is on by default. It adds your full
 public IP address and its reverse-DNS hostname, and the
 lookup contacts ipify and your DNS resolver.
 
-Never sent: passwords, MAC addresses, interface names,
-your configured addresses, proxy logs, captures.
+Never sent: passwords, packet captures.
 
 Answer No to send nothing.
 Change it later with udm-iptv configure, one category at

@@ -10,10 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"time"
 
@@ -30,8 +28,7 @@ const (
 	researchIdentitySize = 16
 	// researchStateLimit bounds the persisted research state file.
 	researchStateLimit = 65536
-	// researchTransaction tags the Sentry event a research report rides on;
-	// filterResearch and filterEvent both branch on it.
+	// researchTransaction marks an event filterEvent drops.
 	researchTransaction = "installation.report"
 )
 
@@ -46,121 +43,41 @@ var (
 	errMissingStateDir       = errors.New("telemetry state directory is missing")
 )
 
-// SettingsSnapshot deliberately excludes interface names, addresses, MACs,
-// DHCP arguments and arbitrary routes. Prefixes are shipped defaults or coarse
-// public IPv4 networks; custom host routes and private networks are omitted.
-type SettingsSnapshot struct {
-	Profile       string   `json:"selected_profile"`
-	VLAN          int      `json:"vlan"`
-	DHCP          bool     `json:"dhcp"`
-	StaticAddress bool     `json:"static_address_configured"`
-	DHCPRoutes    string   `json:"dhcp_routes"`
-	Proxy         string   `json:"proxy"`
-	IGMP          int      `json:"igmp_version"`
-	QuickLeave    bool     `json:"quickleave"`
-	Debug         bool     `json:"proxy_debug"`
-	Downstreams   int      `json:"downstream_count"`
-	NAT           []string `json:"nat_prefixes"`
-	Sources       []string `json:"source_prefixes"`
-	CustomNAT     int      `json:"omitted_nat_prefix_count"`
-	CustomSources int      `json:"omitted_source_prefix_count"`
-}
-
-func snapshot(value config.Config) SettingsSnapshot {
-	profile := "custom"
-	if _, ok := config.ProfileByID(value.Profile); ok {
-		profile = value.Profile
-	}
-	proxy := "unknown"
-	if value.Proxy.Program == "improxy" || value.Proxy.Program == "igmpproxy" {
-		proxy = value.Proxy.Program
-	}
-	result := SettingsSnapshot{
-		Profile: profile, VLAN: value.WAN.VLAN, DHCP: value.WAN.DHCP,
-		StaticAddress: value.WAN.StaticAddress != "", DHCPRoutes: string(value.WAN.DHCPRoutes),
-		Proxy: proxy, IGMP: value.Proxy.IGMPVersion, QuickLeave: value.Proxy.QuickLeave,
-		Debug: value.Proxy.Debug, Downstreams: len(value.LAN.Interfaces),
-	}
-	known := map[string]bool{}
-	for _, p := range config.Profiles() {
-		for _, prefix := range append(slices.Clone(p.Config.WAN.NATDestinations), p.Config.Proxy.SourceRanges...) {
-			known[prefix] = true
-		}
-	}
-	selectPrefixes := func(values []string) ([]string, int) {
-		var allowed []string
-		var omitted int
-		for _, prefix := range values {
-			parsed, err := netip.ParsePrefix(prefix)
-			if err == nil && (known[prefix] || safePublicPrefix(parsed)) {
-				allowed = append(allowed, parsed.Masked().String())
-			} else {
-				omitted++
-			}
-		}
-		slices.Sort(allowed)
-
-		return slices.Compact(allowed), omitted
-	}
-	result.NAT, result.CustomNAT = selectPrefixes(value.WAN.NATDestinations)
-	result.Sources, result.CustomSources = selectPrefixes(value.Proxy.SourceRanges)
-
-	return result
-}
-
-func safePublicPrefix(prefix netip.Prefix) bool {
-	// Keeping at least 256 IPv4 addresses avoids reporting custom host routes.
-	// Small prefixes could span non-public blocks, so accept only /8 through /24
-	// with no overlap with the excluded private/special-use ranges.
-	if !prefix.Addr().Is4() || prefix.Bits() < 8 || prefix.Bits() > 24 {
-		return false
-	}
-	start := prefix.Masked().Addr()
-	for _, block := range []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4"} {
-		reserved := netip.MustParsePrefix(block)
-		if prefix.Masked().Contains(reserved.Addr()) || reserved.Contains(start) {
-			return false
-		}
-	}
-
-	return publicAddress(start)
-}
-
 type researchState struct {
-	ID                 string           `json:"id"`
-	Revision           uint64           `json:"revision"`
-	Fingerprint        string           `json:"fingerprint"`
-	AppliedFingerprint string           `json:"applied_fingerprint"`
-	AppliedRevision    uint64           `json:"applied_revision"`
-	Changed            time.Time        `json:"last_saved_change"`
-	AppliedChanged     time.Time        `json:"last_applied_change"`
-	Settings           SettingsSnapshot `json:"settings"`
+	ID                 string        `json:"id"`
+	Revision           uint64        `json:"revision"`
+	Fingerprint        string        `json:"fingerprint"`
+	AppliedFingerprint string        `json:"applied_fingerprint"`
+	AppliedRevision    uint64        `json:"applied_revision"`
+	Changed            time.Time     `json:"last_saved_change"`
+	AppliedChanged     time.Time     `json:"last_applied_change"`
+	Settings           config.Config `json:"settings"`
 }
 
-// researchReport is private so ordinary SDK events cannot bypass the allowlist.
 type researchReport struct {
-	Schema            int               `json:"schema"`
-	InstallationID    string            `json:"installation_id"`
-	Kind              string            `json:"kind"`
-	Revision          uint64            `json:"revision"`
-	PreviousRevision  uint64            `json:"previous_revision"`
-	AppliedRevision   uint64            `json:"applied_revision"`
-	ChangedFields     []string          `json:"changed_fields,omitempty"`
-	LastSavedChange   time.Time         `json:"last_saved_change"`
-	LastAppliedChange time.Time         `json:"last_applied_change"`
-	Settings          *SettingsSnapshot `json:"settings,omitempty"`
-	Applied           bool              `json:"applied"`
-	Feedback          string            `json:"feedback,omitempty"`
-	ConfirmedProvider string            `json:"user_confirmed_provider,omitempty"`
-	Network           *NetworkIdentity  `json:"network,omitempty"`
-	Observation       *Observation      `json:"observation,omitempty"`
+	Schema            int              `json:"schema"`
+	InstallationID    string           `json:"installation_id"`
+	Kind              string           `json:"kind"`
+	Revision          uint64           `json:"revision"`
+	PreviousRevision  uint64           `json:"previous_revision"`
+	AppliedRevision   uint64           `json:"applied_revision"`
+	ChangedFields     []string         `json:"changed_fields,omitempty"`
+	LastSavedChange   time.Time        `json:"last_saved_change"`
+	LastAppliedChange time.Time        `json:"last_applied_change"`
+	Settings          *config.Config   `json:"settings,omitempty"`
+	Applied           bool             `json:"applied"`
+	Feedback          string           `json:"feedback,omitempty"`
+	ConfirmedProvider string           `json:"user_confirmed_provider,omitempty"`
+	Network           *NetworkIdentity `json:"network,omitempty"`
+	Observation       *Observation     `json:"observation,omitempty"`
 }
 
 // Observation describes measurements, never an inferred customer satisfaction.
 type Observation struct {
-	UptimeSeconds uint64 `json:"process_uptime_seconds"`
-	Restarts      uint64 `json:"systemd_restarts"`
-	Active        bool   `json:"service_active"`
+	UptimeSeconds uint64          `json:"process_uptime_seconds"`
+	Restarts      uint64          `json:"systemd_restarts"`
+	Active        bool            `json:"service_active"`
+	Snapshot      json.RawMessage `json:"snapshot,omitempty"`
 }
 
 func (r *Reporter) researchEnabled() bool {
@@ -178,14 +95,21 @@ func (r *Reporter) researchEnabled() bool {
 // ResearchEnabled checks the saved master switch before each observation.
 func (r *Reporter) ResearchEnabled() bool { return r.researchEnabled() }
 
-// The full fingerprint stays local, is keyed per installation and excludes
-// telemetry preferences. It detects changes to omitted settings safely.
-func reportable(value config.Config) config.Config {
-	value.Telemetry = config.Telemetry{}
+// normalized sorts the list fields so equal configurations compare equal.
+func normalized(value config.Config) config.Config {
 	value.WAN.NATDestinations = sorted(value.WAN.NATDestinations)
 	value.Proxy.SourceRanges = sorted(value.Proxy.SourceRanges)
 	value.LAN.Interfaces = sorted(value.LAN.Interfaces)
 	value.WAN.StaticRoutes = sorted(value.WAN.StaticRoutes)
+
+	return value
+}
+
+// The fingerprint is keyed per installation and leaves the telemetry
+// preferences out, so changing them is not a configuration change.
+func reportable(value config.Config) config.Config {
+	value = normalized(value)
+	value.Telemetry = config.Telemetry{}
 
 	return value
 }
@@ -201,14 +125,20 @@ func fingerprintConfig(id string, value config.Config) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func changedFields(before, after SettingsSnapshot) []string {
-	oldFields, newFields := reflect.ValueOf(before), reflect.ValueOf(after)
+func changedFields(before, after config.Config) []string {
+	old, current := flatten("", before), flatten("", after)
 	changed := []string{}
-	for i := range oldFields.NumField() {
-		if !reflect.DeepEqual(oldFields.Field(i).Interface(), newFields.Field(i).Interface()) {
-			changed = append(changed, oldFields.Type().Field(i).Tag.Get("json"))
+	for key := range current {
+		if _, ok := old[key]; !ok || old[key] != current[key] {
+			changed = append(changed, key)
 		}
 	}
+	for key := range old {
+		if _, ok := current[key]; !ok {
+			changed = append(changed, key)
+		}
+	}
+	slices.Sort(changed)
 	if len(changed) == 0 {
 		return []string{"unreported_settings"}
 	}
@@ -216,8 +146,40 @@ func changedFields(before, after SettingsSnapshot) []string {
 	return changed
 }
 
-func (state *researchState) recordSave(current SettingsSnapshot, fingerprint string) []string {
+func flatten(prefix string, value config.Config) map[string]string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var tree map[string]any
+	if err := json.Unmarshal(data, &tree); err != nil {
+		return nil
+	}
+	result := map[string]string{}
+	flattenInto(result, prefix, tree)
+
+	return result
+}
+
+func flattenInto(result map[string]string, prefix string, value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			name := key
+			if prefix != "" {
+				name = prefix + "." + key
+			}
+			flattenInto(result, name, child)
+		}
+	default:
+		result[prefix] = fmt.Sprint(typed)
+	}
+}
+
+func (state *researchState) recordSave(current config.Config, fingerprint string) []string {
 	if fingerprint == state.Fingerprint {
+		state.Settings = current
+
 		return []string{}
 	}
 	changed := changedFields(state.Settings, current)
@@ -226,6 +188,12 @@ func (state *researchState) recordSave(current SettingsSnapshot, fingerprint str
 	state.Settings, state.Fingerprint = current, fingerprint
 
 	return changed
+}
+
+// hasSettings is false before the first save and for a state file whose
+// settings did not decode as a configuration.
+func (state *researchState) hasSettings() bool {
+	return state.Revision > 0 && state.Settings.Profile != ""
 }
 
 func (state *researchState) recordApply(fingerprint string) {
@@ -256,12 +224,11 @@ func (r *Reporter) RecordConfiguration(ctx context.Context, value config.Config,
 	var report researchReport
 	err := withResearchState(r.stateDir, func(state *researchState) error {
 		before := state.Revision
-		current := reportable(value)
-		fingerprint, err := fingerprintConfig(state.ID, current)
+		fingerprint, err := fingerprintConfig(state.ID, reportable(value))
 		if err != nil {
 			return err
 		}
-		changed := state.recordSave(snapshot(current), fingerprint)
+		changed := state.recordSave(normalized(value), fingerprint)
 		if applied {
 			state.recordApply(fingerprint)
 		}
@@ -303,7 +270,7 @@ func (r *Reporter) RecordObservation(ctx context.Context, observation Observatio
 	err := withResearchState(r.stateDir, func(state *researchState) error {
 		report = reportFromState(*state, "observation")
 		report.Observation = &observation
-		if state.Revision == 0 {
+		if !state.hasSettings() {
 			report.Settings = nil
 		}
 
@@ -347,7 +314,7 @@ func (r *Reporter) Feedback(ctx context.Context, answer, provider string) error 
 		report = reportFromState(*state, "feedback")
 		report.Feedback = answer
 		report.ConfirmedProvider = provider
-		if state.Revision == 0 {
+		if !state.hasSettings() {
 			report.Settings = nil
 		}
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
 var errPathNotAbsolute = errors.New("installation path must be absolute")
@@ -109,7 +110,9 @@ func (p Plan) Execute(ctx context.Context, backend Backend) error {
 		if err != nil {
 			return fmt.Errorf("installation cancelled before %q: %w", stage.name, err)
 		}
-		err = stage.run(backend, ctx, p)
+		stepCtx, finish := telemetry.Step(ctx, stage.name)
+		err = stage.run(backend, stepCtx, p)
+		finish(err)
 		if err != nil {
 			return fmt.Errorf("%s: %w", stage.name, err)
 		}

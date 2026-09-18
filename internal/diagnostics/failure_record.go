@@ -18,7 +18,7 @@ func RecordFailure(options Options, cause error) error {
 	if cause == nil {
 		return nil
 	}
-	message := Sanitize(cause.Error())
+	message := cause.Error()
 	var result error
 	for _, output := range []struct {
 		path string
@@ -29,7 +29,7 @@ func RecordFailure(options Options, cause error) error {
 		}
 		err := appendFailure(output.path, func(writer io.Writer) error {
 			if output.json {
-				return json.NewEncoder(writer).Encode(Event{Time: time.Now().UTC(), Type: "failed", Message: message})
+				return json.NewEncoder(writer).Encode(Event{Time: time.Now().UTC(), Type: EventFailed, Message: message})
 			}
 			return writef(writer, "\nCapture failed: %s\n", message)
 		})

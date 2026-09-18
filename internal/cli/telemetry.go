@@ -36,7 +36,7 @@ func (application *Application) reportSavedConfiguration(command *cobra.Command)
 }
 
 func (application *Application) telemetryCommand() *cobra.Command {
-	command := &cobra.Command{Use: "telemetry", Hidden: true, Short: "Manage reporting identity and provide IPTV feedback"}
+	command := &cobra.Command{Use: flagTelemetry, Hidden: true, Short: "Manage reporting identity and provide IPTV feedback"}
 	command.AddCommand(&cobra.Command{
 		Use: "reset-id", Short: "Reset local reporting identity; previously sent reports remain", Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {

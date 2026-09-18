@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -32,10 +33,11 @@ type Country struct {
 
 // Provider is a brand a subscriber recognizes; it maps to one or more profiles.
 type Provider struct {
-	ID        string
-	Name      string
-	Countries []string
-	Profiles  []string
+	ID          string
+	Name        string
+	Countries   []string
+	Profiles    []string
+	PTRSuffixes []string
 }
 
 // Catalog is the country → provider → profile hierarchy the wizard walks.
@@ -55,10 +57,18 @@ var embeddedCatalogSchema []byte
 const catalogSchemaURL = "https://raw.githubusercontent.com/kjanat/udm-iptv/refs/heads/go/internal/config/profiles.schema.json"
 
 const (
-	// profileCustom marks a configuration with no matching provider profile.
-	profileCustom = "custom"
+	// ProfileCustom marks a configuration with no matching provider profile.
+	ProfileCustom = "custom"
+	// ProfileKPN is the profile a fresh installation starts from.
+	ProfileKPN = "kpn"
 	// profileLegacy marks a configuration imported from the legacy shell format.
 	profileLegacy = "legacy"
+)
+
+// The two multicast proxies udm-iptv can run.
+const (
+	ProxyImproxy   = "improxy"
+	ProxyIgmpproxy = "igmpproxy"
 )
 
 var (
@@ -80,9 +90,10 @@ type countryDefinition struct {
 }
 
 type providerDefinition struct {
-	Name      string   `json:"name"`
-	Countries []string `json:"countries"`
-	Profiles  []string `json:"profiles"`
+	Name        string   `json:"name"`
+	Countries   []string `json:"countries"`
+	Profiles    []string `json:"profiles"`
+	PTRSuffixes []string `json:"ptrSuffixes"`
 }
 
 type profileDefinition struct {
@@ -146,7 +157,14 @@ func (document catalogDocument) providers() ([]Provider, map[string]bool, map[st
 	var providers []Provider
 	usedCountries := map[string]bool{}
 	usedProfiles := map[string]bool{}
+	suffixOwners := map[string]string{}
 	for id, definition := range document.Providers {
+		for _, suffix := range definition.PTRSuffixes {
+			if owner, taken := suffixOwners[suffix]; taken {
+				return nil, nil, nil, fmt.Errorf("%w: PTR suffix %s belongs to both %s and %s", errCatalogReference, suffix, owner, id)
+			}
+			suffixOwners[suffix] = id
+		}
 		for _, code := range definition.Countries {
 			if _, found := document.Countries[code]; !found {
 				return nil, nil, nil, fmt.Errorf("%w: provider %s lists unknown country %s", errCatalogReference, id, code)
@@ -159,7 +177,7 @@ func (document catalogDocument) providers() ([]Provider, map[string]bool, map[st
 			}
 			usedProfiles[profile] = true
 		}
-		providers = append(providers, Provider{ID: id, Name: definition.Name, Countries: definition.Countries, Profiles: definition.Profiles})
+		providers = append(providers, Provider{ID: id, Name: definition.Name, Countries: definition.Countries, Profiles: definition.Profiles, PTRSuffixes: definition.PTRSuffixes})
 	}
 
 	return providers, usedCountries, usedProfiles, nil
@@ -218,6 +236,21 @@ func (catalog Catalog) ProvidersIn(code string) []Provider {
 	}
 
 	return result
+}
+
+// ProviderByPointerName finds the provider whose PTR suffix ends the reverse
+// DNS name on a label boundary.
+func (catalog Catalog) ProviderByPointerName(name string) (Provider, bool) {
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+	for _, provider := range catalog.Providers {
+		for _, suffix := range provider.PTRSuffixes {
+			if name == suffix || strings.HasSuffix(name, "."+suffix) {
+				return provider, true
+			}
+		}
+	}
+
+	return Provider{}, false
 }
 
 // ProviderByID looks up a provider.
@@ -294,7 +327,7 @@ func (definition profileDefinition) resolve(id string) Profile {
 func Profiles() []Profile {
 	known := embedded().Profiles
 	result := make([]Profile, 0, 1+len(known))
-	result = append(result, Profile{ID: profileCustom, Name: "Custom", Config: Default()})
+	result = append(result, Profile{ID: ProfileCustom, Name: "Custom", Config: Default()})
 	result = append(result, known...)
 	sort.Slice(result, func(left, right int) bool { return result[left].Name < result[right].Name })
 
@@ -306,7 +339,7 @@ func Profiles() []Profile {
 // If the ID corresponds to a known profile, it returns that profile.
 // If the ID is unknown, it returns false.
 func ProfileByID(id string) (Profile, bool) {
-	if id == profileCustom || id == profileLegacy {
+	if id == ProfileCustom || id == profileLegacy {
 		return Profile{ID: id, Name: "Custom"}, true
 	}
 
@@ -321,7 +354,7 @@ func FromProfile(id string, current Config) (Config, error) {
 // Apply returns current re-labelled for "custom" or "legacy", or a fresh copy
 // of the named profile's settings that keeps current's telemetry choice.
 func (catalog Catalog) Apply(id string, current Config) (Config, error) {
-	if id == profileCustom || id == profileLegacy {
+	if id == ProfileCustom || id == profileLegacy {
 		current.Profile = id
 
 		return current, nil
@@ -368,9 +401,8 @@ func InferLegacyProfile(value Config) (string, bool) {
 	return match, match != ""
 }
 
-// A legacy IPTV_WAN_RANGES list drove both the NAT rules and igmpproxy's
-// altnet, so it carries the multicast groups a source allowlist cannot hold.
-// The senders the two lists still share are what identifies the provider.
+// A legacy IPTV_WAN_RANGES list also holds multicast groups; only its
+// unicast senders identify the provider.
 func unicastPrefixes(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {

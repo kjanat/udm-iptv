@@ -126,16 +126,63 @@ func applyMAC(link netlink.Link, address string) error {
 	return nil
 }
 
-// EnsureNAT adds MASQUERADE rules for value's NAT destinations, if not already present.
-func EnsureNAT(value config.Config) error {
+// natTable is the iptables NAT table, narrowed to what NAT reconciliation uses.
+type natTable interface {
+	List(table, chain string) ([]string, error)
+	Delete(table, chain string, rulespec ...string) error
+	AppendUnique(table, chain string, rulespec ...string) error
+}
+
+const (
+	natTableName = "nat"
+	natChain     = "POSTROUTING"
+	natComment   = "udm-iptv"
+)
+
+func openNATTable() (natTable, error) {
 	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
-		return fmt.Errorf("open the iptables NAT table: %w", err)
+		return nil, fmt.Errorf("open the iptables NAT table: %w", err)
+	}
+
+	return table, nil
+}
+
+func natRule(destination, target string) []string {
+	return []string{"-d", destination, "-o", target, "-m", "comment", "--comment", natComment, "-j", "MASQUERADE"}
+}
+
+// EnsureNAT makes the MASQUERADE rules on the IPTV interface exactly value's
+// NAT destinations, removing any other MASQUERADE rule bound to that interface.
+func EnsureNAT(value config.Config) error {
+	table, err := openNATTable()
+	if err != nil {
+		return err
+	}
+
+	return reconcileNAT(table, value)
+}
+
+func reconcileNAT(table natTable, value config.Config) error {
+	target := Target(value)
+	wanted := map[string]bool{}
+	for _, destination := range value.WAN.NATDestinations {
+		wanted[destination] = true
+	}
+	rules, err := masqueradeRules(table, target)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		if rule.managed && wanted[rule.destination] {
+			continue
+		}
+		if err := table.Delete(natTableName, natChain, rule.spec...); err != nil {
+			return fmt.Errorf("remove NAT rule for %s: %w", rule.destination, err)
+		}
 	}
 	for _, destination := range value.WAN.NATDestinations {
-		rule := []string{"-d", destination, "-o", Target(value), "-j", "MASQUERADE", "-m", "comment", "--comment", "udm-iptv"}
-		err := table.AppendUnique("nat", "POSTROUTING", rule...)
-		if err != nil {
+		if err := table.AppendUnique(natTableName, natChain, natRule(destination, target)...); err != nil {
 			return fmt.Errorf("add NAT rule for %s: %w", destination, err)
 		}
 	}
@@ -143,23 +190,76 @@ func EnsureNAT(value config.Config) error {
 	return nil
 }
 
-// RemoveNAT removes the MASQUERADE rules EnsureNAT added.
+// RemoveNAT removes every MASQUERADE rule bound to the IPTV interface.
 func RemoveNAT(value config.Config) error {
-	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	table, err := openNATTable()
 	if err != nil {
-		return fmt.Errorf("open the iptables NAT table: %w", err)
+		return err
+	}
+
+	return removeNAT(table, value)
+}
+
+func removeNAT(table natTable, value config.Config) error {
+	rules, err := masqueradeRules(table, Target(value))
+	if err != nil {
+		return err
 	}
 	var joined error
-	for _, destination := range value.WAN.NATDestinations {
-		rule := []string{"-d", destination, "-o", Target(value), "-j", "MASQUERADE", "-m", "comment", "--comment", "udm-iptv"}
-		if exists, checkErr := table.Exists("nat", "POSTROUTING", rule...); checkErr != nil {
-			joined = errors.Join(joined, checkErr)
-		} else if exists {
-			joined = errors.Join(joined, table.Delete("nat", "POSTROUTING", rule...))
+	for _, rule := range rules {
+		if err := table.Delete(natTableName, natChain, rule.spec...); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("remove NAT rule for %s: %w", rule.destination, err))
 		}
 	}
 
 	return joined
+}
+
+type masqueradeRule struct {
+	spec        []string
+	destination string
+	managed     bool
+}
+
+// masqueradeRules lists the POSTROUTING MASQUERADE rules that leave through
+// target, as iptables -S prints them, so each can be deleted by its own spec.
+func masqueradeRules(table natTable, target string) ([]masqueradeRule, error) {
+	listed, err := table.List(natTableName, natChain)
+	if err != nil {
+		return nil, fmt.Errorf("list NAT rules: %w", err)
+	}
+	var rules []masqueradeRule
+	for _, line := range listed {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "-A" || fields[1] != natChain {
+			continue
+		}
+		spec := fields[2:]
+		if !hasOption(spec, "-j", "MASQUERADE") || !hasOption(spec, "-o", target) {
+			continue
+		}
+		rules = append(rules, masqueradeRule{
+			spec:        spec,
+			destination: optionValue(spec, "-d"),
+			managed:     hasOption(spec, "--comment", natComment),
+		})
+	}
+
+	return rules, nil
+}
+
+func hasOption(spec []string, flag, value string) bool {
+	return optionValue(spec, flag) == value
+}
+
+func optionValue(spec []string, flag string) string {
+	for i := 0; i+1 < len(spec); i++ {
+		if spec[i] == flag {
+			return spec[i+1]
+		}
+	}
+
+	return ""
 }
 
 // ApplyStatic sets the configured static address and static routes on link,
@@ -180,9 +280,7 @@ func ApplyStatic(value config.Config, link netlink.Link) error {
 	return ApplyStaticRoutes(value, link)
 }
 
-// ApplyStaticRoutes installs the configured unicast routes on link. udm-iptvd
-// added IPTV_STATIC_ROUTES whether or not the uplink used DHCP, so the DHCP
-// path calls this without applying an address.
+// ApplyStaticRoutes installs the configured unicast routes on link.
 func ApplyStaticRoutes(value config.Config, link netlink.Link) error {
 	for _, raw := range value.WAN.StaticRoutes {
 		prefix, err := netip.ParsePrefix(raw)
@@ -210,14 +308,15 @@ func ResetLease(link netlink.Link) error {
 
 // Lease is a udhcpc lease event, as udhcpc reports it through environment variables.
 type Lease struct {
-	Action       string
-	Interface    string
-	Address      string
-	Mask         string
-	Broadcast    string
-	Routers      []string
-	StaticRoutes []string
-	Metric       int
+	Action       string            `json:"action"`
+	Interface    string            `json:"interface"`
+	Address      string            `json:"address"`
+	Mask         string            `json:"mask"`
+	Broadcast    string            `json:"broadcast"`
+	Routers      []string          `json:"routers"`
+	StaticRoutes []string          `json:"staticRoutes"`
+	Metric       int               `json:"metric"`
+	Options      map[string]string `json:"options"`
 }
 
 // LeaseFromEnvironment reads a Lease from the udhcpc hook's environment variables.
@@ -234,12 +333,28 @@ func LeaseFromEnvironment(action string) (Lease, error) {
 		Action: action, Interface: os.Getenv("interface"), Address: os.Getenv("ip"),
 		Mask: os.Getenv("mask"), Broadcast: os.Getenv("broadcast"),
 		Routers: strings.Fields(os.Getenv("router")), StaticRoutes: strings.Fields(os.Getenv("staticroutes")), Metric: metric,
+		Options: dhcpOptions(os.Environ()),
 	}
 	if lease.Interface == "" {
 		return Lease{}, errMissingDHCPInterface
 	}
 
 	return lease, nil
+}
+
+// udhcpc exports every option it received as a lower-case variable named
+// after the option, so those are the lease as the server sent it.
+func dhcpOptions(environment []string) map[string]string {
+	options := map[string]string{}
+	for _, entry := range environment {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" || strings.ToLower(key) != key || key == "interface" {
+			continue
+		}
+		options[key] = value
+	}
+
+	return options
 }
 
 // ApplyLease reconciles the interface's address and routes with a DHCP lease event.

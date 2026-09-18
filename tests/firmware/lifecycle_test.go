@@ -96,7 +96,7 @@ func (h *firmwareHarness) installPreviousPackage(name, image string) {
 	// Preconfigure a static test network with reporting disabled, using the
 	// real CLI. No background harness process supplies fake DHCP readiness.
 	h.inside(name, "dpkg-deb", "-x", "/package.deb", "/run/package")
-	h.inside(name, "/run/package"+binary, "configure", "--non-interactive", "--profile", "kpn",
+	h.inside(name, "/run/package"+binary, "configure", "set", "--profile", "kpn",
 		"--wan-interface", "eth8", "--lan-interface", "br0", "--dhcp=false",
 		"--static-address", "198.51.100.2/24", "--telemetry=false")
 	h.inside(name, "apt-get", "update")
@@ -395,7 +395,7 @@ func (h *firmwareHarness) assertArtifact(name string) {
 func capturePaths(output string) (string, string) {
 	var textPath, jsonPath string
 	for line := range strings.SplitSeq(output, "\n") {
-		if value, ok := strings.CutPrefix(line, "Share-ready text: "); ok {
+		if value, ok := strings.CutPrefix(line, "Text: "); ok {
 			textPath = value
 		}
 		if value, ok := strings.CutPrefix(line, "Structured JSON Lines: "); ok {

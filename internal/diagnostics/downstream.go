@@ -11,11 +11,16 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
-const sysfsValueLimit = 64
+const (
+	sysfsValueLimit = 64
+	valueUnknown    = "unknown"
+)
 
-var linkOperStates = map[string]string{"up": "up", "down": "down", "unknown": "unknown", "lowerlayerdown": "lowerlayerdown", "dormant": "dormant"}
+var linkOperStates = map[string]string{"up": "up", "down": "down", valueUnknown: valueUnknown, "lowerlayerdown": "lowerlayerdown", "dormant": "dormant"}
 
 type downstreamStatus struct {
 	Interface string `json:"interface"`
@@ -45,7 +50,8 @@ func renderDownstream(value Snapshot) string {
 	var output strings.Builder
 	output.WriteString("\nDownstream checks\n")
 	for _, link := range value.Downstream {
-		output.WriteString(formatDownstream(link) + "\n")
+		output.WriteString(formatDownstream(link))
+		output.WriteByte('\n')
 	}
 	fmt.Fprintf(&output, "Switch: %s\n", fallbackText(value.Switches))
 	fmt.Fprintf(&output, "Native UniFi proxy: %s\n", fallbackText(value.NativeProxy))
@@ -109,7 +115,7 @@ func formatNativeProxy(unitLoaded bool, activeState string, extra []int, scanned
 	unit := "igmpproxy.service not loaded"
 	if unitLoaded {
 		if activeState == "" {
-			activeState = "unknown"
+			activeState = valueUnknown
 		}
 		unit = "igmpproxy.service " + activeState
 	}
@@ -143,7 +149,7 @@ func extraProxyPIDs(ours int) ([]int, error) {
 			continue
 		}
 		switch strings.TrimSpace(string(comm)) {
-		case "improxy", "igmpproxy":
+		case config.ProxyImproxy, config.ProxyIgmpproxy:
 			extra = append(extra, pid)
 		}
 	}
@@ -151,17 +157,17 @@ func extraProxyPIDs(ours int) ([]int, error) {
 	return extra, nil
 }
 
-func formatReceivers(usage *multicastInfo, groups *int) string {
+func formatReceivers(usage *MulticastInfo, groups *int) string {
 	routes := "multicast routes unavailable"
 	if usage != nil {
 		routes = fmt.Sprintf("%d multicast routes (%d packets)", usage.Routes, usage.Packets)
 	}
-	membership := "IGMP groups on LAN unavailable"
+	Membership := "IGMP groups on LAN unavailable"
 	if groups != nil {
-		membership = strconv.Itoa(*groups) + " IGMP groups on LAN"
+		Membership = strconv.Itoa(*groups) + " IGMP groups on LAN"
 	}
 
-	return routes + ", " + membership
+	return routes + ", " + Membership
 }
 
 func countLANIGMPGroups(table string, lan []string) int {

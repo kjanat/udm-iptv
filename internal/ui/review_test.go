@@ -42,7 +42,7 @@ func runSuggestedWizard(t *testing.T, suggestion string, preselected map[int]str
 		}
 
 		return nil
-	}, suggestion)
+	}, suggestion, nil)
 	result.value = value
 
 	return result
@@ -116,7 +116,7 @@ func TestProviderSuggestionCanBeOverridden(t *testing.T) {
 		}
 
 		return nil
-	}, "tweak")
+	}, "tweak", nil)
 	provider, profile, _ := strings.Cut(chosen, "/")
 	if err != nil || provider == "tweak" || value.Profile != profile || catalog.ProfilesOf(provider)[0].ID != profile {
 		t.Fatalf("manual selection lost: %s, %v", chosen, err)

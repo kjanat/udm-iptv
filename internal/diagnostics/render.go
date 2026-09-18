@@ -2,33 +2,55 @@ package diagnostics
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 )
 
 // RenderEvent returns a human-readable text-capture line for event.
 func RenderEvent(event Event) string {
 	switch event.Type {
-	case "started":
-		return "Share-ready udm-iptv diagnostics. Review before posting publicly.\n" + event.Message + "\n\n"
-	case "initial":
+	case EventStarted:
+		return "udm-iptv diagnostics\n" + event.Message + "\n\n"
+	case EventInitial:
 		return "=== Initial snapshot ===\n" + RenderSnapshot(*event.Snapshot) + "\n"
-	case "sample":
-		value := event.Snapshot
-
-		return fmt.Sprintf("[%s] service=%s/%s proxy=%s pid=%d restarts=%d routes=%d multicast=%s\n",
-			event.Time.Format(time.RFC3339), value.Service.ActiveState, value.Service.SubState, value.Service.Proxy,
-			value.Service.ProxyPID, value.Service.Restarts, len(value.Network.Routes), multicastRouteCount(value.Multicast))
-	case "final":
+	case EventSample:
+		return renderSample(event)
+	case EventMarker:
+		return "\n>>> " + event.Time.Format(time.RFC3339) + " " + event.Message + "\n\n"
+	case EventFinal:
 		return "\n=== Final snapshot ===\n" + RenderSnapshot(*event.Snapshot) + "\n"
-	case "log":
+	case EventLog:
 		return event.Log + "\n"
-	case "error":
-		return "capture error: " + sanitize(event.Message) + "\n"
-	case "completed":
-		return "\nCapture completed: " + event.Message + "\n"
-	case "timeout":
-		return "\nCapture timed out: " + event.Message + "\n"
-	default:
-		return ""
 	}
+
+	return renderMessage(event)
+}
+
+func renderMessage(event Event) string {
+	switch event.Type {
+	case EventError:
+		return "capture error: " + event.Message + "\n"
+	case EventCompleted:
+		return "\nCapture completed: " + event.Message + "\n"
+	case EventTimeout:
+		return "\nCapture timed out: " + event.Message + "\n"
+	}
+
+	return ""
+}
+
+func renderSample(event Event) string {
+	value := event.Snapshot
+
+	return fmt.Sprintf("[%s] service=%s/%s proxy=%s pid=%d restarts=%d routes=%d multicast=%s packets=%s\n",
+		event.Time.Format(time.RFC3339), value.Service.ActiveState, value.Service.SubState, value.Service.Proxy,
+		value.Service.ProxyPID, value.Service.Restarts, len(value.Network.Routes), multicastRouteCount(value.Multicast), multicastPackets(value.Multicast))
+}
+
+func multicastPackets(usage *MulticastInfo) string {
+	if usage == nil {
+		return counterUnavailable
+	}
+
+	return strconv.FormatUint(usage.Packets, 10)
 }

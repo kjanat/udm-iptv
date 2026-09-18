@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
 // reportedCommands are the invocations telemetry must cover.
@@ -17,13 +19,14 @@ var reportedCommands = []string{
 	"uninstall",
 	"restart",
 	"upgrade",
-	"daemon",
+	telemetry.OperationDaemon,
 	"dhcp-hook",
 }
 
 var commandNameConstants = map[string]string{
 	"commandConfigure": commandConfigure,
 	"commandInstall":   commandInstall,
+	"OperationDaemon":  telemetry.OperationDaemon,
 }
 
 // TestReportedCommandsWrapTheirOwnHandler keeps every reported command opted
@@ -118,6 +121,8 @@ func commandName(expr ast.Expr) string {
 		return fields[0]
 	case *ast.Ident:
 		return commandNameConstants[value.Name]
+	case *ast.SelectorExpr:
+		return commandNameConstants[value.Sel.Name]
 	default:
 		return ""
 	}
