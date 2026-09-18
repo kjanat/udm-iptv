@@ -1,4 +1,8 @@
 #:schema https://golangci-lint.run/jsonschema/golangci.jsonschema.json
+# https://golangci-lint.run/docs/welcome/install/local/
+# https://golangci-lint.run/docs/linters/
+# https://golangci-lint.run/docs/formatters/
+# https://golangci-lint.run/docs/plugins/module-plugins/
 
 version = "2"
 
