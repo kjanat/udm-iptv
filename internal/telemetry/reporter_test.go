@@ -681,3 +681,29 @@ func TestCancellationAndDeadlineTraceStatus(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) { assertOutcomeSignals(t, test) })
 	}
 }
+
+func TestFailuresShareTheOperationTrace(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
+	_ = r.Run(context.Background(), "install", func(ctx context.Context) error {
+		return r.Run(ctx, "service.health", func(context.Context) error { return errOperationFailed })
+	})
+	r.client.Flush(time.Second)
+	traces := map[string]int{}
+	transactions, failures := 0, 0
+	for _, event := range transport.events {
+		switch {
+		case event.Type == "transaction":
+			transactions++
+		case len(event.Exception) > 0:
+			failures++
+		default:
+			continue
+		}
+		traces[fmt.Sprint(event.Contexts["trace"]["trace_id"])]++
+	}
+	assertEqual(t, "transactions", transactions, 1)
+	assertEqual(t, "failures", failures, 2)
+	if len(traces) != 1 {
+		t.Fatalf("failures left the operation trace: %v", traces)
+	}
+}
