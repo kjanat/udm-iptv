@@ -32,13 +32,16 @@ const (
 )
 
 var (
-	errTraceRateRange       = errors.New("telemetry trace rate must be between 0 and 1")
-	errWANInterfaceName     = errors.New("WAN interface must be a valid Linux interface name")
-	errWANVLANRange         = errors.New("WAN VLAN must be between 0 and 4094")
-	errVLANInterfaceName    = errors.New("VLAN interface must be a valid Linux interface name")
-	errNoLANInterface       = errors.New("at least one LAN interface is required")
-	errProxyProgram         = errors.New("proxy must be improxy or igmpproxy")
-	errMissingProxySources  = errors.New("igmpproxy requires at least one proxy source range")
+	errTraceRateRange      = errors.New("telemetry trace rate must be between 0 and 1")
+	errWANInterfaceName    = errors.New("WAN interface must be a valid Linux interface name")
+	errWANVLANRange        = errors.New("WAN VLAN must be between 0 and 4094")
+	errVLANInterfaceName   = errors.New("VLAN interface must be a valid Linux interface name")
+	errNoLANInterface      = errors.New("at least one LAN interface is required")
+	errProxyProgram        = errors.New("proxy must be improxy or igmpproxy")
+	errMissingProxySources = errors.New("igmpproxy requires at least one proxy source range")
+	// RFC 1112 section 4 forbids a host group address in the source field, so a
+	// group range can never match a sender and igmpproxy's altnet cannot use one.
+	errGroupAsProxySource   = errors.New("a multicast group is a destination, not a proxy source range")
 	errIGMPVersion          = errors.New("IGMP version must be 2 or 3")
 	errVLANMAC              = errors.New("VLAN MAC address must be a six-byte Ethernet address")
 	errStaticAddress        = errors.New("static address must be an IPv4 CIDR address")
@@ -317,12 +320,20 @@ func validateLANPresence(value Config) error {
 	return nil
 }
 
+// Only igmpproxy filters by source, through altnet. improxy has no equivalent
+// and ignores SourceRanges entirely, so it is the one backend that needs none.
 func validateProxy(value Config) error {
 	if value.Proxy.Program != "improxy" && value.Proxy.Program != "igmpproxy" {
 		return errProxyProgram
 	}
 	if value.Proxy.Program == "igmpproxy" && len(value.Proxy.SourceRanges) == 0 {
 		return errMissingProxySources
+	}
+	for _, prefix := range value.Proxy.SourceRanges {
+		parsed, err := netip.ParsePrefix(prefix)
+		if err == nil && parsed.Addr().IsMulticast() {
+			return fmt.Errorf("%w %q", errGroupAsProxySource, prefix)
+		}
 	}
 	if value.Proxy.IGMPVersion != 2 && value.Proxy.IGMPVersion != 3 {
 		return errIGMPVersion
