@@ -32,14 +32,17 @@ func TestProviderLookupOptOutAndPrivateOutput(t *testing.T) {
 
 			return telemetry.NetworkIdentity{IP: "203.0.113.10", PTR: "private-customer.kpn.net", Provider: "kpn", Method: "ptr-suffix", Confidence: "low", Status: "ip-and-ptr"}
 		}}
-		value := config.Default()
-		value.Telemetry.NetworkIdentity = enabled
-		err := app.suggestProvider(context.Background(), value)
+		settings := config.Default().Telemetry
+		settings.NetworkIdentity = enabled
+		suggestion, err := app.suggestProvider(context.Background(), settings)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if (calls == 1) != enabled {
 			t.Fatal("lookup ignored opt-out")
+		}
+		if (suggestion == "kpn") != enabled {
+			t.Fatalf("suggestion %q for networkIdentity=%t", suggestion, enabled)
 		}
 		if strings.Contains(out.String(), "203.0.113") || strings.Contains(out.String(), "private-customer") {
 			t.Fatal("printed network identity")

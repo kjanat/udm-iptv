@@ -107,11 +107,27 @@ Your provider's TV servers live there.
 
 0.0.0.0/0 allows every source.
 That is the safe choice if you are unsure.`},
-	"telemetry": {"Help improve udm-iptv", `Sends anonymous error reports and which settings were used to the developer.
-That helps improve defaults and reliability.
+	"telemetry": {"Help improve udm-iptv", `Sends failures and the settings you chose to the
+maintainer's Sentry project over HTTPS, on EU servers.
+It improves provider profiles and shows which firmware
+builds break IPTV.
 
-Nothing about your network addresses is sent.
-This is optional and can be changed later.`},
+These reports are not anonymous.
+
+Every report carries a random installation ID that stays
+the same, so your settings history and your failures are
+linked to one router.
+
+Network identity is on by default. It adds your full
+public IP address and its reverse-DNS hostname, and the
+lookup contacts ipify and your DNS resolver.
+
+Never sent: passwords, MAC addresses, interface names,
+your configured addresses, proxy logs, captures.
+
+Answer No to send nothing.
+Change it later with udm-iptv configure, one category at
+a time. docs/telemetry.md lists every field.`},
 	"accept": {"Review", `A summary of everything you chose.
 
 Continue applies the settings.

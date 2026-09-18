@@ -13,7 +13,7 @@ import (
 func TestFirstPageIsRecognizedOnEveryField(t *testing.T) {
 	value := config.Default()
 	fields := newFormValues(value)
-	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}}, "", &fields)
+	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}}, "", &fields, true)
 	frame := NewFrame(wizardForm(groups[1:]...).steps(1, 0), "")
 	frame.Init()
 	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

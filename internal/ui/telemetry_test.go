@@ -41,3 +41,23 @@ func TestImprovementPromptCopy(t *testing.T) {
 		t.Fatal("prompt changed product selection")
 	}
 }
+
+// The wizard is the consent point, so its help must match docs/telemetry.md
+// rather than promising anonymity the reports do not provide.
+func TestTelemetryHelpDisclosesIdentifyingData(t *testing.T) {
+	t.Parallel()
+	help, found := fieldHelp["telemetry"]
+	if !found {
+		t.Fatal("the telemetry question has no help")
+	}
+	for _, required := range []string{"not anonymous", "installation ID", "public IP", "reverse-DNS", "Sentry"} {
+		if !strings.Contains(help.text, required) {
+			t.Errorf("telemetry help omits %q", required)
+		}
+	}
+	for _, forbidden := range []string{"anonymous error reports", "Nothing about your network addresses"} {
+		if strings.Contains(help.text, forbidden) {
+			t.Errorf("telemetry help claims %q", forbidden)
+		}
+	}
+}
