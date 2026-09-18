@@ -220,11 +220,11 @@ IPTV_IGMPPROXY_IGMP_VERSION="3"
 	if value.Profile != "telenor" {
 		t.Fatalf("profile = %q, want telenor", value.Profile)
 	}
-	if reflect.DeepEqual(value.WAN.NATDestinations, value.Proxy.SourceRanges) {
-		t.Fatal("known legacy profile kept proxy sources in NAT destinations")
-	}
-	if !slices.Contains(value.Proxy.SourceRanges, "224.0.0.0/4") {
+	if !slices.Equal(value.Proxy.SourceRanges, []string{"93.91.111.0/24", "148.122.7.125/32"}) {
 		t.Fatalf("Telenor proxy sources = %q", value.Proxy.SourceRanges)
+	}
+	if slices.Contains(value.Proxy.SourceRanges, "224.0.0.0/4") {
+		t.Fatalf("a multicast group survived as a proxy source: %q", value.Proxy.SourceRanges)
 	}
 }
 

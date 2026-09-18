@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -34,7 +35,7 @@ const validProfileDocument = `{
     "acme": {
       "name": "ACME",
       "wan": {"vlan": 4, "dhcp": true, "natDestinations": ["10.0.0.0/8"]},
-      "sourceRanges": ["224.0.0.0/4"]
+      "sourceRanges": ["198.51.100.0/24"]
     }
   }
 }`
@@ -156,5 +157,40 @@ func TestParseProfilesRejectsMalformedJSON(t *testing.T) {
 	t.Parallel()
 	if _, err := ParseCatalog([]byte("{")); err == nil {
 		t.Fatal("accepted")
+	}
+}
+
+// RFC 1112 section 4 forbids a host group address in the source field, so a
+// group can never match a sender and igmpproxy's altnet cannot use one.
+func TestNoProfileTreatsAMulticastGroupAsASource(t *testing.T) {
+	t.Parallel()
+	for _, profile := range Profiles() {
+		for _, prefix := range profile.Config.Proxy.SourceRanges {
+			parsed, err := netip.ParsePrefix(prefix)
+			if err != nil {
+				t.Errorf("profile %s: source %q does not parse", profile.ID, prefix)
+
+				continue
+			}
+			if parsed.Addr().IsMulticast() {
+				t.Errorf("profile %s lists the group %q as a source", profile.ID, prefix)
+			}
+		}
+	}
+}
+
+// Legacy IPTV_WAN_RANGES drove NAT and altnet together, so a migrating
+// configuration still carries the groups the catalog no longer does.
+func TestInferLegacyProfileIgnoresMulticastGroups(t *testing.T) {
+	t.Parallel()
+	telenor, found := ProfileByID("telenor")
+	if !found {
+		t.Fatal("the telenor profile is missing")
+	}
+	legacy := telenor.Config
+	legacy.WAN.NATDestinations = append([]string{"224.0.0.0/4"}, telenor.Config.Proxy.SourceRanges...)
+	got, ok := InferLegacyProfile(legacy)
+	if !ok || got != "telenor" {
+		t.Fatalf("legacy ranges with a group inferred %q (found %v)", got, ok)
 	}
 }

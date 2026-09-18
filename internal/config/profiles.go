@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"sort"
 	"sync"
@@ -356,7 +357,7 @@ func InferLegacyProfile(value Config) (string, bool) {
 			value.WAN.DHCP == candidate.Config.WAN.DHCP &&
 			value.WAN.StaticAddress == candidate.Config.WAN.StaticAddress &&
 			slices.Equal(value.WAN.DHCPOptions, candidate.Config.WAN.DHCPOptions) &&
-			slices.Equal(value.WAN.NATDestinations, candidate.Config.Proxy.SourceRanges) {
+			slices.Equal(unicastPrefixes(value.WAN.NATDestinations), unicastPrefixes(candidate.Config.Proxy.SourceRanges)) {
 			if match != "" {
 				return "", false
 			}
@@ -365,4 +366,19 @@ func InferLegacyProfile(value Config) (string, bool) {
 	}
 
 	return match, match != ""
+}
+
+// A legacy IPTV_WAN_RANGES list drove both the NAT rules and igmpproxy's
+// altnet, so it carries the multicast groups a source allowlist cannot hold.
+// The senders the two lists still share are what identifies the provider.
+func unicastPrefixes(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if parsed, err := netip.ParsePrefix(value); err == nil && parsed.Addr().IsMulticast() {
+			continue
+		}
+		result = append(result, value)
+	}
+
+	return result
 }
