@@ -5,5 +5,5 @@ Choices-C: bt, init7, kpn, magentatv, meo, posttv, solcon, swisscom, telenor, tw
 Default: kpn
 _Description: IPTV provider profile:
  Select the provider defaults to apply. Hardware-specific WAN and LAN interfaces
- are detected on the console. Choose Custom to review every setting interactively
- later with "udm-iptv configure".
+ are detected on the console. Choose Custom to leave IPTV unconfigured and set
+ every value yourself by running "udm-iptv install" after this package finishes.

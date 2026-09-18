@@ -46,6 +46,18 @@ func loadOrImportConfig(path, stateDir string) (config.Config, bool, error) {
 	return device.Defaults(), true, nil
 }
 
+// startingPoint keeps an unconfigured console off the KPN defaults when the
+// user asked for the custom profile. Applying "custom" relabels the draft it
+// is given, which is the right answer for a saved configuration and the wrong
+// one for a fresh console, where that draft is the KPN profile.
+func startingPoint(command *cobra.Command, value config.Config, fresh bool) config.Config {
+	if !fresh || !command.Flags().Changed("profile") || command.Flags().Lookup("profile").Value.String() != "custom" {
+		return value
+	}
+
+	return device.WithInterfaces(config.Default())
+}
+
 // override folds one flag into the draft configuration.
 type override struct {
 	name string
@@ -196,6 +208,7 @@ func (application *Application) configureCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			value = startingPoint(command, value, fresh)
 			if err := flags.apply(command, &value); err != nil {
 				return err
 			}

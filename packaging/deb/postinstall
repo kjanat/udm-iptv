@@ -4,6 +4,7 @@
 . /usr/share/debconf/confmodule
 
 binary=/data/udm-iptv/bin/udm-iptv
+command=/usr/local/bin/udm-iptv
 config=/data/udm-iptv/config.json
 legacy=/data/udm-iptv/legacy.conf
 
@@ -11,7 +12,24 @@ db_get udm-iptv/profile
 profile=${RET:-kpn}
 db_stop
 
-if [ ! -e "${config}" ] && [ ! -e "${legacy}" ] && [ ! -e /etc/udm-iptv.conf ]; then
+configured=false
+if [ -e "${config}" ] || [ -e "${legacy}" ] || [ -e /etc/udm-iptv.conf ]; then
+	configured=true
+fi
+
+# Custom supplies no provider settings, and a maintainer script cannot assume a
+# terminal to ask for them. Leave IPTV unconfigured rather than saving the
+# defaults of whichever profile the draft happened to hold.
+if [ "${configured}" = false ] && [ "${profile}" = custom ]; then
+	mkdir -p "$(dirname "${command}")"
+	ln -sf "${binary}" "${command}"
+	echo "udm-iptv is installed but IPTV is not configured yet."
+	echo "Run: udm-iptv install"
+
+	exit 0
+fi
+
+if [ "${configured}" = false ]; then
 	"${binary}" configure --profile "${profile}" --non-interactive
 fi
 
