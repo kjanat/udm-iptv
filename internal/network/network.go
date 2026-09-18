@@ -25,8 +25,12 @@ const (
 	dhcpBaseMetric = 200
 )
 
+// linkAlias marks the links this program creates.
+const linkAlias = "udm-iptv"
+
 var (
 	errInterfaceNotVLAN        = errors.New("interface already exists and is not a VLAN")
+	errForeignVLAN             = errors.New("interface already exists, was not created by udm-iptv and is not the configured VLAN")
 	errInvalidRouteMetric      = errors.New("invalid route metric")
 	errMissingDHCPInterface    = errors.New("udhcpc did not provide an interface")
 	errLeaseAddressNotIPv4     = errors.New("DHCP lease address must be IPv4")
@@ -62,12 +66,13 @@ func EnsureLink(value config.Config) (netlink.Link, error) {
 }
 
 func ensureVLAN(value config.Config, parent netlink.Link) (netlink.Link, error) {
-	if err := removeManagedVLAN(value.WAN.VLANInterface); err != nil {
+	if err := removeManagedVLAN(value, parent.Attrs().Index); err != nil {
 		return nil, err
 	}
 	attributes := netlink.NewLinkAttrs()
 	attributes.Name = value.WAN.VLANInterface
 	attributes.ParentIndex = parent.Attrs().Index
+	attributes.Alias = linkAlias
 	vlan := &netlink.Vlan{LinkAttrs: attributes, VlanId: value.WAN.VLAN}
 	if err := netlink.LinkAdd(vlan); err != nil {
 		return nil, fmt.Errorf("create VLAN interface: %w", err)
@@ -81,7 +86,8 @@ func ensureVLAN(value config.Config, parent netlink.Link) (netlink.Link, error) 
 	return vlan, nil
 }
 
-func removeManagedVLAN(name string) error {
+func removeManagedVLAN(value config.Config, parentIndex int) error {
+	name := value.WAN.VLANInterface
 	existing, err := netlink.LinkByName(name)
 	if err != nil {
 		if _, ok := errors.AsType[netlink.LinkNotFoundError](err); !ok {
@@ -90,14 +96,32 @@ func removeManagedVLAN(name string) error {
 
 		return nil
 	}
-	if _, ok := existing.(*netlink.Vlan); !ok {
+	vlan, ok := existing.(*netlink.Vlan)
+	if !ok {
 		return fmt.Errorf("%w: %s", errInterfaceNotVLAN, name)
+	}
+	if !managedVLAN(vlan, parentIndex, value.WAN.VLAN) {
+		return fmt.Errorf("%w: %s is VLAN %d on link index %d; configured VLAN %d on %s", errForeignVLAN, name, vlan.VlanId, vlan.Attrs().ParentIndex, value.WAN.VLAN, value.WAN.Interface)
 	}
 	if err := netlink.LinkDel(existing); err != nil {
 		return fmt.Errorf("replace managed VLAN interface %s: %w", name, err)
 	}
 
 	return nil
+}
+
+// managedVLAN accepts a link carrying this program's alias, and an unmarked
+// link that already is the configured VLAN on the configured parent.
+// Releases before 5.0.0 created the VLAN without an alias.
+func managedVLAN(vlan *netlink.Vlan, parentIndex, vlanID int) bool {
+	return owned(vlan) || (vlan.Attrs().ParentIndex == parentIndex && vlan.VlanId == vlanID)
+}
+
+// owned reports whether this program created link. Addresses on a borrowed
+// interface belong to whoever put them there, so cleanup is limited to
+// owned links.
+func owned(link netlink.Link) bool {
+	return link.Attrs().Alias == linkAlias
 }
 
 func startVLAN(vlan netlink.Link, address string) error {
@@ -262,8 +286,9 @@ func optionValue(spec []string, flag string) string {
 	return ""
 }
 
-// ApplyStatic sets the configured static address and static routes on link,
-// retiring any IPv4 address a previous configuration left behind.
+// ApplyStatic sets the configured static address and static routes on link.
+// On an owned link it also retires any IPv4 address a previous configuration
+// left behind.
 func ApplyStatic(value config.Config, link netlink.Link) error {
 	if value.WAN.StaticAddress != "" {
 		address, err := netlink.ParseAddr(value.WAN.StaticAddress)
@@ -296,10 +321,11 @@ func ApplyStaticRoutes(value config.Config, link netlink.Link) error {
 	return nil
 }
 
-// ResetLease clears any DHCP-derived routes and addresses from link.
+// ResetLease clears any DHCP-derived routes from link, and every IPv4
+// address when this program owns the link.
 func ResetLease(link netlink.Link) error {
 	err := flushDHCPRoutes(link.Attrs().Index)
-	if err != nil {
+	if err != nil || !owned(link) {
 		return err
 	}
 
@@ -391,7 +417,7 @@ func applyLease(lease Lease, policy config.RoutePolicy, ops leaseOperations) err
 		return fmt.Errorf("find DHCP interface: %w", err)
 	}
 	if lease.Action == "deconfig" {
-		return clearLease(link, ops)
+		return clearLease(link, lease, ops)
 	}
 	address, prefixLength, err := leaseAddress(lease)
 	if err != nil {
@@ -405,13 +431,31 @@ func applyLease(lease Lease, policy config.RoutePolicy, ops leaseOperations) err
 	return installLease(link, address, routes, ops)
 }
 
-func clearLease(link netlink.Link, ops leaseOperations) error {
+// clearLease removes the lease's routes, and its addresses: every IPv4
+// address on an owned link, and on a borrowed link only the address the
+// previous lease assigned, when the caller knows it.
+func clearLease(link netlink.Link, lease Lease, ops leaseOperations) error {
 	if err := reconcileLeaseRoutes(link.Attrs().Index, nil, ops); err != nil {
 		return fmt.Errorf("clear DHCP routes: %w", err)
 	}
-	if _, err := removeOtherAddresses(link, nil, ops); err != nil {
-		return fmt.Errorf("clear DHCP addresses: %w", err)
+	if owned(link) {
+		if _, err := removeOtherAddresses(link, nil, ops); err != nil {
+			return fmt.Errorf("clear DHCP addresses: %w", err)
+		}
+
+		return nil
 	}
+	if lease.Address == "" {
+		return nil
+	}
+	address, _, err := leaseAddress(lease)
+	if err != nil {
+		return err
+	}
+	if err := ops.deleteAddress(link, address); err != nil && !errors.Is(err, unix.EADDRNOTAVAIL) {
+		return fmt.Errorf("clear DHCP address: %w", err)
+	}
+
 	return nil
 }
 

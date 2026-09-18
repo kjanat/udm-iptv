@@ -77,6 +77,23 @@ func TestPackageInstalledWithoutDpkg(t *testing.T) {
 	}
 }
 
+// A package dpkg has only unpacked or half configured, as a failed postinst
+// leaves it, still belongs to dpkg. A removed package whose configuration
+// dpkg remembers does not: a standalone installation made after the removal
+// is this program's to take apart.
+func TestPackageOwnedCoversPartialStates(t *testing.T) {
+	t.Parallel()
+	for status, want := range map[string]bool{
+		"installed": true, "unpacked": true, "half-configured": true, "half-installed": true,
+		"triggers-pending": true, "triggers-awaited": true,
+		"config-files": false, "not-installed": false, "": false,
+	} {
+		if got := packageOwned(status); got != want {
+			t.Errorf("packageOwned(%q) = %t, want %t", status, got, want)
+		}
+	}
+}
+
 func TestDelegateRemovalSkipsAnUnownedInstallation(t *testing.T) {
 	t.Parallel()
 	var out, errOut bytes.Buffer

@@ -104,9 +104,10 @@ Useful while investigating a problem. Noisy otherwise.
 Turn it off again when you are done.`},
 	"proxy-sources": {"Allowed multicast sources", `igmpproxy only forwards streams that come from these network ranges.
 Your provider's TV servers live there.
+improxy has no such filter and ignores this list.
 
 0.0.0.0/0 allows every source.
-That is the safe choice if you are unsure.`},
+That is the unrestricted choice; use it when your provider's ranges are unknown.`},
 	"telemetry": {"Help improve udm-iptv", `Sends failures and the settings you chose to the
 maintainer's Sentry project over HTTPS, on EU servers.
 It improves provider profiles and shows which firmware

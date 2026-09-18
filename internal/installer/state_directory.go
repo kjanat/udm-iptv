@@ -102,7 +102,7 @@ func removeStateFiles(root *os.Root, configPath string, keepConfig bool) error {
 }
 
 func ownedStateFiles(root *os.Root, configPath string, keepConfig bool) []string {
-	files := []string{"bin/udm-iptv", "bin/udhcpc-hook"}
+	files := []string{"bin/udm-iptv", "bin/udhcpc-hook", lockName}
 	if keepConfig {
 		return files
 	}

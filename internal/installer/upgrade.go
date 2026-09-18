@@ -86,12 +86,88 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 	if !options.Force && application.Version == candidate.version {
 		return writef(application.Out, "udm-iptv %s is already installed. Use --force to reinstall.\n", candidate.version)
 	}
-	if err := application.applyRelease(ctx, candidate); err != nil {
+	owned, err := application.packageCommands().installed(ctx)
+	if err != nil {
+		return err
+	}
+	if owned {
+		err = application.applyPackageRelease(ctx, candidate)
+	} else {
+		err = application.applyStandaloneRelease(ctx, candidate)
+	}
+	if err != nil {
 		return err
 	}
 
 	return writef(application.Out, "Upgraded udm-iptv to %s.\n", candidate.version)
 }
+
+// applyStandaloneRelease replaces the executable this program installed.
+func (application *Upgrader) applyStandaloneRelease(ctx context.Context, candidate upgradeCandidate) (result error) {
+	release, err := AcquireLock(application.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, release()) }()
+
+	return application.applyRelease(ctx, candidate)
+}
+
+// applyPackageRelease hands a dpkg-tracked installation its new package, so
+// the package database, maintainer scripts and shipped files advance with
+// the executable. apt runs postinst, which installs under the operation
+// lock, so this path holds none of its own.
+func (application *Upgrader) applyPackageRelease(ctx context.Context, candidate upgradeCandidate) error {
+	candidate.stateDir = application.StateDir
+	assetName := packageAssetName()
+	assetURL, checksumURL := releaseAssetURLs(candidate.release, assetName)
+	if assetURL == "" || checksumURL == "" {
+		return fmt.Errorf("%w: %s has no %s or SHA256SUMS", errReleaseAssetsMissing, candidate.release.GetTagName(), assetName)
+	}
+	directory, err := os.MkdirTemp("", "udm-iptv-upgrade-*")
+	if err != nil {
+		return fmt.Errorf("create upgrade download directory: %w", err)
+	}
+	defer removeAllIgnoringError(directory)
+	if err := os.Chmod(directory, filemode.SharedDir); err != nil {
+		return fmt.Errorf("open upgrade download directory to apt: %w", err)
+	}
+	if err := writef(application.Out, "Downloading the udm-iptv %s package...\n", candidate.version); err != nil {
+		return err
+	}
+	packagePath, err := application.fetchAsset()(ctx, candidate, directory, assetName, assetURL, checksumURL, filemode.SharedFile)
+	if err != nil {
+		return err
+	}
+	if err := writeString(application.Out, "Installing the package with apt-get...\n"); err != nil {
+		return err
+	}
+
+	return application.packageCommands().install(ctx, packagePath, application.Out, application.Err)
+}
+
+func packageAssetName() string {
+	return "udm-iptv-" + runtime.GOARCH + ".deb"
+}
+
+func (application *Upgrader) packageCommands() packageCommands {
+	if application.packages.installed == nil {
+		return systemPackageCommands()
+	}
+
+	return application.packages
+}
+
+func (application *Upgrader) fetchAsset() assetFetcher {
+	if application.fetch == nil {
+		return downloadVerifiedAsset
+	}
+
+	return application.fetch
+}
+
+// assetFetcher downloads and verifies one release asset into directory.
+type assetFetcher func(ctx context.Context, candidate upgradeCandidate, directory, assetName, assetURL, checksumURL string, mode os.FileMode) (string, error)
 
 type upgradeCandidate struct {
 	client     *http.Client
@@ -220,7 +296,7 @@ func (application *Upgrader) applyRelease(ctx context.Context, candidate upgrade
 	if err := writef(application.Out, "Downloading udm-iptv %s...\n", candidate.version); err != nil {
 		return err
 	}
-	binaryPath, err := downloadVerifiedAsset(ctx, candidate, directory, assetName, assetURL, checksumURL)
+	binaryPath, err := application.fetchAsset()(ctx, candidate, directory, assetName, assetURL, checksumURL, filemode.Executable)
 	if err != nil {
 		return err
 	}
@@ -229,10 +305,10 @@ func (application *Upgrader) applyRelease(ctx context.Context, candidate upgrade
 	return activateUpgrade(ctx, binaryPath, target, candidate.version, systemUpgradeActions(application.Restart))
 }
 
-func downloadVerifiedAsset(ctx context.Context, candidate upgradeCandidate, directory, assetName, assetURL, checksumURL string) (string, error) {
+func downloadVerifiedAsset(ctx context.Context, candidate upgradeCandidate, directory, assetName, assetURL, checksumURL string, mode os.FileMode) (string, error) {
 	binaryPath := filepath.Join(directory, assetName)
 	checksumPath := filepath.Join(directory, "SHA256SUMS")
-	if err := download(ctx, candidate.client, assetURL, binaryPath, filemode.Executable); err != nil {
+	if err := download(ctx, candidate.client, assetURL, binaryPath, mode); err != nil {
 		return "", err
 	}
 	if err := download(ctx, candidate.client, checksumURL, checksumPath, filemode.PrivateFile); err != nil {
@@ -305,9 +381,16 @@ func attestationVerifier(ctx context.Context, candidate upgradeCandidate, digest
 	return verifier, verify.NewPolicy(verify.WithArtifactDigest("sha256", raw), verify.WithCertificateIdentity(identity)), nil
 }
 
+// releaseWorkflow is the workflow that attests release assets.
+const releaseWorkflow = ".github/workflows/release.yml"
+
+// workflowIdentity binds the accepted signer to the release workflow run
+// for the candidate's own tag, so a correctly signed asset from another
+// release does not verify for this one.
 func workflowIdentity(candidate upgradeCandidate) (verify.CertificateIdentity, error) {
 	slug := regexp.QuoteMeta(candidate.owner + "/" + candidate.repository)
-	san, err := verify.NewSANMatcher("", `^https://github\.com/`+slug+`/\.github/workflows/.+@refs/tags/.+$`)
+	tag := regexp.QuoteMeta(candidate.release.GetTagName())
+	san, err := verify.NewSANMatcher("", `^https://github\.com/`+slug+`/`+regexp.QuoteMeta(releaseWorkflow)+`@refs/tags/`+tag+`$`)
 	if err != nil {
 		return verify.CertificateIdentity{}, fmt.Errorf("build attestation identity matcher: %w", err)
 	}
@@ -497,7 +580,7 @@ type bearerTransport struct {
 
 func (transport *bearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	clone := request.Clone(request.Context())
-	if clone.URL.Hostname() == githubAPIHost {
+	if clone.URL.Scheme == "https" && clone.URL.Hostname() == githubAPIHost {
 		clone.Header.Set("Authorization", "Bearer "+transport.token)
 		clone.Header.Set("X-Github-Api-Version", githubAPIVersion)
 	}
@@ -606,6 +689,8 @@ func verifyChecksum(binaryPath, checksumPath, assetName string) error {
 // Upgrader downloads verified releases and rolls back failed activation.
 type Upgrader struct {
 	Version, StateDir string
-	Out               io.Writer
+	Out, Err          io.Writer
 	Restart           func(context.Context, bool) error
+	packages          packageCommands
+	fetch             assetFetcher
 }

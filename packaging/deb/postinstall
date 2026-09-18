@@ -5,16 +5,20 @@
 
 binary=/data/udm-iptv/bin/udm-iptv
 command=/usr/local/bin/udm-iptv
-config=/data/udm-iptv/config.json
-legacy=/data/udm-iptv/legacy.conf
 
 db_get udm-iptv/profile
 profile=${RET:-kpn}
 db_stop
 
-configured=false
-if [ -e "${config}" ] || [ -e "${legacy}" ] || [ -e /etc/udm-iptv.conf ]; then
-	configured=true
+# Exit status 3 means no saved or importable configuration.
+configured=true
+if probe=$("${binary}" configure get 2>&1 >/dev/null); then
+	:
+elif [ "$?" -eq 3 ]; then
+	configured=false
+else
+	printf '%s\n' "${probe}" >&2
+	exit 1
 fi
 
 # Custom supplies no provider settings, and a maintainer script cannot assume a
@@ -30,7 +34,7 @@ if [ "${configured}" = false ] && [ "${profile}" = custom ]; then
 fi
 
 if [ "${configured}" = false ]; then
-	"${binary}" configure --profile "${profile}" --non-interactive
+	"${binary}" configure set --profile "${profile}"
 fi
 
 exec "${binary}" install --force --non-interactive

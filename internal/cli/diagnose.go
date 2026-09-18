@@ -50,6 +50,7 @@ var (
 	errFollowFileStandsAlone  = errors.New("--follow-file cannot be combined with --capture or --follow")
 	errCapturePathNotRegular  = errors.New("capture path must be a regular file")
 	errCaptureWorkerExited    = errors.New("the capture worker exited during initialisation")
+	errCaptureNotConfirmed    = errors.New("the capture worker has not written its first record")
 )
 
 // diagnoseRule reports why an invocation of diagnose is not runnable.
@@ -231,7 +232,7 @@ func (application *Application) startCapture(ctx context.Context, options diagno
 	if err != nil {
 		return err
 	}
-	if err := confirmCaptureStarted(worker, errorLog.Name()); err != nil {
+	if err := confirmCaptureStarted(worker, captureFollowPath(options), errorLog.Name(), captureStartGrace); err != nil {
 		return err
 	}
 	pid := worker.Process.Pid
@@ -295,21 +296,38 @@ func (application *Application) startCaptureWorker(ctx context.Context, options 
 	return worker, nil
 }
 
-// captureStartGrace bounds the wait for a worker that fails while opening its
-// outputs, subscribing to address updates or loading the configuration.
-const captureStartGrace = time.Second
+const (
+	// captureStartGrace bounds the wait for the worker's first record; a
+	// worker writes it right after opening its outputs.
+	captureStartGrace = 5 * time.Second
+	captureStartPoll  = 50 * time.Millisecond
+)
 
-// confirmCaptureStarted reports a worker that exited during initialisation
-// instead of announcing a capture that is not running. Setsid keeps the worker
-// alive past this process, so the wait only ever observes an early exit.
-func confirmCaptureStarted(worker *exec.Cmd, errorLogPath string) error {
+// confirmCaptureStarted waits for the worker's first record in the capture
+// file. A worker that exits before writing one failed during initialisation;
+// a worker that exits successfully finished a short capture. Setsid keeps the
+// worker alive past this process, so the wait only ever observes an early exit.
+func confirmCaptureStarted(worker *exec.Cmd, capturePath, errorLogPath string, grace time.Duration) error {
 	exited := make(chan error, 1)
 	go func() { exited <- worker.Wait() }()
-	select {
-	case cause := <-exited:
-		return errors.Join(captureWorkerFailure(cause, errorLogPath), os.Remove(errorLogPath))
-	case <-time.After(captureStartGrace):
-		return nil
+	deadline := time.After(grace)
+	poll := time.NewTicker(captureStartPoll)
+	defer poll.Stop()
+	for {
+		select {
+		case cause := <-exited:
+			if cause == nil {
+				return nil
+			}
+
+			return errors.Join(captureWorkerFailure(cause, errorLogPath), os.Remove(errorLogPath))
+		case <-deadline:
+			return fmt.Errorf("%w within %s: PID %d, capture %s, errors %s", errCaptureNotConfirmed, grace, worker.Process.Pid, capturePath, errorLogPath)
+		case <-poll.C:
+			if info, err := os.Stat(capturePath); err == nil && info.Size() > 0 {
+				return nil
+			}
+		}
 	}
 }
 

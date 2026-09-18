@@ -55,6 +55,27 @@
 
 - [x] `configure set` writes flags without the form, `configure get [name]` prints the configuration or one setting by flag name; `--non-interactive` gone from `configure`
 - [x] Consent prompt reworded; `enter/tab` shown in confirm key hints; escape closes help like any key
+- [x] `configure get` exits 3 on an unconfigured console; `postinstall` asks it instead of keeping its own list of legacy paths
+- [x] Repeated strings are constants; provider IDs and PTR suffixes live in the catalog only
+
+## Cross-cutting audit (2026-09-18, `dba54f3`)
+
+- [x] F01 `Installed` needs the unit file as well as the executable; `configure set` on an unpacked package saves without restarting
+- [x] F02 package bootstrap finds `/data/udm-iptv/udm-iptv.conf` through `configure get`
+- [x] F03 `--profile custom` keeps the saved interfaces; provider profiles are seeded with the detected ones
+- [x] F04 VLAN ownership: created links carry alias `udm-iptv`; an unmarked link is replaced only when it already is the configured VLAN on the configured parent; borrowed interfaces keep their other addresses
+- [x] F05 `unpacked`, `half-configured`, `half-installed` and trigger states delegate to apt; `config-files` and `not-installed` do not
+- [x] F06 a dpkg-tracked installation upgrades through the attested `.deb` and `apt-get install`
+- [x] F07 the capture launcher waits for the worker's first record; exit 0 is a finished capture
+- [x] F08 already gone at `9f1ee3f`: no redaction in local captures
+- [x] F09 journal entries keep their own timestamp and source; `ubios-udapi-server` lines mentioning udm-iptv are collected too; snapshot labels separate configured policy from observed state
+- [x] F10 help calls `0.0.0.0/0` unrestricted; the snapshot says whether improxy applies the source ranges (it does not)
+- [x] F11 `.lock` in the state directory serialises install, upgrade, configure and removal; never held across apt
+- [x] F12 firmware harness shadows `compopt` and asserts completions; cold named-profile and legacy-backup package installs added (CI only, ARM64)
+- [x] R01 attestation identity bound to `release.yml` at the candidate's own tag; token only over https
+- [ ] R02 lease application acknowledgement beyond address presence
+- [ ] R03 commit boundary for a failed reconfiguration (saved versus applied)
+- [ ] Named profile on a saved configuration still reseeds WAN/LAN like the wizard does; decide whether saved hardware choices should survive a profile switch on the CLI
 
 ## Done earlier
 
@@ -62,6 +83,7 @@
 - [x] Diagnostics: unavailable is not zero (`5dcfa4f`)
 - [x] 14 stale agent worktrees and 25 merged branches removed
 - [x] Tab completion on UniFi OS (`b180e28`)
+- [x] `postinstall` called `configure --non-interactive` after that flag was removed in `9f1ee3f`; it calls `configure set` now
 
 ## Provider catalog (research index)
 

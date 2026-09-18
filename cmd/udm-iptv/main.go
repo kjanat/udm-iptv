@@ -13,8 +13,12 @@ import (
 
 var version = "dev"
 
-// sigintExitCode follows the POSIX convention of 128+signal for SIGINT.
-const sigintExitCode = 130
+const (
+	// notConfiguredExitCode lets a maintainer script tell an unconfigured console from a failure.
+	notConfiguredExitCode = 3
+	// sigintExitCode follows the POSIX convention of 128+signal for SIGINT.
+	sigintExitCode = 130
+)
 
 func main() {
 	if filepath.Base(os.Args[0]) == "udhcpc-hook" {
@@ -27,6 +31,9 @@ func main() {
 			os.Exit(sigintExitCode)
 		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		if errors.Is(err, cli.ErrNotConfigured) {
+			os.Exit(notConfiguredExitCode)
+		}
 		os.Exit(1)
 	}
 }

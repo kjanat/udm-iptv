@@ -24,6 +24,11 @@ func Uninstall(ctx context.Context, configPath, stateDir string, keepConfig bool
 	}
 	if root != nil {
 		defer func() { result = errors.Join(result, root.Close()) }()
+		release, err := AcquireLock(stateDir)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, release()) }()
 	}
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
@@ -149,14 +154,15 @@ func executeUninstall(ctx context.Context, actions uninstallActions) error {
 // packageName is the Debian package that ships this program.
 const packageName = "udm-iptv"
 
-// packageCommands are the external programs a delegated removal runs.
+// packageCommands are the external programs a delegated removal or upgrade runs.
 type packageCommands struct {
 	installed func(context.Context) (bool, error)
 	remove    func(ctx context.Context, action string, out, errOut io.Writer) error
+	install   func(ctx context.Context, packagePath string, out, errOut io.Writer) error
 }
 
 func systemPackageCommands() packageCommands {
-	return packageCommands{installed: packageInstalled, remove: aptRemove}
+	return packageCommands{installed: packageInstalled, remove: aptRemove, install: aptInstall}
 }
 
 // packageInstalled reports whether dpkg tracks this installation. The marker
@@ -166,7 +172,7 @@ func packageInstalled(ctx context.Context) (bool, error) {
 	query := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${db:Status-Status}", packageName)
 	status, err := query.Output()
 	if err == nil {
-		return strings.TrimSpace(string(status)) == "installed", nil
+		return packageOwned(strings.TrimSpace(string(status))), nil
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
@@ -179,12 +185,34 @@ func packageInstalled(ctx context.Context) (bool, error) {
 	return false, fmt.Errorf("inspect the %s package: %w", packageName, err)
 }
 
+// packageOwned reports whether a dpkg status word still needs dpkg to take
+// the package apart: unpacked, half-configured, half-installed and the
+// trigger states as much as installed. In config-files state dpkg has run
+// prerm already and holds no file this program installs afterwards, and
+// not-installed is how dpkg-query reports a purged package it remembers.
+func packageOwned(status string) bool {
+	switch status {
+	case "", "not-installed", "config-files":
+		return false
+	default:
+		return true
+	}
+}
+
 func aptRemove(ctx context.Context, action string, out, errOut io.Writer) error {
-	remove := exec.CommandContext(ctx, "apt-get", action, "-y", packageName)
-	remove.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-	remove.Stdout, remove.Stderr = out, errOut
-	if err := remove.Run(); err != nil {
-		return fmt.Errorf("apt-get %s %s: %w", action, packageName, err)
+	return runApt(ctx, out, errOut, action, "-y", packageName)
+}
+
+func aptInstall(ctx context.Context, packagePath string, out, errOut io.Writer) error {
+	return runApt(ctx, out, errOut, "install", "-y", packagePath)
+}
+
+func runApt(ctx context.Context, out, errOut io.Writer, arguments ...string) error {
+	apt := exec.CommandContext(ctx, "apt-get", arguments...)
+	apt.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	apt.Stdout, apt.Stderr = out, errOut
+	if err := apt.Run(); err != nil {
+		return fmt.Errorf("apt-get %s: %w", strings.Join(arguments, " "), err)
 	}
 
 	return nil

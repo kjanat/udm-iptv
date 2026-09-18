@@ -108,6 +108,7 @@ func (b installDependenciesBuilder) build() installDependencies {
 		promptFresh: b.promptFresh,
 		executable:  func() (string, error) { return b.executable, nil },
 		requireRoot: b.requireRoot,
+		lock:        func(string) (func() error, error) { return func() error { return nil }, nil },
 		backend:     b.backend,
 	}
 }

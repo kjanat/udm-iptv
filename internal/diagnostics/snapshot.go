@@ -383,14 +383,16 @@ func inspectLink(target string) networkStatus {
 }
 
 // RenderSnapshot returns a human-readable string representation of a snapshot.
+// Configured settings and observed state are labelled apart.
 func RenderSnapshot(value Snapshot) string {
 	return fmt.Sprintf(`udm-iptv %s
 Profile: %s
 WAN: %s, VLAN %d (%s), DHCP: %t
 Custom VLAN MAC: %t, static address: %t, DHCP options: %t
+DHCP route policy: %s
 NAT destinations: %s
 Active NAT rules: %s
-Proxy sources: %s
+Proxy source ranges: %s
 LAN interfaces: %s
 Service: %s/%s (%s, restarts: %d)
 Proxy: %s (PID %d)
@@ -398,16 +400,38 @@ IGMP version: %d, quickleave enabled: %t, proxy debug logging: %t
 IPTV interface: %s (%s, %d IPv4 addresses)
 Addresses: %s
 Routes: %s
-IPTV default route: %t
+Default route observed on %s: %s
 Multicast routes: %s
 `, value.Version, value.Config.Profile, value.Config.WANInterface, value.Config.VLAN, value.Config.IPTVInterface, value.Config.DHCP,
-		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, strings.Join(value.Config.NATDestinations, ", "),
-		natRuleCount(value.NAT), strings.Join(value.Config.ProxySourceRanges, ", "), strings.Join(value.Config.LANInterfaces, ", "),
+		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, fallbackText(value.Config.DHCPRoutes),
+		strings.Join(value.Config.NATDestinations, ", "), natRuleCount(value.NAT), renderSourceRanges(value.Config), strings.Join(value.Config.LANInterfaces, ", "),
 		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts,
 		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, value.Config.QuickLeave, value.Config.Debug,
 		value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount, strings.Join(value.Network.Addresses, ", "),
-		strings.Join(value.Network.Routes, ", "), value.Network.DefaultRoute, multicastSummary(value.Multicast)) +
+		strings.Join(value.Network.Routes, ", "), value.Network.Target, presence(value.Network.DefaultRoute), multicastSummary(value.Multicast)) +
 		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderMemberships(value.Memberships) + renderLease(value.Lease) + renderDownstream(value)
+}
+
+func presence(observed bool) string {
+	if observed {
+		return "yes"
+	}
+
+	return "none"
+}
+
+// renderSourceRanges says whether the configured ranges reach the proxy:
+// igmpproxy takes them as altnet entries, improxy has no source filter.
+func renderSourceRanges(summary configSummary) string {
+	if len(summary.ProxySourceRanges) == 0 {
+		return "none configured"
+	}
+	ranges := strings.Join(summary.ProxySourceRanges, ", ")
+	if summary.Proxy == config.ProxyImproxy {
+		return ranges + " (configured; improxy has no source filter, so nothing is applied)"
+	}
+
+	return ranges + " (applied as igmpproxy altnet)"
 }
 
 func renderNAT(rules *[]string) string {
