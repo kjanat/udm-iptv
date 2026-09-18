@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,7 @@ type Daemon struct {
 	ConfigPath, StateDir string
 	Out, Err             io.Writer
 	Monitor              *telemetry.Reporter
+	Diagnostics          func(context.Context) (json.RawMessage, error)
 }
 
 const (
@@ -207,7 +209,8 @@ func (application *Daemon) proxyCommand(ctx context.Context, value config.Config
 		}
 	}
 	proxy := exec.CommandContext(ctx, binary, arguments...)
-	proxy.Stdout, proxy.Stderr = application.Out, application.Err
+	proxyLog := application.Monitor.LineWriter(ctx, "proxy")
+	proxy.Stdout, proxy.Stderr = io.MultiWriter(application.Out, proxyLog), io.MultiWriter(application.Err, proxyLog)
 	proxy.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(proxy)
 
@@ -215,7 +218,7 @@ func (application *Daemon) proxyCommand(ctx context.Context, value config.Config
 }
 
 func proxyArguments(value config.Config) []string {
-	if value.Proxy.Program == "improxy" {
+	if value.Proxy.Program == config.ProxyImproxy {
 		arguments := []string{}
 		if value.Proxy.Debug {
 			arguments = append(arguments, "-d", "5")
@@ -354,7 +357,8 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 		arguments = append([]string{"udhcpc"}, arguments...)
 	}
 	client := exec.CommandContext(ctx, binary, arguments...)
-	client.Stdout, client.Stderr = application.Out, application.Err
+	dhcpLog := application.Monitor.LineWriter(ctx, "udhcpc")
+	client.Stdout, client.Stderr = io.MultiWriter(application.Out, dhcpLog), io.MultiWriter(application.Err, dhcpLog)
 	client.Env = append(os.Environ(), "UDM_IPTV_CONFIG="+application.ConfigPath)
 	client.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(client)
@@ -418,7 +422,7 @@ func configureGracefulStop(command *exec.Cmd) {
 
 func renderProxyConfig(value config.Config) (string, error) {
 	target := network.Target(value)
-	if value.Proxy.Program == "improxy" {
+	if value.Proxy.Program == config.ProxyImproxy {
 		return renderIMProxyConfig(value, target), nil
 	}
 

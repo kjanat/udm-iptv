@@ -147,6 +147,11 @@ func (p *page) hide(hidden func() bool) *page {
 	return p
 }
 
+// skip hides the page for good, whatever its own hide condition says.
+func (p *page) skip() {
+	p.hide(func() bool { return true })
+}
+
 func (p *page) searching(search *searchable) *page {
 	p.search = search
 
@@ -188,6 +193,8 @@ func wizardForm(pages ...*page) *Wizard {
 		groups = append(groups, p.group)
 	}
 	keymap := huh.NewDefaultKeyMap()
+	keymap.Confirm.Next = key.NewBinding(key.WithKeys("enter", "tab"), key.WithHelp("enter/tab", "next"))
+	keymap.Confirm.Submit = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter/tab", "submit"))
 	for _, p := range pages {
 		if p.search != nil {
 			keymap.Select.Filter = key.NewBinding(key.WithKeys("/"), key.WithHelp("type", "search"))
@@ -439,11 +446,11 @@ type keyRule struct {
 }
 
 var frameKeys = []keyRule{
+	{(*Frame).showingHelp, (*Frame).closeHelpOn},
 	{(*Frame).leaveRequested, (*Frame).askToLeaveOn},
 	{(*Frame).escapesQuestion, (*Frame).escapeOn},
 	{(*Frame).stepsOutOfForm, (*Frame).goBackOn},
 	{(*Frame).explainRequested, (*Frame).toggleHelpOn},
-	{(*Frame).showingHelp, (*Frame).closeHelpOn},
 	{(*Frame).rejectedByVLAN, (*Frame).ignoreOn},
 }
 
@@ -546,8 +553,10 @@ func (frame *Frame) showingHelp(keyPress) bool {
 	return frame.help
 }
 
+// closeHelpOn consumes the key, so an escape that closed the help does not
+// count as the first of two.
 func (frame *Frame) closeHelpOn(keyPress) tea.Cmd {
-	frame.help = false
+	frame.help, frame.escArmed = false, false
 
 	return nil
 }

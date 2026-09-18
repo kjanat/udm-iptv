@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +24,6 @@ import (
 
 var (
 	errSecret          = errors.New("secret")
-	errSecretFirst     = errors.New("secret first")
 	errLeakyPayload    = errors.New("password=supersecret 192.0.2.55 /home/private-router/config.json")
 	errOperationFailed = errors.New("failure")
 	errPrivateFailure  = errors.New("private failure")
@@ -315,7 +317,7 @@ func relationsOf(t *testing.T, exceptions []sentry.Exception) exceptionRelations
 
 func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
-	cause := fmt.Errorf("secret wrapper: %w", errors.Join(errSecretFirst, &os.PathError{Op: "open", Path: "/secret/path", Err: os.ErrPermission}))
+	cause := fmt.Errorf("wrapper: %w", errors.Join(errOperationFailed, &os.PathError{Op: "open", Path: "/data/udm-iptv/config.json", Err: os.ErrPermission}))
 	if err := r.Run(context.Background(), "install", func(context.Context) error { return cause }); !errors.Is(err, cause) {
 		t.Fatal("local error changed")
 	}
@@ -324,7 +326,6 @@ func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
 	assertEqual(t, "grouped events", len(failures), 1)
 	assertEqual(t, "error chain length", len(failures[0].Exception), 5)
 	assertEqual(t, "exception relationships", relationsOf(t, failures[0].Exception), exceptionRelations{groups: 1, parents: 4})
-	assertNoLeaks(t, failures, "secret")
 }
 
 func TestSetMetadataAllowlist(t *testing.T) {
@@ -341,32 +342,32 @@ func TestSetMetadataAllowlist(t *testing.T) {
 	}
 }
 
-func TestAllProductsAndPrivacy(t *testing.T) {
+func TestAllProductsDelivered(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
 	r.SetMetadata("UDMPRO", "5.1.31", "UDMPRO.al324.v5.1.31.5acc35d.260819.1714", "ea15", "improxy", "kpn")
 	if r.dist != "" && r.eventTags()["vcs.revision"] != r.dist {
 		t.Fatal("device metadata replaced the build revision")
 	}
-	secret := errLeakyPayload.Error()
 	err := r.Run(context.Background(), "install", func(context.Context) error { return errLeakyPayload })
-	if err == nil || err.Error() != secret {
+	if err == nil || err.Error() != errLeakyPayload.Error() {
 		t.Fatal("local error was changed")
 	}
 	r.Gauge(context.Background(), "daemon.uptime", 12)
 	r.Close()
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
-	assertNoLeaks(t, transport.events, "supersecret", "192.0.2.55", "private-router", "sentry.server.address", "server_name")
+	failures := failureEvents(transport.events)
+	assertEqual(t, "failures", len(failures), 1)
+	assertEqual(t, "exception value", failures[0].Exception[0].Value, errLeakyPayload.Error())
 	assertEqual(t, "delivered products", countProducts(transport.events), productCounts{failures: 1, traces: 1, logs: 2, metrics: 4})
 }
 
 func noisyEvent() *sentry.Event {
-	event := &sentry.Event{Transaction: "install", ServerName: "secret-host", Message: "secret-message", User: sentry.User{IPAddress: "192.0.2.55"}}
-	event.Contexts = map[string]sentry.Context{"device": {"secret": "secret-context"}}
-	event.Contexts["trace"] = sentry.Context{"trace_id": sentry.TraceID{1}, "span_id": sentry.SpanID{2}, "secret": "secret-trace-data"}
-	event.Attachments = []*sentry.Attachment{{Filename: "secret-file", Payload: []byte("secret-config")}}
-	event.Exception = []sentry.Exception{{Type: "error", Value: "secret-error", Stacktrace: &sentry.Stacktrace{Frames: []sentry.Frame{{Filename: "/home/secret/file.go", AbsPath: "secret-path", Vars: map[string]any{"password": "secret"}, ContextLine: "secret-source", Function: "main.run", Lineno: 42}}}}}
-	event.Exception[0].Mechanism = &sentry.Mechanism{Type: "secret", Description: "secret", Source: "secret", HelpLink: "secret", Data: map[string]any{"secret": "secret"}}
+	event := &sentry.Event{Transaction: "install", Message: "lease bound on eth8.4", User: sentry.User{IPAddress: "192.0.2.55"}}
+	event.Contexts = map[string]sentry.Context{"device": {"arch": "arm64"}}
+	event.Contexts["trace"] = sentry.Context{"trace_id": sentry.TraceID{1}, "span_id": sentry.SpanID{2}}
+	event.Attachments = []*sentry.Attachment{{Filename: attachmentName, ContentType: "text/plain", Payload: []byte("Profile: kpn")}}
+	event.Exception = []sentry.Exception{{Type: "error", Value: "open /data/udm-iptv/config.json: permission denied", Stacktrace: &sentry.Stacktrace{Frames: []sentry.Frame{{Filename: "config.go", Function: "config.Load", Lineno: 42}}}}}
 
 	return event
 }
@@ -379,74 +380,53 @@ func assertAttribute(t *testing.T, subject string, attributes map[string]attribu
 	}
 }
 
-func assertAbsentAttributes(t *testing.T, subject string, attributes map[string]attribute.Value, names ...string) {
-	t.Helper()
-	for _, name := range names {
-		if _, kept := attributes[name]; kept {
-			t.Fatalf("%s kept %s", subject, name)
-		}
-	}
-}
-
 func assertEventFiltered(t *testing.T, r *Reporter) {
 	t.Helper()
 	clean := r.filterEvent(noisyEvent(), nil)
 	if clean == nil {
-		t.Fatal("allowed event dropped")
+		t.Fatal("event dropped")
 	}
-	assertEqual(t, "exception message", clean.Exception[0].Value, "install failed")
+	assertEqual(t, "exception message", clean.Exception[0].Value, "open /data/udm-iptv/config.json: permission denied")
+	assertEqual(t, "message", clean.Message, "lease bound on eth8.4")
 	assertEqual(t, "environment", clean.Environment, "production")
 	assertEqual(t, "dist", clean.Dist, r.dist)
 	if r.dist != "" {
 		assertEqual(t, "vcs.revision", clean.Tags["vcs.revision"], r.dist)
 	}
-	assertEqual(t, "attachments", len(clean.Attachments), 0)
-	assertEqual(t, "diagnostic stack location", clean.Exception[0].Stacktrace.Frames[0].Lineno, 42)
-	data, err := json.Marshal(clean)
-	if err != nil {
-		t.Fatal(err)
+	assertEqual(t, "user", clean.User.ID, r.installationID())
+	assertEqual(t, "attachments", len(clean.Attachments), 1)
+	assertEqual(t, "device context", fmt.Sprint(clean.Contexts["device"]["arch"]), "arm64")
+	assertEqual(t, "frame line", clean.Exception[0].Stacktrace.Frames[0].Lineno, 42)
+	if r.filterEvent(&sentry.Event{Transaction: researchTransaction}, nil) != nil {
+		t.Fatal("research event sent as an issue")
 	}
-	assertNoSecrets(t, string(data), "secret")
 }
 
 func assertLogsFiltered(t *testing.T, r *Reporter) {
 	t.Helper()
-	log := r.filterLog(&sentry.Log{Body: "install completed", Attributes: map[string]attribute.Value{"secret": attribute.StringValue("secret")}})
+	log := r.filterLog(&sentry.Log{Body: "lease 192.0.2.55 on eth8.4", Attributes: map[string]attribute.Value{"source": attribute.StringValue("udhcpc")}})
 	if log == nil {
-		t.Fatal("allowed log dropped")
+		t.Fatal("log dropped")
 	}
-	assertAbsentAttributes(t, "log", log.Attributes, "secret")
+	assertEqual(t, "body", log.Body, "lease 192.0.2.55 on eth8.4")
+	assertAttribute(t, "log", log.Attributes, "source", "udhcpc")
 	environment, _ := log.Attributes["sentry.environment"].AsInterface().(string)
 	assertEqual(t, "log environment", environment, r.environment)
-	if r.filterLog(&sentry.Log{Body: "password=secret"}) != nil {
-		t.Fatal("raw log accepted")
-	}
 }
 
 func assertMetricsFiltered(t *testing.T, r *Reporter) {
 	t.Helper()
-	wizard := r.filterMetric(&sentry.Metric{Name: "wizard.event", Attributes: map[string]attribute.Value{
-		"event": attribute.StringValue("help"), "question": attribute.StringValue("vlan"), "answer": attribute.StringValue("4"),
-	}})
+	wizard := r.filterMetric(&sentry.Metric{Name: "wizard.event", Attributes: map[string]attribute.Value{"event": attribute.StringValue("help"), "question": attribute.StringValue("vlan")}})
 	if wizard == nil {
-		t.Fatal("wizard metric dropped instead of stripped")
+		t.Fatal("wizard metric dropped")
 	}
 	assertAttribute(t, "wizard metric", wizard.Attributes, "event", "help")
 	assertAttribute(t, "wizard metric", wizard.Attributes, "question", "vlan")
-	assertAbsentAttributes(t, "wizard metric", wizard.Attributes, "answer")
-	odd := r.filterMetric(&sentry.Metric{Name: "wizard.event", Attributes: map[string]attribute.Value{
-		"event": attribute.StringValue("typed"), "question": attribute.StringValue("10.0.0.1/24"),
-	}})
-	if odd == nil {
-		t.Fatal("wizard metric dropped instead of stripped")
-	}
-	assertAbsentAttributes(t, "wizard metric", odd.Attributes, "event", "question")
-	if r.filterMetric(&sentry.Metric{Name: "secret.address"}) != nil {
-		t.Fatal("unknown metric accepted")
-	}
+	release, _ := wizard.Attributes["sentry.release"].AsInterface().(string)
+	assertEqual(t, "metric release", release, r.release)
 }
 
-func TestFiltersDiscardUnknownData(t *testing.T) {
+func TestFiltersStampReleaseAndInstallation(t *testing.T) {
 	r, _ := newRecordingReporter(t, testSettings())
 	defer r.Close()
 	assertEventFiltered(t, r)
@@ -706,4 +686,111 @@ func TestFailuresShareTheOperationTrace(t *testing.T) {
 	if len(traces) != 1 {
 		t.Fatalf("failures left the operation trace: %v", traces)
 	}
+}
+
+func TestFailureCarriesOperationTrailAndDiagnostics(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
+	r.hub.AddBreadcrumb(&sentry.Breadcrumb{Category: "http", Message: "GET https://api.github.com/repos/kjanat/udm-iptv/releases/latest"}, nil)
+	_ = r.Run(context.Background(), "install", func(ctx context.Context) error {
+		return r.Run(ctx, "service.health", func(ctx context.Context) error {
+			Attach(ctx, []byte("=== udm-iptv failure diagnostics ===\nProfile: kpn\n"))
+
+			return errOperationFailed
+		})
+	})
+	r.client.Flush(time.Second)
+	failures := failureEvents(transport.events)
+	assertEqual(t, "failures", len(failures), 2)
+	trails := map[string][]string{}
+	for _, event := range failures {
+		assertEqual(t, event.Transaction+" attachments", len(event.Attachments), 1)
+		assertEqual(t, event.Transaction+" attachment name", event.Attachments[0].Filename, attachmentName)
+		assertEqual(t, event.Transaction+" attachment type", event.Attachments[0].ContentType, "text/plain")
+		for _, crumb := range event.Breadcrumbs {
+			trails[event.Transaction] = append(trails[event.Transaction], crumb.Message)
+		}
+	}
+	request := "GET https://api.github.com/repos/kjanat/udm-iptv/releases/latest"
+	if want := []string{request, "install started", "service.health started", "service.health failed"}; !slices.Equal(trails["service.health"], want) {
+		t.Fatalf("service.health trail = %q, want %q", trails["service.health"], want)
+	}
+	if want := []string{request, "install started", "service.health started", "service.health failed", "install failed"}; !slices.Equal(trails["install"], want) {
+		t.Fatalf("install trail = %q, want %q", trails["install"], want)
+	}
+}
+
+func TestFailureCarriesRuntimeContextsAndModules(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
+	_ = r.Run(context.Background(), "install", func(context.Context) error { return errOperationFailed })
+	r.client.Flush(time.Second)
+	failures := failureEvents(transport.events)
+	assertEqual(t, "failures", len(failures), 1)
+	event := failures[0]
+	assertEqual(t, "device arch", fmt.Sprint(event.Contexts["device"]["arch"]), runtime.GOARCH)
+	assertEqual(t, "os name", fmt.Sprint(event.Contexts["os"]["name"]), runtime.GOOS)
+	assertEqual(t, "runtime version", fmt.Sprint(event.Contexts["runtime"]["version"]), runtime.Version())
+	if _, ok := event.Contexts["trace"]; !ok {
+		t.Fatal("trace context dropped")
+	}
+	if len(event.Modules) == 0 {
+		t.Fatal("module list dropped")
+	}
+	if _, ok := event.Modules["github.com/getsentry/sentry-go"]; !ok {
+		t.Fatalf("module list lacks the SDK: %v", event.Modules)
+	}
+}
+
+func TestInstallationStepsBecomeChildSpans(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
+	_ = r.Run(context.Background(), "install", func(ctx context.Context) error {
+		stepCtx, finish := Step(ctx, "Install persistent executable")
+		_, nested := Step(stepCtx, "Write /data/udm-iptv/config.json")
+		nested(nil)
+		finish(nil)
+
+		return nil
+	})
+	r.client.Flush(time.Second)
+	var transactions []*sentry.Event
+	for _, event := range transport.events {
+		if event.Type == "transaction" {
+			transactions = append(transactions, event)
+		}
+	}
+	assertEqual(t, "transactions", len(transactions), 1)
+	assertEqual(t, "child spans", len(transactions[0].Spans), 2)
+	descriptions := make([]string, 0, len(transactions[0].Spans))
+	for _, span := range transactions[0].Spans {
+		assertEqual(t, "span op", span.Op, stepOp)
+		descriptions = append(descriptions, span.Description)
+	}
+	slices.Sort(descriptions)
+	if want := []string{"Install persistent executable", "Write /data/udm-iptv/config.json"}; !slices.Equal(descriptions, want) {
+		t.Fatalf("steps = %q, want %q", descriptions, want)
+	}
+}
+
+func TestLineWriterLogsCompleteLines(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
+	writer := r.LineWriter(context.Background(), "proxy")
+	if _, err := writer.Write([]byte("joined 239.1.1.1 on eth8.4\npart")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("ial line\n")); err != nil {
+		t.Fatal(err)
+	}
+	r.client.Flush(time.Second)
+	var bodies []string
+	for _, event := range transport.events {
+		for _, log := range event.Logs {
+			bodies = append(bodies, log.Body)
+			assertAttribute(t, "line", log.Attributes, "source", "proxy")
+		}
+	}
+	if want := []string{"joined 239.1.1.1 on eth8.4", "partial line"}; !slices.Equal(bodies, want) {
+		t.Fatalf("lines = %q, want %q", bodies, want)
+	}
+	assertEqual(t, "disabled writer", r.LineWriter(context.Background(), "x") == io.Discard, false)
+	off, _ := newRecordingReporter(t, config.Telemetry{Enabled: true, Errors: true, TraceRate: 1})
+	assertEqual(t, "writer without logs", off.LineWriter(context.Background(), "proxy") == io.Discard, true)
 }

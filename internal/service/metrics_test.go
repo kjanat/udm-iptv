@@ -1,17 +1,32 @@
 package service
 
 import (
-	"strings"
+	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 )
 
-func TestMulticastCountersKeepOnlyNumericTotals(t *testing.T) {
+var errNoSnapshot = errors.New("no snapshot")
+
+func TestDiagnosticsAreOptionalAndBounded(t *testing.T) {
 	t.Parallel()
-	routes, packets, err := multicastCounters(strings.NewReader("Group Origin Iif Pkts Bytes Wrong\n01020304 05060708 1 0019 1000 0\n02030405 06070809 1 12 400 0\n"))
-	if err != nil || routes != 2 || packets != 31 {
-		t.Fatalf("incorrect counters: %d, %d, %v", routes, packets, err)
+	var daemon Daemon
+	if got := daemon.diagnostics(context.Background()); got != nil {
+		t.Fatalf("snapshot without a collector: %s", got)
 	}
-	if _, _, err := multicastCounters(strings.NewReader("header\nbroken row\n")); err == nil {
-		t.Fatal("malformed counters treated as valid")
+	daemon.Diagnostics = func(context.Context) (json.RawMessage, error) { return nil, errNoSnapshot }
+	if got := daemon.diagnostics(context.Background()); got != nil {
+		t.Fatalf("snapshot from a failing collector: %s", got)
+	}
+	daemon.Diagnostics = func(ctx context.Context) (json.RawMessage, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("collector ran without a deadline")
+		}
+
+		return json.RawMessage(`{"version":"test"}`), nil
+	}
+	if got := daemon.diagnostics(context.Background()); string(got) != `{"version":"test"}` {
+		t.Fatalf("snapshot = %s", got)
 	}
 }

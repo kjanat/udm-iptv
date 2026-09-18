@@ -38,26 +38,26 @@ This describes kernel address classification. It does not establish manual confi
 
 ### 1. Fields
 
-| Field                 | Role                                     | Can it be measured?                                                           |
-| --------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| `wan.interface`       | physical uplink                          | UDAPI parent relationships plus kernel topology                               |
-| `wan.vlan`            | 802.1Q path                              | existing UDAPI/kernel VLAN state first; unresolved candidates may need trials |
-| `wan.vlanInterface`   | local name (`iptv`)                      | default, not ISP-specific                                                     |
-| `wan.vlanMAC`         | spoofed ISP box MAC                      | only if required by the ISP; cannot be guessed                                |
-| `wan.dhcp`            | lease vs static                          | DHCPACK or existing lease evidence; timeout leaves mode unknown               |
-| `wan.dhcpOptions`     | udhcpc (`-O staticroutes`, `-V IPTV_RG`) | existing client configuration first; distinguish sent options from responses  |
-| `wan.dhcpRoutes`      | default route via the IPTV path          | policy decision informed by advertised routes and existing connectivity       |
-| `wan.staticAddress`   | static address                           | requires confirmed static configuration; an assigned address is insufficient  |
-| `wan.natDestinations` | MASQUERADE `-d`                          | route candidates from option 121; NAT need requires separate evidence         |
-| `wan.staticRoutes`    | additional unicast routes                | yes, same lease                                                               |
-| `lan.interfaces`      | where the TV is connected                | yes, `br*` + IGMP joins                                                       |
-| `proxy.program`       | improxy / igmpproxy                      | local, not ISP-specific                                                       |
-| `proxy.igmpVersion`   | 2 or 3                                   | per-interface compatibility evidence, subject to proxy capabilities           |
-| `proxy.quickLeave`    | local                                    | no (multiple boxes)                                                           |
-| `proxy.debug`         | local                                    | no                                                                            |
-| `proxy.sourceRanges`  | igmpproxy `altnet`                       | exact observed/advertised sources; wider ranges require justification         |
-| `profile`             | catalog ID                               | fingerprint after measurement                                                 |
-| PCP 5 (KPN fiber)     | 802.1p                                   | absent from config, present in the KPN specification                          |
+| Field                 | Role                                       | Can it be measured?                                                           |
+| --------------------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
+| `wan.interface`       | physical uplink                            | UDAPI parent relationships plus kernel topology                               |
+| `wan.vlan`            | 802.1Q path                                | existing UDAPI/kernel VLAN state first; unresolved candidates may need trials |
+| `wan.vlanInterface`   | local name (`iptv`)                        | default, not ISP-specific                                                     |
+| `wan.vlanMAC`         | spoofed ISP box MAC                        | only if required by the ISP; cannot be guessed                                |
+| `wan.dhcp`            | lease vs static                            | DHCPACK or existing lease evidence; timeout leaves mode unknown               |
+| `wan.dhcpOptions`     | [udhcpc] (`-O staticroutes`, `-V IPTV_RG`) | existing client configuration first; distinguish sent options from responses  |
+| `wan.dhcpRoutes`      | default route via the IPTV path            | policy decision informed by advertised routes and existing connectivity       |
+| `wan.staticAddress`   | static address                             | requires confirmed static configuration; an assigned address is insufficient  |
+| `wan.natDestinations` | MASQUERADE `-d`                            | route candidates from option 121; NAT need requires separate evidence         |
+| `wan.staticRoutes`    | additional unicast routes                  | yes, same lease                                                               |
+| `lan.interfaces`      | where the TV is connected                  | yes, `br*` + IGMP joins                                                       |
+| `proxy.program`       | improxy / igmpproxy                        | local, not ISP-specific                                                       |
+| `proxy.igmpVersion`   | 2 or 3                                     | per-interface compatibility evidence, subject to proxy capabilities           |
+| `proxy.quickLeave`    | local                                      | no (multiple boxes)                                                           |
+| `proxy.debug`         | local                                      | no                                                                            |
+| `proxy.sourceRanges`  | igmpproxy `altnet`                         | exact observed/advertised sources; wider ranges require justification         |
+| `profile`             | catalog ID                                 | fingerprint after measurement                                                 |
+| PCP 5 (KPN fiber)     | 802.1p                                     | absent from config, present in the KPN specification                          |
 
 ---
 
@@ -158,7 +158,7 @@ For UDAPI IPv4 runtime addresses in 5.1.31, `type: static` reflects `IFA_F_PERMA
 | 249                          | compatibility route option where supported; record separately from 121.            |
 | other options                | interpret by assigned semantics; do not assume all codes 240+ are vendor-specific. |
 
-udhcpc `-O staticroutes` explicitly requests 121. Record the actual request and response; absence of this flag alone does not prove that 121 cannot be returned. Preserve advertised routes separately from installed routes, which may have been filtered or supplemented locally. Missing route evidence stays unresolved; SAP/mroute sources cannot substitute for unicast NAT destinations.
+[udhcpc] `-O staticroutes` explicitly requests 121. Record the actual request and response; absence of this flag alone does not prove that 121 cannot be returned. Preserve advertised routes separately from installed routes, which may have been filtered or supplemented locally. Missing route evidence stays unresolved; SAP/mroute sources cannot substitute for unicast NAT destinations.
 
 UDAPI exposes configured `ipv4.dhcpOptions`; the inspection did not establish an endpoint for received IPTV lease options. The project-managed `iptv` link was absent from UDAPI. Retain structured evidence from the project's existing DHCP hook on normal lease events rather than starting a second client to recover it. Until that evidence is available, use installed routes with their provenance and leave missing lease fields unknown.
 
@@ -233,6 +233,7 @@ Step 1 is already useful without changing the wizard (range discussions like iss
 
 <!-- link definitions -->
 
+[udhcpc]: https://github.com/armcc/udhcp/raw/refs/heads/master/README.udhcpc
 [5.1.31 firmware]: https://fw-download.ubnt.com/data/unifi-dream/f100-UDMPRO-5.1.31-c840591d-ddc5-4ab4-a08b-4df62f47403d.bin "f100-UDMPRO-5.1.31.bin (2026-09-17T14:50:39Z)"
 [IFA_F_PERMANENT]: https://github.com/torvalds/linux/blob/238650ef6c7c7cca08e032527329424c9fbd70e5/include/uapi/linux/if_addr.h "include/uapi/linux/if_addr.h (2026-09-17T14:50:39Z)"
 [RFC 1918]: https://www.rfc-editor.org/info/rfc1918/ "BCP 5: Address Allocation for Private Internets (This RFC was updated, see RFC 6761.)"

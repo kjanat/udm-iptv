@@ -9,13 +9,13 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/ui"
 )
 
 // flagsHandledOutsideTable are applied by apply and applyReporting themselves.
 var flagsHandledOutsideTable = map[string]bool{
-	"non-interactive": true,
-	"profile":         true,
-	"telemetry":       true,
+	"profile":   true,
+	"telemetry": true,
 }
 
 func boundConfigureFlags() (*configureFlags, *cobra.Command) {
@@ -162,5 +162,28 @@ func TestExistingCustomProfileKeepsSavedSettings(t *testing.T) {
 	}
 	if value.WAN.VLAN != 101 || !slices.Equal(value.WAN.NATDestinations, []string{"198.51.100.0/24"}) {
 		t.Fatalf("custom wiped a saved configuration: %#v", value.WAN)
+	}
+}
+
+func TestEveryFlagFieldIsAWizardField(t *testing.T) {
+	t.Parallel()
+	flags, command := boundConfigureFlags()
+	value := config.Default()
+	known := ui.FieldKeys()
+	for _, field := range flags.settings(&value) {
+		if field.field == "" {
+			continue
+		}
+		if !slices.Contains(known, field.field) {
+			t.Errorf("--%s points at wizard field %q, which the form never asks", field.name, field.field)
+		}
+	}
+	for _, name := range []string{"dhcp", "wan-vlan", "profile"} {
+		if err := command.Flags().Set(name, distinctValue(command.Flags().Lookup(name))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := flags.answered(command, &value); !slices.Equal(got, ui.Answered{"profile", "vlan", "dhcp"}) {
+		t.Fatalf("answered = %q", got)
 	}
 }

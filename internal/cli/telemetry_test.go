@@ -66,17 +66,17 @@ func TestTelemetryConfigurationIsOptInAndPreservesSelection(t *testing.T) {
 	}{
 		{
 			name: "product-flags",
-			args: []string{"configure", "--non-interactive", "--telemetry", "--telemetry-logs=false", "--telemetry-trace-rate=1"},
+			args: []string{"configure", "set", "--telemetry", "--telemetry-logs=false", "--telemetry-trace-rate=1"},
 			want: telemetrySelection{enabled: true, logs: false, traceRate: 1},
 		},
 		{
 			name: "profile-keeps-selection",
-			args: []string{"configure", "--non-interactive", "--profile=kpn"},
+			args: []string{"configure", "set", "--profile=kpn"},
 			want: telemetrySelection{enabled: true, logs: false, traceRate: 1},
 		},
 		{
 			name: "opt-out",
-			args: []string{"configure", "--non-interactive", "--telemetry=false"},
+			args: []string{"configure", "set", "--telemetry=false"},
 			want: telemetrySelection{enabled: false, logs: false, traceRate: 1},
 		},
 	} {

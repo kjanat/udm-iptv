@@ -16,40 +16,37 @@ I do not share this data with ISPs, Ubiquiti, or anyone else. It stays in my Sen
 
 Use `udm-iptv configure`, or disable all reporting directly:
 
-```console
-udm-iptv configure --non-interactive --telemetry=false
+```sh
+udm-iptv configure set --telemetry=false
 ```
 
 Keep operational reporting, excluding configuration history and network identity:
 
-```console
-udm-iptv configure --non-interactive --telemetry=true --telemetry-presets=false --telemetry-network-identity=false
+```sh
+udm-iptv configure set --telemetry=true --telemetry-presets=false --telemetry-network-identity=false
 ```
 
 Individual categories can also be disabled:
 
-| Flag                           | Shared data                                                         |
-| ------------------------------ | ------------------------------------------------------------------- |
-| `--telemetry-errors`           | Error types and filtered call stacks                                |
-| `--telemetry-logs`             | Operation starts, completions, failures and cancellations           |
-| `--telemetry-metrics`          | Durations, uptime, restarts and multicast counters                  |
-| `--telemetry-tracing`          | Sampled operation timings; default sample rate: 10%                 |
-| `--telemetry-presets`          | Selected settings, configuration history and random installation ID |
-| `--telemetry-network-identity` | Full public IP and reverse-DNS hostname (PTR)                       |
+| Flag                           | Shared data                                                                   |
+| ------------------------------ | ----------------------------------------------------------------------------- |
+| `--telemetry-errors`           | Failures, with the operations that led up to them and the failure diagnostics |
+| `--telemetry-logs`             | Operation logs and the output of the DHCP client and the multicast proxy      |
+| `--telemetry-metrics`          | Durations, uptime, restarts and multicast counters                            |
+| `--telemetry-tracing`          | Operation timings, including installation steps and outgoing requests         |
+| `--telemetry-presets`          | Selected settings, configuration history, installation ID and hourly check-in |
+| `--telemetry-network-identity` | Public IP and reverse-DNS hostname (PTR)                                      |
 
 Network identity requires preset reporting to be enabled.
 Individual category flags do not enable the master switch.
 
 ## Configuration reports
 
-- Software version, git revision, Go toolchain, router model, subsystem id, firmware, firmware discovery string and selected provider profile.
-- VLAN, DHCP/static mode, proxy, IGMP version and quickleave.
-- Default-route policy, debug setting and downstream-interface count.
-- Shipped prefixes and custom public IPv4 networks: /8–/24.
-- Custom private networks and host routes are excluded.
-- Changed settings, configuration revisions and saved/applied change timestamps.
+- The complete configuration file: provider profile, WAN interface, VLAN, MAC, DHCP options and route policy, static address and routes, NAT destinations, LAN interfaces, proxy settings and telemetry preferences.
+- Software version, git revision, Go toolchain, router model, subsystem id, firmware, firmware discovery string, CPU, OS, Go runtime and the module list of the binary.
+- Which settings changed, configuration revisions and saved/applied change timestamps.
 - A random installation ID connects configuration history with failures.
-- Hourly service observations help assess stability, not viewer satisfaction.
+- Hourly service observations with a diagnostics snapshot: service and proxy state, the IPTV interface's addresses and routes, the multicast forwarding table with per-route counters, bridge group memberships, NAT rules and the last DHCP lease with every option the server sent.
 - Provider guesses remain separate from your selected provider profile.
 - Reports inform preset improvements; presets never change automatically.
 
@@ -58,14 +55,12 @@ Individual category flags do not enable the master switch.
 Network identity lookup contacts ipify and your DNS resolver.
 ipify sees your public IP; DNS resolves its PTR.
 Sentry also sees your connection's public IP during reporting.
-Disabling network identity removes explicit IP/PTR fields and lookups.
+Disabling network identity removes the IP/PTR fields and lookups.
 
 Never uploaded:
 
-- Credentials, MAC addresses or complete configuration files.
-- Packet payloads, raw errors, proxy logs or diagnostic captures.
-- Interface names, configured addresses or arbitrary DHCP arguments.
-- Local variables, source excerpts or absolute file paths.
+- Credentials.
+- Packet payloads or the files written by `udm-iptv diagnose --capture`.
 
 The maintainer controls Sentry access and retention.
 The CLI cannot delete reports already received by Sentry.
@@ -76,7 +71,7 @@ Reporting failures do not prevent IPTV operations.
 
 Share your experience when preset reporting is enabled:
 
-```console
+```sh
 udm-iptv telemetry feedback working --provider kpn
 udm-iptv telemetry feedback problems
 udm-iptv telemetry feedback not-using
@@ -84,7 +79,7 @@ udm-iptv telemetry feedback not-using
 
 Reset your reporting identity and local configuration history:
 
-```console
+```sh
 udm-iptv telemetry reset-id
 ```
 

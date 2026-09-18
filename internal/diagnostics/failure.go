@@ -11,7 +11,7 @@ import (
 
 const reportFailureTimeout = 10 * time.Second
 
-// ReportFailure writes a sanitized snapshot and recent service logs to output.
+// ReportFailure writes the snapshot and recent service logs to output.
 func (application *Collector) ReportFailure(parent context.Context, output io.Writer) error {
 	ctx, cancel := context.WithTimeout(parent, reportFailureTimeout)
 	defer cancel()
@@ -23,7 +23,7 @@ func (application *Collector) ReportFailure(parent context.Context, output io.Wr
 			return fmt.Errorf("write failure snapshot: %w", err)
 		}
 	} else {
-		if err := writef(output, "Snapshot unavailable: %s\n", sanitize(err.Error())); err != nil {
+		if err := writef(output, "Snapshot unavailable: %s\n", err.Error()); err != nil {
 			return fmt.Errorf("write snapshot failure: %w", err)
 		}
 	}
@@ -31,7 +31,7 @@ func (application *Collector) ReportFailure(parent context.Context, output io.Wr
 		if err := writeString(output, "--- recent service logs ---\n"); err != nil {
 			return fmt.Errorf("write journal header: %w", err)
 		}
-		if err := writef(output, "%s\n", sanitize(strings.TrimSpace(string(logs)))); err != nil {
+		if err := writef(output, "%s\n", strings.TrimSpace(string(logs))); err != nil {
 			return fmt.Errorf("write failure journal: %w", err)
 		}
 	} else {

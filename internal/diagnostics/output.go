@@ -24,3 +24,11 @@ func writeString(writer io.Writer, value string) error {
 func closeIgnoringError(closer io.Closer) {
 	_ = closer.Close()
 }
+
+func fallbackText(value string) string {
+	if value == "" {
+		return valueUnknown
+	}
+
+	return value
+}

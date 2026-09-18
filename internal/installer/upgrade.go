@@ -28,6 +28,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
 	"github.com/kjanat/udm-iptv/internal/filemode"
+	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
 const (
@@ -151,12 +152,12 @@ func upgradeToken(tokenFile string) (string, error) {
 }
 
 func upgradeHTTPClient(token string) *http.Client {
-	client := &http.Client{Timeout: upgradeClientTimeout}
+	transport := telemetry.HTTPTransport(http.DefaultTransport)
 	if token != "" {
-		client.Transport = &bearerTransport{token: token, base: http.DefaultTransport}
+		transport = telemetry.HTTPTransport(&bearerTransport{token: token, base: http.DefaultTransport})
 	}
 
-	return client
+	return &http.Client{Timeout: upgradeClientTimeout, Transport: transport}
 }
 
 func fetchRelease(ctx context.Context, client *github.Client, owner, repository, version string, prerelease bool) (*github.RepositoryRelease, error) {
@@ -508,10 +509,22 @@ func (transport *bearerTransport) RoundTrip(request *http.Request) (*http.Respon
 	return response, nil
 }
 
-func download(ctx context.Context, client *http.Client, url, target string, mode os.FileMode) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// GitHub redirects asset downloads to a URL whose query string is a
+// short-lived signature, so error messages name the URL without it.
+func displayURL(raw string) string {
+	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("build download request for %s: %w", url, err)
+		return raw
+	}
+	parsed.RawQuery, parsed.Fragment = "", ""
+
+	return parsed.String()
+}
+
+func download(ctx context.Context, client *http.Client, address, target string, mode os.FileMode) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return fmt.Errorf("build download request for %s: %w", displayURL(address), err)
 	}
 	if request.URL.Hostname() == githubAPIHost {
 		request.Header.Set("Accept", "application/octet-stream")
@@ -519,11 +532,11 @@ func download(ctx context.Context, client *http.Client, url, target string, mode
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", url, err)
+		return fmt.Errorf("download %s: %w", displayURL(address), err)
 	}
 	defer closeIgnoringError(response.Body)
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("%w: %s: %s", errDownloadFailed, url, response.Status)
+		return fmt.Errorf("%w: %s: %s", errDownloadFailed, displayURL(address), response.Status)
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(target), ".download-*")
 	if err != nil {
@@ -539,7 +552,7 @@ func download(ctx context.Context, client *http.Client, url, target string, mode
 	if _, err := io.Copy(temporary, io.LimitReader(response.Body, releaseAssetLimit)); err != nil {
 		closeIgnoringError(temporary)
 
-		return fmt.Errorf("write %s from %s: %w", target, url, err)
+		return fmt.Errorf("write %s from %s: %w", target, displayURL(address), err)
 	}
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close temporary file for %s: %w", target, err)

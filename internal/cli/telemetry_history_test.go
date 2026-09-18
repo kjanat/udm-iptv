@@ -47,7 +47,7 @@ func runFirstConfigurationCase(t *testing.T, testCase firstConfigurationCase) {
 		},
 	}
 	root := application.root()
-	root.SetArgs(append([]string{"configure", "--non-interactive", "--profile=kpn"}, testCase.args...))
+	root.SetArgs(append([]string{"configure", "set", "--profile=kpn"}, testCase.args...))
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}

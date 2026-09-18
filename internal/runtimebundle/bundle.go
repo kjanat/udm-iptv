@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
@@ -97,7 +98,7 @@ func Command(stateDir, program string, args []string) (string, []string, error) 
 }
 
 func supportedProxy(program string) bool {
-	return program == "improxy" || program == "igmpproxy"
+	return program == config.ProxyImproxy || program == config.ProxyIgmpproxy
 }
 
 // stageRuntime copies files into stage and returns the generation name
@@ -179,7 +180,7 @@ func publishGeneration(root, program, generation string) error {
 // to maxRuntimeTotalSize of the persistent partition.
 func pruneGenerations(root string) error {
 	keep := map[string]bool{}
-	for _, program := range []string{"improxy", "igmpproxy"} {
+	for _, program := range []string{config.ProxyImproxy, config.ProxyIgmpproxy} {
 		target, err := os.Readlink(filepath.Join(root, program))
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {

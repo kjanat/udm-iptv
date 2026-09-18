@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/kjanat/udm-iptv/internal/device"
 	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/service"
+	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
 const (
@@ -29,9 +31,14 @@ func (application *Application) installCommand() *cobra.Command {
 		legacy: func() (config.Config, bool, error) {
 			return config.ImportFirstLegacy(legacyCandidates(application.StateDir))
 		},
-		defaults: device.Defaults, prompt: application.configureForm,
-		promptFresh: application.configureFreshForm,
-		executable:  os.Executable, requireRoot: requireRoot,
+		defaults: device.Defaults,
+		prompt: func(ctx context.Context, value *config.Config) error {
+			return application.configureForm(ctx, value, nil)
+		},
+		promptFresh: func(ctx context.Context, value *config.Config) error {
+			return application.configureFreshForm(ctx, value, nil)
+		},
+		executable: os.Executable, requireRoot: requireRoot,
 		backend: application.installBackend(),
 	})
 }
@@ -251,11 +258,21 @@ func (application *Application) restart(ctx context.Context, verify bool) error 
 	if verify {
 		err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
 		if err != nil {
-			return errors.Join(err, application.collector().ReportFailure(ctx, application.Err))
+			return application.reportHealthFailure(ctx, err)
 		}
 	}
 
 	return nil
+}
+
+// reportHealthFailure prints the diagnostics and attaches the same text to
+// the failure report of the operation running in ctx.
+func (application *Application) reportHealthFailure(ctx context.Context, err error) error {
+	var diagnostics bytes.Buffer
+	reportErr := application.collector().ReportFailure(ctx, io.MultiWriter(application.Err, &diagnostics))
+	telemetry.Attach(ctx, diagnostics.Bytes())
+
+	return errors.Join(err, reportErr)
 }
 
 func (application *Application) installBackend() installer.Backend {
@@ -270,10 +287,10 @@ func (application *Application) installBackend() installer.Backend {
 		Health: func(ctx context.Context) error {
 			err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
 			if err != nil {
-				return errors.Join(err, application.collector().ReportFailure(ctx, application.Err))
+				return application.reportHealthFailure(ctx, err)
 			}
 
-			return err
+			return nil
 		},
 		Saved:   func(value config.Config) { application.reportConfig = &value },
 		Healthy: func(value config.Config) { application.reportConfig, application.reportApplied = &value, true },

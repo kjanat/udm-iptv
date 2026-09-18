@@ -28,7 +28,7 @@ func (writer diagnosticWriter) write(event Event) error {
 	}
 	// Logs are a bounded final batch. The terminal record (or deferred flush)
 	// commits them together; snapshots remain immediately available to followers.
-	if event.Type == "log" {
+	if event.Type == EventLog {
 		return nil
 	}
 

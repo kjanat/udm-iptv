@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	infoFirmware     = "firmware"
 	versionFileLimit = 128
 	ubntInfoTimeout  = 2 * time.Second
 	sysIDLength      = 4
@@ -78,7 +79,7 @@ func Inspect(ctx context.Context) Hardware {
 		}
 	}
 	if hw.Firmware == "" {
-		firmware, _ = parseFirmwareLine(ubntDeviceInfo(ctx, "firmware"))
+		firmware, _ = parseFirmwareLine(ubntDeviceInfo(ctx, infoFirmware))
 		hw.Firmware = firmware
 	}
 	if hw.SysID == "" {
@@ -163,7 +164,7 @@ func firmwareFromDiscovery(value string) string {
 
 func ubntDeviceInfo(ctx context.Context, option string) string {
 	switch option {
-	case "firmware", "firmware_discovery", "subsystem_id":
+	case infoFirmware, "firmware_discovery", "subsystem_id":
 	default:
 		return ""
 	}

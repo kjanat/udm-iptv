@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	commandConfigure = "configure"
-	commandInstall   = "install"
+	commandConfigure    = "configure"
+	commandConfigureSet = "configure.set"
+	commandInstall      = "install"
 )
 
 func setTelemetryMetadata(ctx context.Context, reporter *telemetry.Reporter, value config.Config) {
@@ -81,10 +82,10 @@ func (application *Application) reportingHook(run cobraRun) cobraRun {
 // reportingTurnedOff reports that this invocation switches reporting off, so
 // it must not open a reporter of its own.
 func reportingTurnedOff(command *cobra.Command) bool {
-	if !command.Flags().Changed("telemetry") {
+	if !command.Flags().Changed(flagTelemetry) {
 		return false
 	}
-	enabled, _ := command.Flags().GetBool("telemetry")
+	enabled, _ := command.Flags().GetBool(flagTelemetry)
 
 	return !enabled
 }

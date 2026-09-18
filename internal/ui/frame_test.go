@@ -55,3 +55,35 @@ func TestNarrowTerminalDoesNotPanic(t *testing.T) {
 		}
 	}
 }
+
+func TestEscapeClosesHelpLikeAnyOtherKey(t *testing.T) {
+	value := config.Default()
+	fields := newFormValues(value)
+	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}}, "", &fields, true)
+	frame := NewFrame(wizardForm(groups[1:]...).steps(1, 0), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	focusPage(frame, "vlan")
+	for _, closing := range []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: tea.KeyF1}, {Text: "x", Code: 'x'}} {
+		frame.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+		if !frame.help {
+			t.Fatal("F1 did not open the help")
+		}
+		frame.Update(closing)
+		if frame.help {
+			t.Fatalf("%s left the help open", closing)
+		}
+		if frame.quitPrompt || frame.wizard.wentBack {
+			t.Fatalf("%s closed the help and also left the question", closing)
+		}
+		if focusedKey(frame.wizard.Form) != "vlan" {
+			t.Fatalf("%s moved focus to %q", closing, focusedKey(frame.wizard.Form))
+		}
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if frame.quitPrompt {
+		t.Fatal("the escape that closed the help counted as the first of two")
+	}
+}

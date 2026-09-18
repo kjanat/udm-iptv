@@ -4,15 +4,8 @@ name: CI
 on:
   pull_request:
   workflow_call:
-    inputs:
-      release:
-        description: Validate tagged release instead of snapshot.
-        type: boolean
-        default: false
-    outputs:
-      artifact:
-        description: Validated binaries and Debian package.
-        value: ${{ jobs.build.outputs.artifact }}
+    inputs: { release: { description: "Validate tagged release instead of snapshot.", type: boolean, default: false } }
+    outputs: { artifact: { description: "Validated binaries and Debian package.", value: "${{ jobs.build.outputs.artifact }}" } }
 concurrency: { group: "ci-${{ github.event.pull_request.number || github.ref }}", queue: single }
 permissions: { contents: &r read }
 jobs:
@@ -23,28 +16,29 @@ jobs:
   test:
     name: Go tests
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
-      - &Checkout {
-          name: Checkout Sources,
-          uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, # v7
-          with: { persist-credentials: false },
-        }
-      - &Go {
-          name: Setup Go,
-          uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e, # v7
-          with: { go-version-file: go.mod, cache-dependency-path: go.sum },
-        }
+      - &Checkout
+        name: Checkout Sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - &Go
+        name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache-dependency-path: go.sum }
       - name: Test Go
         run: go test -race ./...
 
   actionlint:
     name: Lint GitHub Actions workflows
     runs-on: ubuntu-latest
+    timeout-minutes: 1
     steps: [*Checkout, { uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 }] # v1.17
 
   integration:
     name: Integration (${{ matrix.package }})
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     strategy:
       fail-fast: false
       matrix:
@@ -53,29 +47,32 @@ jobs:
           - { package: service, test: "TestProxy(StateFailureReapsProcess|StateAndStop)", privileged: false }
     steps:
       - *Checkout
-      - *Go
+      - parallel:
+          - *Go
+          - name: Prepare env
+            env: { T: "${{ matrix.test }}", F: "${{ runner.temp }}/integration.test", P: "./internal/${{ matrix.package }}" }
+            run: '{ echo "FILE=${F}"; echo "TEST=${T}"; echo "PKG=${P}"; } >> "${GITHUB_ENV}"'
       - name: Compile integration tests
-        env: { PACKAGE: "${{ matrix.package }}", TEST: "${{ matrix.test }}" }
-        run: go test -c -tags integration -o "${RUNNER_TEMP}/integration.test" "./internal/${PACKAGE}"
+        run: go test -c -tags integration -o "${FILE}" "${PKG}"
       - name: Run integration tests
         if: ${{ !matrix.privileged }}
-        env: { TEST: "${{ matrix.test }}" }
-        run: '"${RUNNER_TEMP}/integration.test" -test.run "^${TEST}$" -test.v'
+        run: '"${FILE}" -test.run "^${TEST}$" -test.v'
       - name: Run privileged integration tests
         if: ${{ matrix.privileged }}
-        env: { TEST: "${{ matrix.test }}" }
-        run: sudo "${RUNNER_TEMP}/integration.test" -test.run "^${TEST}$" -test.v
+        run: sudo "${FILE}" -test.run "^${TEST}$" -test.v
 
   fmt:
     name: Check formatting
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
       - *Checkout
-      - *Go
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with: { version-file: &TV .tool-versions, install-only: true }
-      - uses: tombi-toml/setup-tombi@ea139001852855a7f1cf30a9b60c71ebb6446a99 # v1.5.5
+      - parallel:
+          - *Go
+          - name: Install golangci-lint
+            uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+            with: { version-file: &TV .tool-versions, install-only: true }
+          - uses: tombi-toml/setup-tombi@ea139001852855a7f1cf30a9b60c71ebb6446a99 # v1.5.5
       - name: Check formatting
         uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3
 
@@ -83,6 +80,7 @@ jobs:
     name: Lint and vulnerabilities
     runs-on: ubuntu-latest
     permissions: { contents: *r, pull-requests: *r }
+    timeout-minutes: 5
     steps:
       - *Checkout
       - *Go
@@ -91,13 +89,12 @@ jobs:
             run: go vet -tags firmware ./...
           - name: Lint Go
             uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-            with: {
-              version-file: *TV,
-              args: "--build-tags firmware",
-              only-new-issues: "${{ github.repository_owner != github.event.pull_request.head.repo.owner.login }}",
-            }
+            with:
+              version-file: *TV
+              args: --build-tags firmware
+              only-new-issues: "${{ github.repository_owner != github.event.pull_request.head.repo.owner.login }}"
           - name: Check Go vulnerabilities
-            run: go tool govulncheck ./...
+            run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
           - name: Lint shell scripts
             run: shellcheck tests/firmware/boot.sh packaging/deb/{config,preinstall,postinstall,preremove,postremove}
           - name: Check Debian script syntax
@@ -108,12 +105,12 @@ jobs:
     name: Validate package
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 1
     steps:
-      - &dlArtefacts {
-          name: Download build artifacts,
-          uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, # v8
-          with: { name: "${{ needs.build.outputs.artifact }}", path: dist },
-        }
+      - &dlArtefacts
+        name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with: { name: "${{ needs.build.outputs.artifact }}", path: dist }
       - parallel:
           - name: Verify checksums
             working-directory: dist
@@ -146,6 +143,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: { contents: *r, packages: *r }
     outputs: { matrix: "${{ steps.catalog.outputs.matrix }}" }
+    timeout-minutes: 1
     steps:
       - *Checkout
       - *Go

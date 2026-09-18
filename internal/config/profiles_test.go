@@ -194,3 +194,26 @@ func TestInferLegacyProfileIgnoresMulticastGroups(t *testing.T) {
 		t.Fatalf("legacy ranges with a group inferred %q (found %v)", got, ok)
 	}
 }
+
+func TestProviderByPointerNameMatchesLabelBoundaries(t *testing.T) {
+	t.Parallel()
+	catalog := DefaultCatalog()
+	for name, want := range map[string]string{"customer.kpn.net.": "kpn", "KPN.NET": "kpn", "host.bluewin.ch": "swisscom", "dsl.btcentralplus.com": "bt"} {
+		provider, found := catalog.ProviderByPointerName(name)
+		if !found || provider.ID != want {
+			t.Errorf("%s -> %q, %v; want %s", name, provider.ID, found, want)
+		}
+	}
+	for _, name := range []string{"notkpn.net", "kpn.net.attacker.invalid", "", "example.com"} {
+		if provider, found := catalog.ProviderByPointerName(name); found {
+			t.Errorf("%s matched %s", name, provider.ID)
+		}
+	}
+	for _, provider := range catalog.Providers {
+		for _, suffix := range provider.PTRSuffixes {
+			if owner, _ := catalog.ProviderByPointerName(suffix); owner.ID != provider.ID {
+				t.Errorf("suffix %s of %s resolves to %s", suffix, provider.ID, owner.ID)
+			}
+		}
+	}
+}

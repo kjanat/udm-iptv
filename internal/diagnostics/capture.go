@@ -1,14 +1,20 @@
 package diagnostics
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
 const (
@@ -21,6 +27,20 @@ const (
 	finalizeReserveDivisor = 2
 	// journalLineLimit bounds how many trailing journal lines a capture attaches.
 	journalLineLimit = 10_000
+)
+
+// Event types written to a capture, in the order they can appear.
+const (
+	EventStarted   = "started"
+	EventInitial   = "initial"
+	EventSample    = "sample"
+	EventMarker    = "marker"
+	EventLog       = "log"
+	EventError     = "error"
+	EventFailed    = "failed"
+	EventFinal     = "final"
+	EventCompleted = "completed"
+	EventTimeout   = "timeout"
 )
 
 // Options defines the configuration options for a diagnostic capture.
@@ -61,29 +81,104 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	write := output.writer.write
 	started := startedAt.UTC()
 	ends := endsAt.UTC()
-	if err := write(Event{Time: started, Type: "started", Message: "Capture started; expected completion " + ends.Format(time.RFC3339)}); err != nil {
+	if err := write(Event{Time: started, Type: EventStarted, Message: "Capture started; expected completion " + ends.Format(time.RFC3339)}); err != nil {
 		return err
 	}
+	markers := &markerReader{path: MarkerPath(options)}
 	cursor := journalCursor(ctx)
 	initial, err := application.snapshotWithin(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
-			return write(Event{Time: time.Now().UTC(), Type: "timeout", Message: "Capture deadline reached during the initial snapshot."})
+			return write(Event{Time: time.Now().UTC(), Type: EventTimeout, Message: "Capture deadline reached during the initial snapshot."})
 		}
 
 		return err
 	}
-	if err := write(Event{Time: initial.Timestamp, Type: "initial", Snapshot: &initial}); err != nil {
+	if err := write(Event{Time: initial.Timestamp, Type: EventInitial, Snapshot: &initial}); err != nil {
 		return err
 	}
-	if err := application.sampleSnapshots(ctx, options, endsAt, write); err != nil {
+	if err := application.sampleSnapshots(ctx, options, endsAt, markers, write); err != nil {
+		return err
+	}
+	if err := markers.drain(write); err != nil {
 		return err
 	}
 	if stoppedBySignal(signalContext, ctx) {
-		return write(Event{Time: time.Now().UTC(), Type: "completed", Message: "Capture stopped by signal."})
+		return write(Event{Time: time.Now().UTC(), Type: EventCompleted, Message: "Capture stopped by signal."})
 	}
 
 	return application.finalizeCapture(ctx, cursor, write)
+}
+
+// MarkerPath is the file a viewer appends manual markers to. Both capture
+// files share a base name, so the viewer derives the same path from either.
+func MarkerPath(options Options) string {
+	path := options.JSONPath
+	if path == "" {
+		path = options.TextPath
+	}
+
+	return MarkerPathFor(path)
+}
+
+// MarkerPathFor returns the marker file beside a capture file.
+func MarkerPathFor(capturePath string) string {
+	return strings.TrimSuffix(capturePath, filepath.Ext(capturePath)) + ".markers"
+}
+
+// WriteMarker appends a manual marker for the capture at capturePath.
+func WriteMarker(capturePath, text string, at time.Time) error {
+	file, err := os.OpenFile(MarkerPathFor(capturePath), os.O_WRONLY|os.O_APPEND|os.O_CREATE, filemode.PrivateFile)
+	if err != nil {
+		return fmt.Errorf("open marker file: %w", err)
+	}
+	defer closeIgnoringError(file)
+	text = strings.ReplaceAll(strings.TrimSpace(text), "\n", " ")
+	if _, err := fmt.Fprintf(file, "%s\t%s\n", at.UTC().Format(time.RFC3339Nano), text); err != nil {
+		return fmt.Errorf("write marker: %w", err)
+	}
+
+	return nil
+}
+
+// markerReader folds complete lines of the marker file into marker events,
+// remembering how far it read.
+type markerReader struct {
+	path   string
+	offset int64
+}
+
+func (reader *markerReader) drain(write func(Event) error) error {
+	file, err := os.Open(reader.path)
+	if err != nil {
+		return nil
+	}
+	defer closeIgnoringError(file)
+	if _, err := file.Seek(reader.offset, io.SeekStart); err != nil {
+		return nil
+	}
+	buffered := bufio.NewReader(file)
+	for {
+		line, err := buffered.ReadString('\n')
+		if err != nil {
+			return nil
+		}
+		reader.offset += int64(len(line))
+		if err := write(markerEvent(strings.TrimSuffix(line, "\n"))); err != nil {
+			return err
+		}
+	}
+}
+
+func markerEvent(line string) Event {
+	stamp, text, ok := strings.Cut(line, "\t")
+	if ok {
+		if when, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+			return Event{Time: when.UTC(), Type: EventMarker, Message: text}
+		}
+	}
+
+	return Event{Time: time.Now().UTC(), Type: EventMarker, Message: line}
 }
 
 func stoppedBySignal(signalContext, ctx context.Context) bool {
@@ -99,7 +194,7 @@ func expired(ctx context.Context) bool {
 // whatever remains of the capture window.
 func (application *Collector) finalizeCapture(ctx context.Context, cursor string, write func(Event) error) error {
 	if final, finalErr := application.snapshotWithin(ctx); finalErr == nil {
-		if err := write(Event{Time: final.Timestamp, Type: "final", Snapshot: &final}); err != nil {
+		if err := write(Event{Time: final.Timestamp, Type: EventFinal, Snapshot: &final}); err != nil {
 			return err
 		}
 	}
@@ -107,10 +202,10 @@ func (application *Collector) finalizeCapture(ctx context.Context, cursor string
 		return err
 	}
 	if expired(ctx) {
-		return write(Event{Time: time.Now().UTC(), Type: "timeout", Message: "Capture deadline reached; a collector may have stalled."})
+		return write(Event{Time: time.Now().UTC(), Type: EventTimeout, Message: "Capture deadline reached; a collector may have stalled."})
 	}
 
-	return write(Event{Time: time.Now().UTC(), Type: "completed", Message: "Capture finished within its deadline."})
+	return write(Event{Time: time.Now().UTC(), Type: EventCompleted, Message: "Capture finished within its deadline."})
 }
 
 type captureOutput struct {
@@ -168,7 +263,7 @@ func sampleInterval(verbosity string) time.Duration {
 
 // sampleSnapshots records periodic snapshots until the capture must be
 // finalized, reserving time for the final snapshot and the journal.
-func (application *Collector) sampleSnapshots(ctx context.Context, options Options, endsAt time.Time, write func(Event) error) error {
+func (application *Collector) sampleSnapshots(ctx context.Context, options Options, endsAt time.Time, markers *markerReader, write func(Event) error) error {
 	ticker := time.NewTicker(sampleInterval(options.Verbosity))
 	defer ticker.Stop()
 	reserve := min(finalizeReserve, options.Capture/finalizeReserveDivisor)
@@ -181,6 +276,9 @@ func (application *Collector) sampleSnapshots(ctx context.Context, options Optio
 		case <-finalize.C:
 			return nil
 		case <-ticker.C:
+			if err := markers.drain(write); err != nil {
+				return err
+			}
 			finished, err := application.writeSample(ctx, write)
 			if err != nil || finished {
 				return err
@@ -193,13 +291,13 @@ func (application *Collector) sampleSnapshots(ctx context.Context, options Optio
 func (application *Collector) writeSample(ctx context.Context, write func(Event) error) (bool, error) {
 	current, err := application.snapshotWithin(ctx)
 	if err == nil {
-		return false, write(Event{Time: current.Timestamp, Type: "sample", Snapshot: &current})
+		return false, write(Event{Time: current.Timestamp, Type: EventSample, Snapshot: &current})
 	}
 	if expired(ctx) {
 		return true, nil
 	}
 
-	return false, write(Event{Time: time.Now().UTC(), Type: "error", Message: sanitize(err.Error())})
+	return false, write(Event{Time: time.Now().UTC(), Type: EventError, Message: err.Error()})
 }
 
 func writeJournal(ctx context.Context, cursor string, write func(Event) error) error {
@@ -207,7 +305,7 @@ func writeJournal(ctx context.Context, cursor string, write func(Event) error) e
 		if expired(ctx) {
 			break
 		}
-		if err := write(Event{Time: time.Now().UTC(), Type: "log", Log: sanitize(line)}); err != nil {
+		if err := write(Event{Time: time.Now().UTC(), Type: EventLog, Log: line}); err != nil {
 			return err
 		}
 	}

@@ -108,6 +108,13 @@ func commandInvocationCases() []commandInvocationCase {
 	}
 }
 
+func assertFailureReported(t *testing.T, output string) {
+	t.Helper()
+	if !strings.Contains(output, privateFailureDetail) {
+		t.Fatalf("failure text missing: %s", output)
+	}
+}
+
 func TestReportRunUsesSavedConfigWhenInstallHadNoMonitor(t *testing.T) {
 	capture := captureTelemetry(t)
 	directory := t.TempDir()
@@ -128,9 +135,7 @@ func TestReportRunUsesSavedConfigWhenInstallHadNoMonitor(t *testing.T) {
 	if !strings.Contains(output, "service.health failed") {
 		t.Fatalf("missing health failure: %s", output)
 	}
-	if strings.Contains(output, privateFailureDetail) {
-		t.Fatal("raw error leaked")
-	}
+	assertFailureReported(t, output)
 }
 
 func TestCommandInvocationTelemetry(t *testing.T) {
@@ -186,8 +191,8 @@ func runCommandInvocationCase(t *testing.T, testCase commandInvocationCase) {
 
 func assertInvocationReport(t *testing.T, testCase commandInvocationCase, output string) {
 	t.Helper()
-	if strings.Contains(output, privateFailureDetail) {
-		t.Fatal("raw error leaked")
+	if errors.Is(testCase.result, errPrivateFailure) {
+		assertFailureReported(t, output)
 	}
 	if len(testCase.wantLogs) == 0 {
 		if output != "" {

@@ -50,7 +50,43 @@ func newFormValues(value config.Config) formValues {
 // Configure edits a private draft and only updates value after successful validation.
 // Profiles must already contain any detected interface defaults.
 func Configure(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, ports ...Port) error {
-	return ConfigureSuggested(ctx, value, catalog, run, "", ports...)
+	return ConfigureSuggested(ctx, value, catalog, run, "", nil, ports...)
+}
+
+// Answered lists field keys the caller has already filled in, by flag or
+// otherwise. A page whose every field is answered is skipped, and an
+// answered "profile" skips the provider chain.
+type Answered []string
+
+func (answered Answered) has(key string) bool {
+	return slices.Contains(answered, key)
+}
+
+func (answered Answered) covers(p *page) bool {
+	if len(p.keys) == 0 {
+		return false
+	}
+	for _, key := range p.keys {
+		if !answered.has(key) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// FieldKeys lists every key the settings form can ask, so callers can map
+// their own inputs onto Answered.
+func FieldKeys() []string {
+	value := config.Default()
+	fields := newFormValues(value)
+	pages, _, _ := configurationGroups(&value, nil, "", &fields, true)
+	keys := []string{"profile"}
+	for _, p := range pages {
+		keys = append(keys, p.keys...)
+	}
+
+	return keys
 }
 
 // selection is the country → provider path the wizard walks. choice is
@@ -68,11 +104,11 @@ func choiceOf(provider, profile string) string {
 // profile returns the profile ID inside the choice, or custom.
 func (chosen selection) profile() string {
 	if chosen.country == "" {
-		return "custom"
+		return config.ProfileCustom
 	}
 	_, profile, found := strings.Cut(chosen.choice, "/")
 	if !found {
-		return "custom"
+		return config.ProfileCustom
 	}
 
 	return profile
@@ -201,13 +237,18 @@ func applyProfile(catalog config.Catalog, value *config.Config, profileID string
 
 // settingsForm builds the settings pages for the draft and returns the
 // wizard plus the function that copies the answers back into the draft.
-func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, asked int, askConsent bool) (*Wizard, func() error) {
+func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, asked int, askConsent bool, answered Answered) (*Wizard, func() error) {
 	note := ""
 	if profile, found := catalog.Profile(value.Profile); found {
 		note = profile.Note
 	}
 	fields := newFormValues(*value)
 	groups, selectedPort, selectedLAN := configurationGroups(value, ports, note, &fields, askConsent)
+	for _, p := range groups {
+		if answered.covers(p) {
+			p.skip()
+		}
+	}
 	apply := func() error {
 		if *selectedPort != manualPort {
 			value.WAN.Interface = *selectedPort
@@ -252,6 +293,7 @@ type configureSession struct {
 	settings   *Wizard
 	ports      []Port
 	suggestion string
+	answered   Answered
 	chosen     selection
 	discover   Discover
 	remaining  int
@@ -267,27 +309,28 @@ type Discover func(context.Context, config.Telemetry) (string, error)
 
 // ConfigureSuggested highlights evidence without treating it as an applied choice.
 // The caller supplies a provider ID only for a new, unconfigured installation.
-func ConfigureSuggested(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, ports ...Port) error {
-	return configure(ctx, value, catalog, run, suggestion, nil, ports)
+func ConfigureSuggested(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, answered Answered, ports ...Port) error {
+	return configure(ctx, value, catalog, run, suggestion, nil, answered, ports)
 }
 
 // ConfigureFresh asks the reporting question before anything else, then runs
 // discover, so a provider lookup never precedes the answer that permits it.
 // A fresh installation has no saved answer to rely on.
-func ConfigureFresh(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, discover Discover, ports ...Port) error {
-	return configure(ctx, value, catalog, run, "", discover, ports)
+func ConfigureFresh(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, discover Discover, answered Answered, ports ...Port) error {
+	return configure(ctx, value, catalog, run, "", discover, answered, ports)
 }
 
-func configure(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, discover Discover, ports []Port) error {
+func configure(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, discover Discover, answered Answered, ports []Port) error {
 	draft := clone(*value)
 	fresh := discover != nil
-	estimate, _ := settingsForm(catalog, &draft, ports, 0, !fresh)
+	estimate, _ := settingsForm(catalog, &draft, ports, 0, !fresh, answered)
 	session := &configureSession{
 		catalog:    catalog,
 		run:        run,
 		draft:      &draft,
 		ports:      ports,
 		suggestion: suggestion,
+		answered:   answered,
 		chosen:     startingSelection(catalog, draft.Profile, suggestion),
 		discover:   discover,
 		remaining:  estimate.visibleFields() + reviewQuestions,
@@ -333,9 +376,11 @@ func (session *configureSession) walk(ctx context.Context) error {
 // askConsent runs before provider discovery so that a default-enabled setting
 // never authorises the first lookup on its own.
 func (session *configureSession) askConsent(ctx context.Context) (wizardStage, error) {
-	page := newPage(telemetryConsent(&session.draft.Telemetry))
-	if err := session.run(ctx, wizardForm(page).steps(0, session.remaining)); err != nil {
-		return stageConsent, err
+	if !session.answered.has("telemetry") {
+		page := newPage(telemetryConsent(&session.draft.Telemetry))
+		if err := session.run(ctx, wizardForm(page).steps(0, session.remaining)); err != nil {
+			return stageConsent, err
+		}
 	}
 	suggestion, err := session.discover(ctx, session.draft.Telemetry)
 	if err != nil {
@@ -349,6 +394,12 @@ func (session *configureSession) askConsent(ctx context.Context) (wizardStage, e
 }
 
 func (session *configureSession) pickProfile(ctx context.Context) (wizardStage, error) {
+	if session.answered.has("profile") {
+		session.asked = 0
+		session.settings, session.apply = session.settingsForm()
+
+		return stageSettings, nil
+	}
 	asked, err := chooseProfile(ctx, session.catalog, session.run, &session.chosen, session.suggestion, session.remaining, session.start)
 	if errors.Is(err, ErrBack) && session.fresh {
 		return stageConsent, nil
@@ -360,12 +411,23 @@ func (session *configureSession) pickProfile(ctx context.Context) (wizardStage, 
 	if err := applyProfile(session.catalog, session.draft, session.chosen.profile()); err != nil {
 		return stageChain, err
 	}
-	session.settings, session.apply = settingsForm(session.catalog, session.draft, session.ports, session.asked, !session.fresh)
+	session.settings, session.apply = session.settingsForm()
 
 	return stageSettings, nil
 }
 
+func (session *configureSession) settingsForm() (*Wizard, func() error) {
+	return settingsForm(session.catalog, session.draft, session.ports, session.asked, !session.fresh, session.answered)
+}
+
 func (session *configureSession) editSettings(ctx context.Context) (wizardStage, error) {
+	if session.settings.visiblePages() == 0 {
+		if err := session.apply(); err != nil {
+			return stageSettings, err
+		}
+
+		return stageReview, nil
+	}
 	err := session.run(ctx, session.settings)
 	if errors.Is(err, ErrBack) {
 		session.start = max(session.asked-1, 0)
@@ -385,7 +447,7 @@ func (session *configureSession) editSettings(ctx context.Context) (wizardStage,
 func (session *configureSession) confirmSettings(ctx context.Context) (wizardStage, error) {
 	err := session.run(ctx, reviewForm(*session.draft, session.asked+session.settings.visiblePages(), &session.accepted))
 	if errors.Is(err, ErrBack) {
-		session.settings, session.apply = settingsForm(session.catalog, session.draft, session.ports, session.asked, !session.fresh)
+		session.settings, session.apply = session.settingsForm()
 
 		return stageSettings, nil
 	}
@@ -472,8 +534,8 @@ func multicastPages(value *config.Config, fields *formValues) []*page {
 			huh.NewSelect[string]().Key("proxy").Title("Multicast proxy").
 				Description("Recommended on current UniFi OS.").
 				Options(
-					huh.NewOption("improxy (recommended)", "improxy"),
-					huh.NewOption("igmpproxy", "igmpproxy"),
+					huh.NewOption("improxy (recommended)", config.ProxyImproxy),
+					huh.NewOption("igmpproxy", config.ProxyIgmpproxy),
 				).Value(&value.Proxy.Program),
 			huh.NewSelect[int]().Key("igmp").Title("IGMP version").
 				Description("IGMPv3 works for most current receivers.").
@@ -492,7 +554,7 @@ func multicastPages(value *config.Config, fields *formValues) []*page {
 			huh.NewInput().Key("proxy-sources").Title("Allowed multicast sources").
 				Description("Networks igmpproxy accepts multicast video from. Write each one as an address and prefix length such as 213.75.0.0/16, separated by spaces or commas. 0.0.0.0/0 accepts every source.").
 				Value(&fields.sources).Validate(validateSourcePrefixes),
-		).title("Multicast sources").hide(func() bool { return value.Proxy.Program != "igmpproxy" }),
+		).title("Multicast sources").hide(func() bool { return value.Proxy.Program != config.ProxyIgmpproxy }),
 	}
 }
 
@@ -503,7 +565,7 @@ func reviewSummary(value config.Config) string {
 func telemetryConsent(settings *config.Telemetry) huh.Field {
 	return huh.NewConfirm().Key("telemetry").
 		Title("Help improve udm-iptv?").
-		Description("Not anonymous. Press F1 for what is sent.").
+		Description("Share failures, metrics and your settings with the maintainer.").
 		Affirmative("Yes").Negative("No").Value(&settings.Enabled)
 }
 
