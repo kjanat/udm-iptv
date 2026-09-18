@@ -335,3 +335,27 @@ IPTV_IGMPPROXY_IGMP_VERSION="3"
 		t.Fatalf("imported %#v", value.WAN)
 	}
 }
+
+// preremove runs inside apt, which holds the dpkg lock, so the flag it passes
+// must reach the removal without the CLI calling the package manager again.
+func TestPreremoveUsesTheInternalRemovalPath(t *testing.T) {
+	t.Parallel()
+	script, err := os.ReadFile(filepath.Join("..", "..", "packaging", "deb", "preremove"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "uninstall --keep-config --from-package") {
+		t.Fatalf("preremove does not use the internal removal path:\n%s", script)
+	}
+	command := (&Application{}).uninstallCommand()
+	flag := command.Flags().Lookup("from-package")
+	if flag == nil {
+		t.Fatal("uninstall has no --from-package flag for maintainer scripts")
+	}
+	if !flag.Hidden {
+		t.Fatal("--from-package is offered to users")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("--from-package defaults to %q, so an ordinary uninstall skips delegation", flag.DefValue)
+	}
+}
