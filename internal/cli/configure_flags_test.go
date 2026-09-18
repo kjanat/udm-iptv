@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -113,5 +114,53 @@ func TestConfigureOverridesWriteDistinctFields(t *testing.T) {
 			continue
 		}
 		seen[result] = field.name
+	}
+}
+
+// A fresh console starts from the KPN profile so the wizard has something to
+// show. Selecting custom must not turn that draft into a saved KPN setup.
+func TestFreshCustomProfileDoesNotInheritKPN(t *testing.T) {
+	t.Parallel()
+	command := &cobra.Command{Use: "configure"}
+	flags := &configureFlags{telemetry: config.Default().Telemetry}
+	flags.bind(command)
+	if err := command.Flags().Set("profile", "custom"); err != nil {
+		t.Fatal(err)
+	}
+	kpn := config.DefaultKPN()
+	if kpn.WAN.VLAN != config.DefaultKPNVLAN || len(kpn.WAN.NATDestinations) == 0 {
+		t.Fatal("the KPN profile is empty, so this asserts nothing")
+	}
+	value := startingPoint(command, kpn, true)
+	if err := flags.apply(command, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Profile != "custom" {
+		t.Fatalf("profile = %q", value.Profile)
+	}
+	if value.WAN.VLAN == config.DefaultKPNVLAN || len(value.WAN.NATDestinations) != 0 || len(value.WAN.DHCPOptions) != 0 {
+		t.Fatalf("fresh custom inherited KPN settings: %#v", value.WAN)
+	}
+}
+
+// Custom on a configured console means "these settings, no provider profile",
+// so it must keep what is already saved.
+func TestExistingCustomProfileKeepsSavedSettings(t *testing.T) {
+	t.Parallel()
+	command := &cobra.Command{Use: "configure"}
+	flags := &configureFlags{telemetry: config.Default().Telemetry}
+	flags.bind(command)
+	if err := command.Flags().Set("profile", "custom"); err != nil {
+		t.Fatal(err)
+	}
+	saved := config.DefaultKPN()
+	saved.WAN.VLAN = 101
+	saved.WAN.NATDestinations = []string{"198.51.100.0/24"}
+	value := startingPoint(command, saved, false)
+	if err := flags.apply(command, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.WAN.VLAN != 101 || !slices.Equal(value.WAN.NATDestinations, []string{"198.51.100.0/24"}) {
+		t.Fatalf("custom wiped a saved configuration: %#v", value.WAN)
 	}
 }
