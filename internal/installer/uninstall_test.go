@@ -1,8 +1,10 @@
 package installer
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"reflect"
 	"testing"
 )
@@ -60,5 +62,84 @@ func TestCancelledUninstallDoesNothing(t *testing.T) {
 	cancel()
 	if err := executeUninstall(ctx, uninstallActions{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled uninstall: %v", err)
+	}
+}
+
+// A console without dpkg, or with no package entry, owns nothing to delegate.
+func TestPackageInstalledWithoutDpkg(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	owned, err := packageInstalled(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned {
+		t.Fatal("a console without dpkg reported a package")
+	}
+}
+
+func TestDelegateRemovalSkipsAnUnownedInstallation(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	commands := packageCommands{
+		installed: func(context.Context) (bool, error) { return false, nil },
+		remove: func(context.Context, string, io.Writer, io.Writer) error {
+			t.Fatal("called the package manager for an installation dpkg does not track")
+
+			return nil
+		},
+	}
+	delegated, err := delegateRemoval(t.Context(), false, &out, &errOut, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delegated {
+		t.Fatal("delegated an installation dpkg does not track")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("announced a removal it did not perform: %q", out.String())
+	}
+}
+
+// Delegation runs before anything is deleted, so a failed apt-get must not be
+// followed by removing the files behind dpkg's back.
+func TestDelegateRemovalReportsAptFailure(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	commands := packageCommands{
+		installed: func(context.Context) (bool, error) { return true, nil },
+		remove: func(context.Context, string, io.Writer, io.Writer) error {
+			return errInjectedUninstallStep
+		},
+	}
+	delegated, err := delegateRemoval(t.Context(), false, &out, &errOut, commands)
+	if !errors.Is(err, errInjectedUninstallStep) {
+		t.Fatalf("apt-get failure was not reported: %v", err)
+	}
+	if delegated {
+		t.Fatal("reported delegation after the package manager failed")
+	}
+}
+
+// --keep-config removes; without it the package and its configuration go.
+func TestDelegateRemovalChoosesRemoveOrPurge(t *testing.T) {
+	t.Parallel()
+	for keepConfig, want := range map[bool]string{true: "remove", false: "purge"} {
+		var out, errOut bytes.Buffer
+		got := ""
+		commands := packageCommands{
+			installed: func(context.Context) (bool, error) { return true, nil },
+			remove: func(_ context.Context, action string, _, _ io.Writer) error {
+				got = action
+
+				return nil
+			},
+		}
+		delegated, err := delegateRemoval(t.Context(), keepConfig, &out, &errOut, commands)
+		if err != nil || !delegated {
+			t.Fatalf("keepConfig=%t: delegated=%t err=%v", keepConfig, delegated, err)
+		}
+		if got != want {
+			t.Fatalf("keepConfig=%t ran apt-get %s, want %s", keepConfig, got, want)
+		}
 	}
 }

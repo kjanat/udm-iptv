@@ -183,33 +183,51 @@ func (application *Application) applyInstall(command *cobra.Command, deps instal
 }
 
 func (application *Application) uninstallCommand() *cobra.Command {
-	var keepConfig bool
+	var keepConfig, fromPackage bool
 	command := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove udm-iptv from this console",
 		Args:  cobra.NoArgs,
 		RunE: application.reporting("uninstall", func(command *cobra.Command, _ []string) error {
-			err := requireRoot()
-			if err != nil {
+			if err := requireRoot(); err != nil {
 				return err
 			}
-			var cleanup installer.CleanupError
-			err = installer.Uninstall(command.Context(), application.ConfigPath, application.StateDir, keepConfig)
-			switch {
-			case errors.As(err, &cleanup):
-				if err := writef(application.Err, "Warning: %s\n", cleanup.Err); err != nil {
-					return err
+			if !fromPackage {
+				delegated, err := installer.DelegateRemoval(command.Context(), keepConfig, application.Out, application.Err)
+				if err != nil {
+					return fmt.Errorf("remove the udm-iptv package: %w", err)
 				}
-			case err != nil:
-				return fmt.Errorf("remove the installation in %s: %w", application.StateDir, err)
+				if delegated {
+					return writeString(application.Out, "udm-iptv removed.\n")
+				}
 			}
 
-			return writeString(application.Out, "udm-iptv removed.\n")
+			return application.removeInstallation(command, keepConfig)
 		}),
 	}
 	command.Flags().BoolVar(&keepConfig, "keep-config", false, "retain the configuration in /data")
+	command.Flags().BoolVar(&fromPackage, "from-package", false, "remove the installation without calling the package manager")
+	_ = command.Flags().MarkHidden("from-package")
 
 	return command
+}
+
+// removeInstallation is the cleanup a package maintainer script reaches
+// through --from-package. It touches only what install created and never calls
+// the package manager, so dpkg stays in charge of the files it shipped.
+func (application *Application) removeInstallation(command *cobra.Command, keepConfig bool) error {
+	var cleanup installer.CleanupError
+	err := installer.Uninstall(command.Context(), application.ConfigPath, application.StateDir, keepConfig)
+	switch {
+	case errors.As(err, &cleanup):
+		if err := writef(application.Err, "Warning: %s\n", cleanup.Err); err != nil {
+			return err
+		}
+	case err != nil:
+		return fmt.Errorf("remove the installation in %s: %w", application.StateDir, err)
+	}
+
+	return writeString(application.Out, "udm-iptv removed.\n")
 }
 
 func (application *Application) restartCommand() *cobra.Command {

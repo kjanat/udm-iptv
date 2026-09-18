@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
+	"strings"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
 
@@ -141,4 +144,75 @@ func executeUninstall(ctx context.Context, actions uninstallActions) error {
 		return CleanupError{Err: deferred}
 	}
 	return nil
+}
+
+// packageName is the Debian package that ships this program.
+const packageName = "udm-iptv"
+
+// packageCommands are the external programs a delegated removal runs.
+type packageCommands struct {
+	installed func(context.Context) (bool, error)
+	remove    func(ctx context.Context, action string, out, errOut io.Writer) error
+}
+
+func systemPackageCommands() packageCommands {
+	return packageCommands{installed: packageInstalled, remove: aptRemove}
+}
+
+// packageInstalled reports whether dpkg tracks this installation. The marker
+// file alone cannot answer that, because a firmware update or a partial
+// removal can leave one behind without a package to match.
+func packageInstalled(ctx context.Context) (bool, error) {
+	query := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${db:Status-Status}", packageName)
+	status, err := query.Output()
+	if err == nil {
+		return strings.TrimSpace(string(status)) == "installed", nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil // dpkg-query reports an unknown package with exit code 1.
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return false, nil // A console without dpkg cannot own this installation.
+	}
+
+	return false, fmt.Errorf("inspect the %s package: %w", packageName, err)
+}
+
+func aptRemove(ctx context.Context, action string, out, errOut io.Writer) error {
+	remove := exec.CommandContext(ctx, "apt-get", action, "-y", packageName)
+	remove.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	remove.Stdout, remove.Stderr = out, errOut
+	if err := remove.Run(); err != nil {
+		return fmt.Errorf("apt-get %s %s: %w", action, packageName, err)
+	}
+
+	return nil
+}
+
+// DelegateRemoval hands a dpkg-tracked installation to apt, which runs prerm
+// and reaches the internal cleanup from there. It reports whether it
+// delegated, and runs before anything is deleted, so a failure leaves the
+// installation whole rather than half removed behind dpkg's back.
+func DelegateRemoval(ctx context.Context, keepConfig bool, out, errOut io.Writer) (bool, error) {
+	return delegateRemoval(ctx, keepConfig, out, errOut, systemPackageCommands())
+}
+
+func delegateRemoval(ctx context.Context, keepConfig bool, out, errOut io.Writer, commands packageCommands) (bool, error) {
+	owned, err := commands.installed(ctx)
+	if err != nil || !owned {
+		return false, err
+	}
+	action := "purge"
+	if keepConfig {
+		action = "remove"
+	}
+	if err := writeString(out, "Removing the "+packageName+" package with apt-get "+action+"...\n"); err != nil {
+		return false, err
+	}
+	if err := commands.remove(ctx, action, out, errOut); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
