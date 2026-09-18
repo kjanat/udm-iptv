@@ -76,10 +76,21 @@ func TestInspectSwitchSeparatesUnavailableFromEmpty(t *testing.T) {
 func TestFormatReceiversSeparatesUnavailableFromZero(t *testing.T) {
 	t.Parallel()
 	none := 0
-	if got := formatReceivers(5, 20173, &none); got != "5 multicast routes (20173 packets), 0 IGMP groups on LAN" {
+	usage := multicastInfo{Routes: 5, Packets: 20173}
+	idle := multicastInfo{}
+	if got := formatReceivers(&usage, &none); got != "5 multicast routes (20173 packets), 0 IGMP groups on LAN" {
 		t.Fatal(got)
 	}
-	if got := formatReceivers(5, 20173, nil); got != "5 multicast routes (20173 packets), IGMP groups on LAN unavailable" {
+	if got := formatReceivers(&usage, nil); got != "5 multicast routes (20173 packets), IGMP groups on LAN unavailable" {
+		t.Fatal(got)
+	}
+	if got := formatReceivers(&idle, &none); got != "0 multicast routes (0 packets), 0 IGMP groups on LAN" {
+		t.Fatal(got)
+	}
+	if got := formatReceivers(nil, &none); got != "multicast routes unavailable, 0 IGMP groups on LAN" {
+		t.Fatal(got)
+	}
+	if got := formatReceivers(nil, nil); got != "multicast routes unavailable, IGMP groups on LAN unavailable" {
 		t.Fatal(got)
 	}
 }

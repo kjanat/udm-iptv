@@ -30,8 +30,8 @@ type Snapshot struct {
 	Config      configSummary      `json:"config"`
 	Service     serviceStatus      `json:"service"`
 	Network     networkStatus      `json:"network"`
-	Multicast   multicastInfo      `json:"multicast"`
-	NAT         []string           `json:"natRules"`
+	Multicast   *multicastInfo     `json:"multicast"`
+	NAT         *[]string          `json:"natRules"`
 	Downstream  []downstreamStatus `json:"downstream"`
 	Switches    string             `json:"switches"`
 	NativeProxy string             `json:"nativeProxy"`
@@ -95,9 +95,13 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		Config:     summarizeConfig(value),
 		Service:    inspectService(ctx),
 		Network:    inspectLink(network.Target(value)),
-		Multicast:  multicastUsage(),
-		NAT:        managedNATRules(),
 		Downstream: inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces),
+	}
+	if usage, err := multicastUsage(); err == nil {
+		result.Multicast = &usage
+	}
+	if rules, err := managedNATRules(); err == nil {
+		result.NAT = &rules
 	}
 	result.Switches = inspectSwitch(os.DirFS("/sys"), device.Inspect(ctx).Firmware)
 	result.NativeProxy = inspectNativeProxy(ctx, result.Service.ProxyPID)
@@ -123,14 +127,42 @@ func inspectNativeProxy(ctx context.Context, ourPID int) string {
 	return formatNativeProxy(loaded, active, extra, scanned)
 }
 
-func inspectReceivers(usage multicastInfo, lan []string) string {
+func inspectReceivers(usage *multicastInfo, lan []string) string {
 	data, err := os.ReadFile("/proc/net/igmp")
 	if err != nil {
-		return formatReceivers(usage.Routes, usage.Packets, nil)
+		return formatReceivers(usage, nil)
 	}
 	groups := countLANIGMPGroups(string(data), lan)
 
-	return formatReceivers(usage.Routes, usage.Packets, &groups)
+	return formatReceivers(usage, &groups)
+}
+
+// counterUnavailable keeps a failed read out of the counts, so an unreadable
+// kernel table never renders as an idle router.
+const counterUnavailable = "unavailable"
+
+func multicastSummary(usage *multicastInfo) string {
+	if usage == nil {
+		return counterUnavailable
+	}
+
+	return fmt.Sprintf("%d (%d packets)", usage.Routes, usage.Packets)
+}
+
+func multicastRouteCount(usage *multicastInfo) string {
+	if usage == nil {
+		return counterUnavailable
+	}
+
+	return strconv.Itoa(usage.Routes)
+}
+
+func natRuleCount(rules *[]string) string {
+	if rules == nil {
+		return counterUnavailable
+	}
+
+	return strconv.Itoa(len(*rules))
 }
 
 func summarizeConfig(value config.Config) configSummary {
@@ -167,14 +199,14 @@ func inspectService(ctx context.Context) serviceStatus {
 	return status
 }
 
-func multicastUsage() multicastInfo {
+func multicastUsage() (multicastInfo, error) {
 	data, err := os.ReadFile("/proc/net/ip_mr_cache")
 	if err != nil {
-		return multicastInfo{}
+		return multicastInfo{}, fmt.Errorf("read ip_mr_cache: %w", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) <= 1 {
-		return multicastInfo{}
+		return multicastInfo{}, nil
 	}
 	usage := multicastInfo{Routes: len(lines) - 1}
 	for _, line := range lines[1:] {
@@ -185,26 +217,26 @@ func multicastUsage() multicastInfo {
 		}
 	}
 
-	return usage
+	return usage, nil
 }
 
-func managedNATRules() []string {
+func managedNATRules() ([]string, error) {
 	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("open iptables: %w", err)
 	}
 	rules, err := table.ListWithCounters("nat", "POSTROUTING")
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("list nat POSTROUTING: %w", err)
 	}
-	var managed []string
+	managed := []string{}
 	for _, rule := range rules {
 		if strings.Contains(rule, "udm-iptv") {
 			managed = append(managed, sanitize(rule))
 		}
 	}
 
-	return managed
+	return managed, nil
 }
 
 func inspectLink(target string) networkStatus {
@@ -243,7 +275,7 @@ Profile: %s
 WAN: %s, VLAN %d (%s), DHCP: %t
 Custom VLAN MAC: %t, static address: %t, DHCP options: %t
 NAT destinations: %s
-Active NAT rules: %d
+Active NAT rules: %s
 Proxy sources: %s
 LAN interfaces: %s
 Service: %s/%s (%s, restarts: %d)
@@ -252,12 +284,12 @@ IGMP version: %d, quickleave enabled: %t, proxy debug logging: %t
 IPTV interface: %s (%s, %d IPv4 addresses)
 Routes: %s
 IPTV default route: %t
-Multicast routes: %d (%d packets)
+Multicast routes: %s
 `, value.Version, value.Config.Profile, value.Config.WANInterface, value.Config.VLAN, value.Config.IPTVInterface, value.Config.DHCP,
 		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, strings.Join(value.Config.NATDestinations, ", "),
-		len(value.NAT), strings.Join(value.Config.ProxySourceRanges, ", "), strings.Join(value.Config.LANInterfaces, ", "),
+		natRuleCount(value.NAT), strings.Join(value.Config.ProxySourceRanges, ", "), strings.Join(value.Config.LANInterfaces, ", "),
 		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts,
 		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, value.Config.QuickLeave, value.Config.Debug,
 		value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount,
-		strings.Join(value.Network.Routes, ", "), value.Network.DefaultRoute, value.Multicast.Routes, value.Multicast.Packets) + renderDownstream(value)
+		strings.Join(value.Network.Routes, ", "), value.Network.DefaultRoute, multicastSummary(value.Multicast)) + renderDownstream(value)
 }

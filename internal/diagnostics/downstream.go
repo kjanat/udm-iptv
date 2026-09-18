@@ -151,13 +151,17 @@ func extraProxyPIDs(ours int) ([]int, error) {
 	return extra, nil
 }
 
-func formatReceivers(routes int, packets uint64, groups *int) string {
+func formatReceivers(usage *multicastInfo, groups *int) string {
+	routes := "multicast routes unavailable"
+	if usage != nil {
+		routes = fmt.Sprintf("%d multicast routes (%d packets)", usage.Routes, usage.Packets)
+	}
 	membership := "IGMP groups on LAN unavailable"
 	if groups != nil {
 		membership = strconv.Itoa(*groups) + " IGMP groups on LAN"
 	}
 
-	return fmt.Sprintf("%d multicast routes (%d packets), %s", routes, packets, membership)
+	return routes + ", " + membership
 }
 
 func countLANIGMPGroups(table string, lan []string) int {
