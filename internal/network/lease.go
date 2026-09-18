@@ -84,7 +84,12 @@ func leaseRouteIdentity(route netlink.Route) string {
 	return fmt.Sprintf("%s/%d/%d/%s", leaseRouteKey(route), route.Protocol, route.Scope, route.Gw)
 }
 
+// removeOtherAddresses retires every IPv4 address but desired from an owned
+// link. A borrowed link keeps its other addresses.
 func removeOtherAddresses(link netlink.Link, desired *netlink.Addr, ops leaseOperations) (bool, error) {
+	if !owned(link) {
+		return false, nil
+	}
 	addresses, err := ops.addresses(link, netlink.FAMILY_V4)
 	if err != nil {
 		return false, fmt.Errorf("read assigned addresses: %w", err)

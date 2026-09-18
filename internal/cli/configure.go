@@ -52,13 +52,17 @@ func loadOrImportConfig(path, stateDir string) (config.Config, bool, error) {
 // user asked for the custom profile. Applying "custom" relabels the draft it
 // is given, which is the right answer for a saved configuration and the wrong
 // one for a fresh console, where that draft is the KPN profile.
-func startingPoint(command *cobra.Command, value config.Config, fresh bool) config.Config {
+func startingPoint(command *cobra.Command, value config.Config, fresh bool, seed func(config.Config) config.Config) config.Config {
 	if !fresh || !command.Flags().Changed("profile") || command.Flags().Lookup("profile").Value.String() != config.ProfileCustom {
 		return value
 	}
 
-	return device.WithInterfaces(config.Default())
+	return seed(config.Default())
 }
+
+// ErrNotConfigured reports a console with neither a saved nor an importable
+// configuration.
+var ErrNotConfigured = errors.New("udm-iptv is not configured; run udm-iptv install or udm-iptv configure set")
 
 var (
 	errNothingToSet   = errors.New("no setting given; pass at least one flag")
@@ -92,6 +96,7 @@ type configureFlags struct {
 	dhcp                                 bool
 	quickLeave, debug                    bool
 	telemetry                            config.Telemetry
+	seed                                 func(config.Config) config.Config
 }
 
 func (f *configureFlags) overrides(value *config.Config) []override {
@@ -171,7 +176,9 @@ func formatSetting(value any) string {
 }
 
 // apply folds the flags the user actually set into value, profile first
-// because it replaces the whole configuration.
+// because it replaces the whole configuration. A provider profile carries
+// placeholder interfaces and is seeded with the detected ones; custom and
+// legacy relabel the configuration and keep its interfaces.
 func (f *configureFlags) apply(command *cobra.Command, value *config.Config) error {
 	flags := command.Flags()
 	if flags.Changed("profile") {
@@ -179,7 +186,10 @@ func (f *configureFlags) apply(command *cobra.Command, value *config.Config) err
 		if err != nil {
 			return fmt.Errorf("apply --profile: %w", err)
 		}
-		*value = device.WithInterfaces(selected)
+		if !config.KeepsSettings(f.profile) {
+			selected = f.seed(selected)
+		}
+		*value = selected
 	}
 	f.applyReporting(command, value)
 	for _, field := range f.overrides(value) {
@@ -257,8 +267,18 @@ func completeProfiles(_ *cobra.Command, _ []string, _ string) ([]string, cobra.S
 	return values, cobra.ShellCompDirectiveNoFileComp
 }
 
+// seedInterfaces replaces a configuration's placeholder interfaces with the
+// ones detected on this console.
+func (application *Application) seedInterfaces() func(config.Config) config.Config {
+	if application.seed != nil {
+		return application.seed
+	}
+
+	return device.WithInterfaces
+}
+
 func (application *Application) configureCommand() *cobra.Command {
-	flags := &configureFlags{telemetry: config.Default().Telemetry}
+	flags := &configureFlags{telemetry: config.Default().Telemetry, seed: application.seedInterfaces()}
 	command := &cobra.Command{
 		Use:     commandConfigure,
 		Aliases: []string{"reconfigure"},
@@ -285,7 +305,7 @@ func (application *Application) configureCommand() *cobra.Command {
 }
 
 func (application *Application) configureSetCommand() *cobra.Command {
-	flags := &configureFlags{telemetry: config.Default().Telemetry}
+	flags := &configureFlags{telemetry: config.Default().Telemetry, seed: application.seedInterfaces()}
 	command := &cobra.Command{
 		Use:   "set",
 		Short: "Write settings from flags without opening the form",
@@ -317,9 +337,12 @@ func (application *Application) configureGetCommand() *cobra.Command {
 			return flags.settingNames(&config.Config{}), cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(_ *cobra.Command, args []string) error {
-			value, _, err := loadOrImportConfig(application.ConfigPath, application.StateDir)
+			value, fresh, err := loadOrImportConfig(application.ConfigPath, application.StateDir)
 			if err != nil {
 				return err
+			}
+			if fresh {
+				return ErrNotConfigured
 			}
 			if len(args) == 0 {
 				data, err := json.MarshalIndent(value, "", "  ")
@@ -347,7 +370,7 @@ func (application *Application) draft(command *cobra.Command, flags *configureFl
 	if err != nil {
 		return config.Config{}, false, err
 	}
-	value = startingPoint(command, value, fresh)
+	value = startingPoint(command, value, fresh, flags.seed)
 	if err := flags.apply(command, &value); err != nil {
 		return config.Config{}, false, err
 	}
@@ -368,10 +391,15 @@ func (application *Application) askForConfiguration(command *cobra.Command, valu
 
 // saveConfiguration validates and persists the configuration, then restarts an
 // installed service, recording both for the telemetry report.
-func (application *Application) saveConfiguration(command *cobra.Command, value config.Config) error {
+func (application *Application) saveConfiguration(command *cobra.Command, value config.Config) (result error) {
 	if err := value.Validate(); err != nil {
 		return fmt.Errorf("check the configuration: %w", err)
 	}
+	release, err := installer.AcquireLock(application.StateDir)
+	if err != nil {
+		return fmt.Errorf("start the configuration change: %w", err)
+	}
+	defer func() { result = errors.Join(result, release()) }()
 	installed := installer.Installed(application.StateDir)
 	if installed {
 		if err := installer.PreserveProxy(application.StateDir, value.Proxy.Program); err != nil {
@@ -386,9 +414,9 @@ func (application *Application) saveConfiguration(command *cobra.Command, value 
 		return err
 	}
 	if !installed {
-		return nil
+		return writeString(application.Out, "The service is not installed; udm-iptv install applies the configuration.\n")
 	}
-	err := application.restart(command.Context(), true)
+	err = application.restart(command.Context(), true)
 	application.reportApplied = err == nil
 
 	return err

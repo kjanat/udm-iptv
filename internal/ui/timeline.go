@@ -61,13 +61,21 @@ func timeline(events []diagnostics.Event) []string {
 		case diagnostics.EventMarker:
 			lines = append(lines, stamp+" >>> "+event.Message)
 		case diagnostics.EventLog:
-			lines = append(lines, stamp+" log "+event.Log)
+			lines = append(lines, stamp+" log "+logSource(event.Source)+event.Log)
 		case diagnostics.EventStarted, diagnostics.EventCompleted, diagnostics.EventTimeout, diagnostics.EventError, diagnostics.EventFailed:
 			lines = append(lines, stamp+" "+event.Type+": "+event.Message)
 		}
 	}
 
 	return lines
+}
+
+func logSource(source string) string {
+	if source == "" {
+		return ""
+	}
+
+	return source + ": "
 }
 
 func summarize(value *diagnostics.Snapshot) string {

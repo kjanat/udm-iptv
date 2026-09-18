@@ -16,7 +16,7 @@ func (application *Application) upgradeCommand() *cobra.Command {
 				return err
 			}
 
-			return (&installer.Upgrader{Version: application.Version, StateDir: application.StateDir, Out: application.Out, Restart: application.restart}).Upgrade(command.Context(), options)
+			return (&installer.Upgrader{Version: application.Version, StateDir: application.StateDir, Out: application.Out, Err: application.Err, Restart: application.restart}).Upgrade(command.Context(), options)
 		}),
 	}
 	flags := command.Flags()

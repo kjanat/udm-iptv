@@ -351,10 +351,15 @@ func FromProfile(id string, current Config) (Config, error) {
 	return embedded().Apply(id, current)
 }
 
+// KeepsSettings reports whether applying the profile id relabels a configuration and keeps every setting it holds.
+func KeepsSettings(id string) bool {
+	return id == ProfileCustom || id == profileLegacy
+}
+
 // Apply returns current re-labelled for "custom" or "legacy", or a fresh copy
 // of the named profile's settings that keeps current's telemetry choice.
 func (catalog Catalog) Apply(id string, current Config) (Config, error) {
-	if id == ProfileCustom || id == profileLegacy {
+	if KeepsSettings(id) {
 		current.Profile = id
 
 		return current, nil

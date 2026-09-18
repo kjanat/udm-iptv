@@ -3,6 +3,7 @@ package network
 import (
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"slices"
 	"strings"
@@ -53,9 +54,17 @@ type leaseFixture struct {
 	dropSecondary bool
 }
 
+func ownedLink() netlink.Link {
+	return &netlink.Dummy{Index: 52, Alias: linkAlias}
+}
+
+func borrowedLink() netlink.Link {
+	return &netlink.Dummy{Index: 52, Name: "eth8"}
+}
+
 func (f *leaseFixture) ops() leaseOperations {
 	return leaseOperations{
-		link:           func(string) (netlink.Link, error) { return &netlink.Dummy{Index: 52}, nil },
+		link:           func(string) (netlink.Link, error) { return ownedLink(), nil },
 		addresses:      func(netlink.Link, int) ([]netlink.Addr, error) { return f.addresses, nil },
 		replaceAddress: f.replaceAddress,
 		deleteAddress:  f.deleteAddress,
@@ -347,6 +356,65 @@ func TestDeconfigRemovesLeaseState(t *testing.T) {
 	}
 	if len(fixture.routes) != 0 || len(fixture.addresses) != 0 {
 		t.Fatal("lease state retained after deconfig")
+	}
+}
+
+func uplinkAddress() netlink.Addr {
+	return netlink.Addr{IPNet: &net.IPNet{IP: net.ParseIP("203.0.113.10").To4(), Mask: net.CIDRMask(24, 32)}}
+}
+
+// A lease on an interface the firmware owns, such as an untagged uplink, must
+// leave the addresses the firmware put there alone.
+func TestBorrowedInterfaceKeepsForeignAddresses(t *testing.T) {
+	t.Parallel()
+	fixture := &leaseFixture{addresses: []netlink.Addr{uplinkAddress()}}
+	ops := fixture.ops()
+	ops.link = func(string) (netlink.Link, error) { return borrowedLink(), nil }
+	lease := testLease()
+	if err := applyLease(lease, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(fixture.changes, "address") || slices.Contains(fixture.changes, "delete-address") {
+		t.Fatalf("borrowed interface changes: %v", fixture.changes)
+	}
+	if len(fixture.addresses) != 2 {
+		t.Fatalf("uplink address lost: %v", fixture.addresses)
+	}
+	lease.Action = "deconfig"
+	if err := applyLease(lease, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.addresses) != 1 || !sameAddress(fixture.addresses[0], uplinkAddress()) {
+		t.Fatalf("deconfig on a borrowed interface left %v", fixture.addresses)
+	}
+	lease.Address = ""
+	fixture.changes = nil
+	if err := applyLease(lease, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(fixture.changes, "delete-address") {
+		t.Fatalf("deconfig without a known address deleted one: %v", fixture.changes)
+	}
+}
+
+func TestManagedVLANRequiresAliasOrMatchingConfiguration(t *testing.T) {
+	t.Parallel()
+	marked := &netlink.Vlan{Alias: linkAlias, ParentIndex: 3, VlanId: 6}
+	same := &netlink.Vlan{ParentIndex: 2, VlanId: 4}
+	foreign := &netlink.Vlan{ParentIndex: 2, VlanId: 6}
+	otherParent := &netlink.Vlan{ParentIndex: 9, VlanId: 4}
+	for name, test := range map[string]struct {
+		vlan *netlink.Vlan
+		want bool
+	}{
+		"marked link on another parent": {marked, true},
+		"unmarked configured VLAN":      {same, true},
+		"internet VLAN with our name":   {foreign, false},
+		"configured ID on another port": {otherParent, false},
+	} {
+		if got := managedVLAN(test.vlan, 2, 4); got != test.want {
+			t.Errorf("%s: managedVLAN = %t, want %t", name, got, test.want)
+		}
 	}
 }
 

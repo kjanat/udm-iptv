@@ -37,7 +37,7 @@ Configuration types are shared across these packages.
 | `config`        | Profiles, validation, persistence, legacy import                     |
 | `installer`     | Installation plans, system changes, upgrades, rollback, removal      |
 | `service`       | Proxy supervision, readiness, systemd jobs, runtime observations     |
-| `diagnostics`   | Snapshots, captures, journal collection, redaction, rendering        |
+| `diagnostics`   | Snapshots, captures, journal collection, rendering                   |
 | `network`       | Interfaces, leases, routing, NAT                                     |
 | `telemetry`     | Reporting policy, transport, identity, configuration history         |
 | `runtimebundle` | Offline proxy binaries and shared libraries                          |

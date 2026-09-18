@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
 func TestNewestPublishedReleaseSkipsDrafts(t *testing.T) {
@@ -67,7 +70,8 @@ func TestFileDigestMatchesSHA256(t *testing.T) {
 
 func TestWorkflowIdentityBindsToReleaseTagWorkflow(t *testing.T) {
 	t.Parallel()
-	identity, err := workflowIdentity(upgradeCandidate{owner: "kjanat", repository: "udm-iptv"})
+	release := &github.RepositoryRelease{TagName: new("v4.3.0")}
+	identity, err := workflowIdentity(upgradeCandidate{owner: "kjanat", repository: "udm-iptv", release: release})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +90,15 @@ func TestWorkflowIdentityBindsToReleaseTagWorkflow(t *testing.T) {
 			attestationIssuer, "https://github.com/attacker/udm-iptv"),
 		"a branch instead of a tag": signer(
 			"https://github.com/kjanat/udm-iptv/.github/workflows/release.yml@refs/heads/master",
+			attestationIssuer, "https://github.com/kjanat/udm-iptv"),
+		"another release's tag": signer(
+			"https://github.com/kjanat/udm-iptv/.github/workflows/release.yml@refs/tags/v4.2.0",
+			attestationIssuer, "https://github.com/kjanat/udm-iptv"),
+		"a tag that extends the candidate's": signer(
+			"https://github.com/kjanat/udm-iptv/.github/workflows/release.yml@refs/tags/v4.3.0-rc1",
+			attestationIssuer, "https://github.com/kjanat/udm-iptv"),
+		"another workflow in the repository": signer(
+			"https://github.com/kjanat/udm-iptv/.github/workflows/ci.yml@refs/tags/v4.3.0",
 			attestationIssuer, "https://github.com/kjanat/udm-iptv"),
 		"a non-GitHub issuer":            signer(released, "https://accounts.google.com", "https://github.com/kjanat/udm-iptv"),
 		"a mismatched source repository": signer(released, attestationIssuer, "https://github.com/attacker/udm-iptv"),
@@ -256,6 +269,7 @@ func TestReleaseAssetDownloadScopesAuthentication(t *testing.T) {
 	}
 	assertTokenWithheld("https://example.com/asset")
 	assertTokenWithheld("https://tmaproduction.blob.core.windows.net/attestations/1/bundle.json.sn")
+	assertTokenWithheld("http://api.github.com/repos/kjanat/udm-iptv/releases/assets/1")
 }
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -277,6 +291,62 @@ func TestDecompressBundleRejectsInflatedBlock(t *testing.T) {
 	}
 	if _, ok := parseBundle(inflated); ok {
 		t.Fatal("oversized block yielded a bundle")
+	}
+}
+
+// A dpkg-tracked installation is upgraded through its package, so dpkg's
+// database and the shipped files advance with the executable.
+func TestPackageManagedUpgradeInstallsThePackage(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	installed := ""
+	fetched := ""
+	upgrader := &Upgrader{
+		StateDir: "/data/udm-iptv", Out: &out, Err: &errOut,
+		Restart: func(context.Context, bool) error {
+			t.Fatal("a package upgrade restarted the service itself")
+
+			return nil
+		},
+		packages: packageCommands{
+			installed: func(context.Context) (bool, error) { return true, nil },
+			install: func(_ context.Context, packagePath string, _, _ io.Writer) error {
+				installed = packagePath
+
+				return nil
+			},
+		},
+		fetch: func(_ context.Context, _ upgradeCandidate, directory, assetName, _, _ string, mode os.FileMode) (string, error) {
+			fetched = assetName
+			if mode != filemode.SharedFile {
+				t.Fatalf("package downloaded with mode %o", mode)
+			}
+
+			return filepath.Join(directory, assetName), nil
+		},
+	}
+	release := &github.RepositoryRelease{TagName: new("v5.0.0"), Assets: []*github.ReleaseAsset{
+		{Name: new(packageAssetName()), URL: new("https://api.github.com/repos/kjanat/udm-iptv/releases/assets/1")},
+		{Name: new("SHA256SUMS"), URL: new("https://api.github.com/repos/kjanat/udm-iptv/releases/assets/2")},
+	}}
+	if err := upgrader.applyPackageRelease(context.Background(), upgradeCandidate{release: release, version: "5.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if fetched != packageAssetName() || filepath.Base(installed) != packageAssetName() {
+		t.Fatalf("fetched %q, installed %q", fetched, installed)
+	}
+	if !strings.Contains(out.String(), "apt-get") {
+		t.Fatalf("output does not say how the package is installed: %q", out.String())
+	}
+}
+
+func TestPackageManagedUpgradeNeedsThePackageAsset(t *testing.T) {
+	t.Parallel()
+	upgrader := &Upgrader{StateDir: "/data/udm-iptv", Out: io.Discard, Err: io.Discard, packages: packageCommands{installed: func(context.Context) (bool, error) { return true, nil }}}
+	release := &github.RepositoryRelease{TagName: new("v5.0.0"), Assets: []*github.ReleaseAsset{{Name: new("udm-iptv-linux-arm64"), URL: new("https://api.github.com/1")}}}
+	err := upgrader.applyPackageRelease(context.Background(), upgradeCandidate{release: release, version: "5.0.0"})
+	if !errors.Is(err, errReleaseAssetsMissing) {
+		t.Fatalf("release without a package: %v", err)
 	}
 }
 

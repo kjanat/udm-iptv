@@ -20,7 +20,7 @@ func RenderEvent(event Event) string {
 	case EventFinal:
 		return "\n=== Final snapshot ===\n" + RenderSnapshot(*event.Snapshot) + "\n"
 	case EventLog:
-		return event.Log + "\n"
+		return renderJournalEntry(event.Time, event.Source, event.Log) + "\n"
 	}
 
 	return renderMessage(event)

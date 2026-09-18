@@ -229,9 +229,15 @@ func sameFile(left, right string) bool {
 	return errA == nil && errB == nil && os.SameFile(a, b)
 }
 
-// Installed reports whether a persistent installation exists under stateDir.
+// Installed reports whether the persistent executable under stateDir and its
+// systemd unit both exist. dpkg unpacks the executable before postinst
+// installs the unit.
 func Installed(stateDir string) bool {
-	info, err := os.Stat(filepath.Join(stateDir, "bin", "udm-iptv"))
+	return regularFile(filepath.Join(stateDir, "bin", "udm-iptv")) && regularFile(unitPath)
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
 
 	return err == nil && info.Mode().IsRegular()
 }

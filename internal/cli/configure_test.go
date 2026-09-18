@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,6 +34,59 @@ func TestConfigureSetAppliesFlagsAfterLoading(t *testing.T) {
 	}
 	if updated.WAN.Interface != "eth9" || !updated.Proxy.QuickLeave {
 		t.Fatalf("flags were not applied: %#v", updated)
+	}
+}
+
+func seedBR0(value config.Config) config.Config {
+	value.LAN.Interfaces = []string{"br0"}
+
+	return value
+}
+
+// Relabelling a saved configuration as custom keeps the interfaces it holds;
+// a provider profile is seeded with the detected ones.
+func TestConfigureSetCustomKeepsSavedInterfaces(t *testing.T) {
+	t.Parallel()
+	for profile, want := range map[string][]string{config.ProfileCustom: {"br20", "br30"}, config.ProfileKPN: {"br0"}} {
+		directory := t.TempDir()
+		path := filepath.Join(directory, "config.json")
+		current := config.DefaultKPN()
+		current.Profile = config.ProfileCustom
+		current.LAN.Interfaces = []string{"br20", "br30"}
+		if err := config.Save(path, current); err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		application := &Application{Version: "test", ConfigPath: path, StateDir: filepath.Join(directory, "state"), Out: &output, Err: &output, seed: seedBR0}
+		command := application.root()
+		command.SetArgs([]string{"configure", "set", "--profile", profile})
+		if err := command.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(updated.LAN.Interfaces, want) || updated.Profile != profile {
+			t.Fatalf("--profile %s saved %s with %v, want %v", profile, updated.Profile, updated.LAN.Interfaces, want)
+		}
+	}
+}
+
+func TestConfigureGetReportsAnUnconfiguredConsole(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	var output bytes.Buffer
+	application := &Application{Version: "test", ConfigPath: filepath.Join(directory, "config.json"), StateDir: filepath.Join(directory, "state"), Out: &output, Err: &output}
+	for _, args := range [][]string{{"configure", "get"}, {"configure", "get", "profile"}} {
+		command := application.root()
+		command.SetArgs(args)
+		if err := command.Execute(); !errors.Is(err, ErrNotConfigured) {
+			t.Fatalf("%v: err = %v", args, err)
+		}
+	}
+	if output.Len() != 0 {
+		t.Fatalf("printed a configuration that does not exist: %q", output.String())
 	}
 }
 

@@ -40,13 +40,32 @@ func TestCollectorsShareCaptureDeadline(t *testing.T) {
 
 func TestJournalCollectionIsBoundedAtSource(t *testing.T) {
 	t.Parallel()
-	arguments := journalArguments("s=cursor", 10_000)
-	want := []string{"-n", "10000", "--after-cursor", "s=cursor"}
+	arguments := journalArguments("s=cursor", 10_000, serviceUnit)
+	want := []string{"-n", "10000", "--after-cursor", "s=cursor", "-u", serviceUnit, "json"}
 	for _, value := range want {
 		if !slices.Contains(arguments, value) {
 			t.Fatalf("journal arguments %q do not contain %q", arguments, value)
 		}
 	}
+}
+
+// A journal record keeps the time it was logged and who logged it; a
+// message journald stored as bytes is decoded like any other.
+func TestParseJournalKeepsSourceTimestamps(t *testing.T) {
+	t.Parallel()
+	records := `{"__REALTIME_TIMESTAMP":"1789690127000000","SYSLOG_IDENTIFIER":"udm-iptv","_PID":"1745611","MESSAGE":"group 224.0.252.133 exclude mode"}
+{"__REALTIME_TIMESTAMP":"1789690080000000","_COMM":"ubios-udapi-se","_PID":"2925","MESSAGE":[102,105,114,101,119,97,108,108]}
+not json
+`
+	entries := parseJournal([]byte(records))
+	assertEqual(t, "entries", len(entries), 2)
+	assertEqual(t, "time", entries[0].Time, time.Date(2026, 9, 18, 0, 8, 47, 0, time.UTC))
+	assertEqual(t, "source", entries[0].Source, "udm-iptv[1745611]")
+	assertEqual(t, "message", entries[0].Message, "group 224.0.252.133 exclude mode")
+	assertEqual(t, "command fallback", entries[1].Source, "ubios-udapi-se[2925]")
+	assertEqual(t, "byte message", entries[1].Message, "firewall")
+	rendered := RenderEvent(Event{Time: entries[0].Time, Type: EventLog, Source: entries[0].Source, Log: entries[0].Message})
+	assertEqual(t, "rendered", rendered, "2026-09-18T00:08:47Z udm-iptv[1745611]: group 224.0.252.133 exclude mode\n")
 }
 
 func drainMarkers(t *testing.T, reader *markerReader) []Event {

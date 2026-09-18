@@ -55,12 +55,14 @@ type Options struct {
 }
 
 // Event represents a single diagnostic event, which can be a snapshot,
-// log entry, or status message.
+// log entry, or status message. A log event's Time is when the record was
+// logged, and Source names the process that logged it.
 type Event struct {
 	Time     time.Time `json:"time"`
 	Type     string    `json:"type"`
 	Message  string    `json:"message,omitempty"`
 	Snapshot *Snapshot `json:"snapshot,omitempty"`
+	Source   string    `json:"source,omitempty"`
 	Log      string    `json:"log,omitempty"`
 }
 
@@ -301,11 +303,11 @@ func (application *Collector) writeSample(ctx context.Context, write func(Event)
 }
 
 func writeJournal(ctx context.Context, cursor string, write func(Event) error) error {
-	for _, line := range journalLines(ctx, cursor, journalLineLimit) {
+	for _, entry := range captureJournal(ctx, cursor, journalLineLimit) {
 		if expired(ctx) {
 			break
 		}
-		if err := write(Event{Time: time.Now().UTC(), Type: EventLog, Log: line}); err != nil {
+		if err := write(Event{Time: entry.Time, Type: EventLog, Source: entry.Source, Log: entry.Message}); err != nil {
 			return err
 		}
 	}

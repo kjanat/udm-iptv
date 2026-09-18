@@ -134,7 +134,7 @@ jobs:
               test -x "${control}/prerm"
               test -x "${control}/postrm"
               test -f "${control}/templates"
-              grep -Fq "configure --profile \"\${profile}\" --non-interactive" "${control}/postinst"
+              grep -Fq "configure set --profile \"\${profile}\"" "${control}/postinst"
               dpkg-deb --contents "${package}" | grep -E '/data/udm-iptv/bin/udm-iptv$'
               dpkg-deb --contents "${package}" | grep -E '/usr/share/doc/udm-iptv/copyright$'
 

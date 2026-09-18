@@ -39,6 +39,7 @@ func (application *Application) installCommand() *cobra.Command {
 			return application.configureFreshForm(ctx, value, nil)
 		},
 		executable: os.Executable, requireRoot: requireRoot,
+		lock:    installer.AcquireLock,
 		backend: application.installBackend(),
 	})
 }
@@ -113,6 +114,7 @@ type installDependencies struct {
 	promptFresh func(context.Context, *config.Config) error
 	executable  func() (string, error)
 	requireRoot func() error
+	lock        func(stateDir string) (func() error, error)
 	backend     installer.Backend
 }
 
@@ -174,7 +176,7 @@ func (application *Application) prepareInstall(command *cobra.Command, deps inst
 	return source, nil
 }
 
-func (application *Application) applyInstall(command *cobra.Command, deps installDependencies, plan installer.Plan, options installOptions) error {
+func (application *Application) applyInstall(command *cobra.Command, deps installDependencies, plan installer.Plan, options installOptions) (result error) {
 	if options.dryRun {
 		if err := plan.Preview(application.Out); err != nil {
 			return fmt.Errorf("preview the installation plan: %w", err)
@@ -182,6 +184,11 @@ func (application *Application) applyInstall(command *cobra.Command, deps instal
 
 		return nil
 	}
+	release, err := deps.lock(plan.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, release()) }()
 	if err := plan.Execute(command.Context(), deps.backend); err != nil {
 		return fmt.Errorf("apply the installation plan: %w", err)
 	}

@@ -92,7 +92,7 @@ if grep -Eq '^etc/systemd/system/?$' /usr/share/initramfs-tools/scripts/ubnt; th
 
 func (h *firmwareHarness) installPreviousPackage(name, image string) {
 	h.t.Helper()
-	h.boot(name, image, false)
+	h.boot(name, image, "bridge", false)
 	// Preconfigure a static test network with reporting disabled, using the
 	// real CLI. No background harness process supplies fake DHCP readiness.
 	h.inside(name, "dpkg-deb", "-x", "/package.deb", "/run/package")
@@ -116,20 +116,31 @@ func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
 	version := strings.TrimSpace(h.inside(name, binary, "version"))
 	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
 	config := h.readConfig(name)
+	h.completes(name)
+	h.capture(name)
+
+	return version, config
+}
+
+// completes runs the installed completion function outside Readline. compopt
+// is a builtin that only works inside a completion, so a shell function
+// stands in for it; Cobra skips the builtin when it is shadowed.
+func (h *firmwareHarness) completes(name string) {
+	h.t.Helper()
 	h.inside(name, "bash", "--noprofile", "--norc", "-ec", `
 test -s /etc/bash_completion.d/udm-iptv
 test -s /etc/profile.d/udm-iptv-completion.sh
 source /etc/bash_completion.d/udm-iptv
 complete -p udm-iptv >/dev/null
+compopt() { :; }
 COMP_WORDS=(udm-iptv "")
 COMP_CWORD=1
 COMP_LINE=$'udm-iptv '
 COMP_POINT=${#COMP_LINE}
 __start_udm-iptv
+test "${#COMPREPLY[@]}" -gt 0
+printf '%s\n' "${COMPREPLY[@]}" | grep -qx configure
 `)
-	h.capture(name)
-
-	return version, config
 }
 
 func (h *firmwareHarness) requireFailedServiceBlocksInstall(name string) {
@@ -159,7 +170,7 @@ func (h *firmwareHarness) reboot(name string) {
 
 func (h *firmwareHarness) bootReplacement(name, image, version string, config []byte) {
 	h.t.Helper()
-	h.boot(name, image, true)
+	h.boot(name, image, "none", true)
 	if got := strings.TrimSpace(h.docker("inspect", "-f", "{{.HostConfig.NetworkMode}}", name)); got != "none" {
 		h.t.Fatalf("firmware recovery has network access: %s", got)
 	}
@@ -234,6 +245,73 @@ func TestFirmwareLifecycle(t *testing.T) {
 	h.reinstallAndPurge(second)
 }
 
+func (h *firmwareHarness) setting(name, setting string) string {
+	h.t.Helper()
+
+	return strings.TrimSpace(h.inside(name, binary, "configure", "get", setting))
+}
+
+func (h *firmwareHarness) assertSettings(name string, want map[string]string) {
+	h.t.Helper()
+	for setting, value := range want {
+		if got := h.setting(name, setting); got != value {
+			h.t.Fatalf("%s = %q, want %q", setting, got, value)
+		}
+	}
+}
+
+func (h *firmwareHarness) assertPackageConfigured(name string) {
+	h.t.Helper()
+	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${db:Status-Status}' udm-iptv)" = installed`)
+	h.inside(name, "test", "-f", "/etc/systemd/system/udm-iptv.service")
+}
+
+// A cold package installation with a named profile: nothing is configured
+// before apt runs, and postinst must save the profile and install the
+// service in that order. The container has no network, so the detected
+// uplink is a dummy port and the BT profile's static address applies to it.
+func TestFirmwareFreshPackageInstall(t *testing.T) {
+	from, _ := firmwareImages(t)
+	h := newFirmwareHarness(t)
+	h.requirePersistenceContract(from)
+	name := h.id + "-fresh"
+	h.boot(name, from, "none", false)
+	h.inside(name, "test", "!", "-e", "/data/udm-iptv")
+	h.inside(name, "sh", "-ec", `echo 'udm-iptv udm-iptv/profile select bt' | debconf-set-selections`)
+	h.inside(name, "apt-get", "install", "-y", "/package.deb")
+	h.assertPackageConfigured(name)
+	h.healthy(name)
+	h.assertSettings(name, map[string]string{"profile": "bt", "wan-vlan": "0", "dhcp": "false", "static-address": "10.20.30.1/24", "lan-interface": "br0"})
+}
+
+// A console that only holds the v4 package's configuration backup: postinst
+// must import it and leave the debconf default profile unused.
+func TestFirmwareLegacyBackupBootstrap(t *testing.T) {
+	from, _ := firmwareImages(t)
+	h := newFirmwareHarness(t)
+	h.requirePersistenceContract(from)
+	name := h.id + "-legacy"
+	h.boot(name, from, "bridge", false)
+	h.inside(name, "sh", "-ec", `mkdir -p /data/udm-iptv
+cat > /data/udm-iptv/udm-iptv.conf <<'EOF'
+IPTV_WAN_INTERFACE="eth9"
+IPTV_WAN_VLAN="0"
+IPTV_WAN_DHCP="false"
+IPTV_WAN_STATIC_IP="198.51.100.2/24"
+IPTV_WAN_RANGES="198.51.100.0/24"
+IPTV_LAN_INTERFACES="br0"
+IPTV_IGMPPROXY_PROGRAM="improxy"
+IPTV_IGMPPROXY_IGMP_VERSION="3"
+EOF
+echo 'udm-iptv udm-iptv/profile select kpn' | debconf-set-selections`)
+	h.inside(name, "apt-get", "update")
+	h.inside(name, "apt-get", "install", "-y", "/package.deb")
+	h.assertPackageConfigured(name)
+	h.healthy(name)
+	h.assertSettings(name, map[string]string{"profile": "legacy", "wan-interface": "eth9", "wan-vlan": "0", "dhcp": "false", "static-address": "198.51.100.2/24"})
+	h.inside(name, "test", "!", "-e", "/data/udm-iptv/udm-iptv.conf")
+}
+
 func (h *firmwareHarness) docker(args ...string) string {
 	h.t.Helper()
 	output, err := h.tryDocker(args...)
@@ -287,12 +365,12 @@ func (h *firmwareHarness) inside(name string, args ...string) string {
 	return h.docker(append([]string{"exec", name}, args...)...)
 }
 
-func (h *firmwareHarness) boot(name, image string, offline bool) {
+func (h *firmwareHarness) boot(name, image, network string, eraseProxy bool) {
 	h.t.Helper()
 	h.containers = append(h.containers, name)
-	network, erase := "bridge", "0"
-	if offline {
-		network, erase = "none", "1"
+	erase := "0"
+	if eraseProxy {
+		erase = "1"
 	}
 	h.docker("run", "-d", "--name", name, "--platform", "linux/arm64", "--privileged", "--cgroupns=host",
 		"--network", network, "--stop-signal", "SIGRTMIN+3",

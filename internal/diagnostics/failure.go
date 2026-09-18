@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -27,15 +26,18 @@ func (application *Collector) ReportFailure(parent context.Context, output io.Wr
 			return fmt.Errorf("write snapshot failure: %w", err)
 		}
 	}
-	if logs, err := journalOutput(ctx, journalOutputLimit, "-n", strconv.Itoa(failureLogLines), "--no-pager", "-o", "cat", "-u", "udm-iptv.service"); err == nil {
-		if err := writeString(output, "--- recent service logs ---\n"); err != nil {
-			return fmt.Errorf("write journal header: %w", err)
-		}
-		if err := writef(output, "%s\n", strings.TrimSpace(string(logs))); err != nil {
-			return fmt.Errorf("write failure journal: %w", err)
-		}
-	} else {
+	logs, err := journalOutput(ctx, journalOutputLimit, "-n", strconv.Itoa(failureLogLines), "--no-pager", "-o", "json", "-u", serviceUnit)
+	if err != nil {
 		return fmt.Errorf("collect failure journal: %w", err)
 	}
+	if err := writeString(output, "--- recent service logs ---\n"); err != nil {
+		return fmt.Errorf("write journal header: %w", err)
+	}
+	for _, entry := range parseJournal(logs) {
+		if err := writef(output, "%s\n", renderJournalEntry(entry.Time, entry.Source, entry.Message)); err != nil {
+			return fmt.Errorf("write failure journal: %w", err)
+		}
+	}
+
 	return nil
 }

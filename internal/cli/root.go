@@ -29,6 +29,7 @@ type Application struct {
 	Err                io.Writer
 	monitor            *telemetry.Reporter
 	networkIdentity    func(context.Context) telemetry.NetworkIdentity
+	seed               func(config.Config) config.Config
 	reportConfig       *config.Config
 	reportApplied      bool
 	providerSuggestion string

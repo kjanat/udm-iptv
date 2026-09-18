@@ -18,8 +18,10 @@ var flagsHandledOutsideTable = map[string]bool{
 	"telemetry": true,
 }
 
+func identitySeed(value config.Config) config.Config { return value }
+
 func boundConfigureFlags() (*configureFlags, *cobra.Command) {
-	flags := &configureFlags{telemetry: config.Default().Telemetry}
+	flags := &configureFlags{telemetry: config.Default().Telemetry, seed: identitySeed}
 	command := &cobra.Command{Use: commandConfigure}
 	flags.bind(command)
 
@@ -122,7 +124,7 @@ func TestConfigureOverridesWriteDistinctFields(t *testing.T) {
 func TestFreshCustomProfileDoesNotInheritKPN(t *testing.T) {
 	t.Parallel()
 	command := &cobra.Command{Use: "configure"}
-	flags := &configureFlags{telemetry: config.Default().Telemetry}
+	flags := &configureFlags{telemetry: config.Default().Telemetry, seed: identitySeed}
 	flags.bind(command)
 	if err := command.Flags().Set("profile", "custom"); err != nil {
 		t.Fatal(err)
@@ -131,7 +133,7 @@ func TestFreshCustomProfileDoesNotInheritKPN(t *testing.T) {
 	if kpn.WAN.VLAN != config.DefaultKPNVLAN || len(kpn.WAN.NATDestinations) == 0 {
 		t.Fatal("the KPN profile is empty, so this asserts nothing")
 	}
-	value := startingPoint(command, kpn, true)
+	value := startingPoint(command, kpn, true, flags.seed)
 	if err := flags.apply(command, &value); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +150,7 @@ func TestFreshCustomProfileDoesNotInheritKPN(t *testing.T) {
 func TestExistingCustomProfileKeepsSavedSettings(t *testing.T) {
 	t.Parallel()
 	command := &cobra.Command{Use: "configure"}
-	flags := &configureFlags{telemetry: config.Default().Telemetry}
+	flags := &configureFlags{telemetry: config.Default().Telemetry, seed: identitySeed}
 	flags.bind(command)
 	if err := command.Flags().Set("profile", "custom"); err != nil {
 		t.Fatal(err)
@@ -156,7 +158,7 @@ func TestExistingCustomProfileKeepsSavedSettings(t *testing.T) {
 	saved := config.DefaultKPN()
 	saved.WAN.VLAN = 101
 	saved.WAN.NATDestinations = []string{"198.51.100.0/24"}
-	value := startingPoint(command, saved, false)
+	value := startingPoint(command, saved, false, flags.seed)
 	if err := flags.apply(command, &value); err != nil {
 		t.Fatal(err)
 	}
