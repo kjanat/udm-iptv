@@ -1,4 +1,5 @@
 *.log
 /.archive/
+/dist/
 /firmware
 /udm-iptv
