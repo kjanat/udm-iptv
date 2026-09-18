@@ -489,6 +489,9 @@ func (r *Reporter) eventTags() map[string]string {
 
 func (r *Reporter) attributes() map[string]attribute.Value {
 	result := map[string]attribute.Value{"sentry.release": attribute.StringValue(r.release)}
+	if r.environment != "" {
+		result["sentry.environment"] = attribute.StringValue(r.environment)
+	}
 	if id := r.installationID(); id != "" {
 		result["installation_id"] = attribute.StringValue(id)
 	}

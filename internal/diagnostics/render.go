@@ -15,9 +15,9 @@ func RenderEvent(event Event) string {
 	case "sample":
 		value := event.Snapshot
 
-		return fmt.Sprintf("[%s] service=%s/%s proxy=%s pid=%d restarts=%d routes=%d multicast=%d\n",
+		return fmt.Sprintf("[%s] service=%s/%s proxy=%s pid=%d restarts=%d routes=%d multicast=%s\n",
 			event.Time.Format(time.RFC3339), value.Service.ActiveState, value.Service.SubState, value.Service.Proxy,
-			value.Service.ProxyPID, value.Service.Restarts, len(value.Network.Routes), value.Multicast.Routes)
+			value.Service.ProxyPID, value.Service.Restarts, len(value.Network.Routes), multicastRouteCount(value.Multicast))
 	case "final":
 		return "\n=== Final snapshot ===\n" + RenderSnapshot(*event.Snapshot) + "\n"
 	case "log":

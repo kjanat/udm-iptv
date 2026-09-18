@@ -416,6 +416,8 @@ func assertLogsFiltered(t *testing.T, r *Reporter) {
 		t.Fatal("allowed log dropped")
 	}
 	assertAbsentAttributes(t, "log", log.Attributes, "secret")
+	environment, _ := log.Attributes["sentry.environment"].AsInterface().(string)
+	assertEqual(t, "log environment", environment, r.environment)
 	if r.filterLog(&sentry.Log{Body: "password=secret"}) != nil {
 		t.Fatal("raw log accepted")
 	}
