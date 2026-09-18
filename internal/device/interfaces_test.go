@@ -138,3 +138,25 @@ func TestBoardInterfacePreservesProfileSuffix(t *testing.T) {
 		t.Fatalf("WAN interface = %q, want eth4.35", got.WAN.Interface)
 	}
 }
+
+// The proxy exposes multicast on every interface it is given, so detection
+// offers the bridges and the seed enables one.
+func TestPrimaryDownstreamSeedsOneInterface(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		detected []string
+		want     string
+	}{
+		"home lan among container bridges": {detected: []string{"br0", "br100", "brdocker"}, want: "br0"},
+		"no br0":                           {detected: []string{"br100", "br200"}, want: "br100"},
+		"uxg subinterfaces":                {detected: []string{"br0", "eth0.10"}, want: "br0"},
+		"nothing detected":                 {detected: nil, want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := primaryDownstream(test.detected); got != test.want {
+				t.Fatalf("primaryDownstream(%q) = %q, want %q", test.detected, got, test.want)
+			}
+		})
+	}
+}
