@@ -25,6 +25,8 @@ const (
 	DefaultKPNVLAN = 4
 	// DefaultIGMPVersion picks IGMPv3, which works for most current receivers.
 	DefaultIGMPVersion = 3
+	// MaxMLDVersion is MLDv2, the highest version improxy speaks.
+	MaxMLDVersion = 2
 	// DefaultTraceRate traces every operation; the per-minute limit bounds volume.
 	DefaultTraceRate = 1
 	// hostPrefixBits is the /32 prefix length for a single IPv4 host address.
@@ -43,6 +45,8 @@ var (
 	// group range can never match a sender and igmpproxy's altnet cannot use one.
 	errGroupAsProxySource   = errors.New("a multicast group is a destination, not a proxy source range")
 	errIGMPVersion          = errors.New("IGMP version must be 2 or 3")
+	errMLDVersion           = errors.New("MLD version must be 0 to leave IPv6 alone, or 1 or 2")
+	errMLDNeedsIMProxy      = errors.New("only improxy forwards IPv6 multicast; igmpproxy has no MLD")
 	errVLANMAC              = errors.New("VLAN MAC address must be a six-byte Ethernet address")
 	errStaticAddress        = errors.New("static address must be an IPv4 CIDR address")
 	errDHCPWithStatic       = errors.New("DHCP and a static address are mutually exclusive")
@@ -183,11 +187,13 @@ type LAN struct {
 	Interfaces []string `json:"interfaces"`
 }
 
-// Proxy holds the configuration for the IGMP proxy, including the program
-// choice, IGMP version, quick leave option, debug mode, and source ranges.
+// Proxy holds the configuration for the multicast proxy: the program choice,
+// the protocol versions, quick leave, debug mode and source ranges.
+// MLDVersion 0 leaves IPv6 multicast alone.
 type Proxy struct {
 	Program      string   `json:"program"`
 	IGMPVersion  int      `json:"igmpVersion"`
+	MLDVersion   int      `json:"mldVersion,omitempty"`
 	QuickLeave   bool     `json:"quickLeave"`
 	Debug        bool     `json:"debug"`
 	SourceRanges []string `json:"sourceRanges,omitempty"`
@@ -365,6 +371,19 @@ func validateProxy(value Config) error {
 	}
 	if value.Proxy.IGMPVersion != 2 && value.Proxy.IGMPVersion != 3 {
 		return errIGMPVersion
+	}
+
+	return validateMLD(value)
+}
+
+// A network can run a different version on each protocol, so IGMP and MLD
+// are configured separately.
+func validateMLD(value Config) error {
+	if value.Proxy.MLDVersion < 0 || value.Proxy.MLDVersion > MaxMLDVersion {
+		return errMLDVersion
+	}
+	if value.Proxy.MLDVersion != 0 && value.Proxy.Program != ProxyImproxy {
+		return errMLDNeedsIMProxy
 	}
 
 	return nil

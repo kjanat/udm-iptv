@@ -34,6 +34,8 @@ const (
 	selectChrome = 4
 	// igmpVersion2 is IGMPv2, the compatibility fallback next to the recommended v3.
 	igmpVersion2 = 2
+	// mldVersion1 is MLDv1, the compatibility fallback next to MLDv2.
+	mldVersion1 = 1
 	// reviewQuestions is the one confirmation the wizard ends with.
 	reviewQuestions = 1
 )
@@ -543,6 +545,13 @@ func multicastPages(value *config.Config, fields *formValues) []*page {
 					huh.NewOption("IGMPv3 (recommended)", config.DefaultIGMPVersion),
 					huh.NewOption("IGMPv2", igmpVersion2),
 				).Value(&value.Proxy.IGMPVersion),
+			huh.NewSelect[int]().Key("mld").Title("IPv6 multicast (MLD)").
+				Description("Off unless your provider carries IPTV over IPv6. Needs improxy.").
+				Options(
+					huh.NewOption("Off", 0),
+					huh.NewOption("MLDv2", config.MaxMLDVersion),
+					huh.NewOption("MLDv1", mldVersion1),
+				).Value(&value.Proxy.MLDVersion),
 			huh.NewConfirm().Key("quickleave").Title("Enable quickleave?").
 				Description("Off when several TVs share one interface.").
 				Affirmative("Yes").Negative("No").Value(&value.Proxy.QuickLeave),

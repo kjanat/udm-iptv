@@ -394,3 +394,36 @@ func TestDecodeAcceptsLegacyAllowDefaultRoute(t *testing.T) {
 		})
 	}
 }
+
+// A provider outside the Netherlands may carry IPTV over IPv6, so MLD is
+// configurable; only improxy can do it.
+func TestMLDVersionRange(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		version int
+		program string
+		want    error
+	}{
+		"off":              {version: 0, program: ProxyImproxy},
+		"MLDv1":            {version: 1, program: ProxyImproxy},
+		"MLDv2":            {version: MaxMLDVersion, program: ProxyImproxy},
+		"too high":         {version: MaxMLDVersion + 1, program: ProxyImproxy, want: errMLDVersion},
+		"negative":         {version: -1, program: ProxyImproxy, want: errMLDVersion},
+		"igmpproxy has no": {version: MaxMLDVersion, program: ProxyIgmpproxy, want: errMLDNeedsIMProxy},
+		"igmpproxy off":    {version: 0, program: ProxyIgmpproxy},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			value := withPorts(DefaultKPN())
+			value.Proxy.Program = test.program
+			value.Proxy.MLDVersion = test.version
+			if test.program == ProxyIgmpproxy {
+				value.Proxy.SourceRanges = []string{"213.75.0.0/16"}
+			}
+			err := value.Validate()
+			if !errors.Is(err, test.want) {
+				t.Fatalf("validate returned %v, want %v", err, test.want)
+			}
+		})
+	}
+}

@@ -66,3 +66,29 @@ func TestNoSuchUnitRecognition(t *testing.T) {
 		t.Fatal("ordinary stop failure was treated as a missing unit")
 	}
 }
+
+// improxy's MLD support is compiled in; the configuration decides whether it
+// forwards IPv6 multicast.
+func TestProxyConfigurationCarriesTheMLDChoice(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		version int
+		want    string
+	}{
+		"off":   {version: 0, want: "mld disable"},
+		"MLDv1": {version: 1, want: "mld enable version 1"},
+		"MLDv2": {version: config.MaxMLDVersion, want: "mld enable version 2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			value := config.DefaultKPN()
+			value.WAN.Interface = "eth8"
+			value.LAN.Interfaces = []string{"br0"}
+			value.Proxy.MLDVersion = test.version
+			rendered := renderIMProxyConfig(value, "iptv")
+			if !strings.Contains(rendered, test.want+"\n") {
+				t.Fatalf("configuration lacks %q:\n%s", test.want, rendered)
+			}
+		})
+	}
+}

@@ -662,7 +662,7 @@ func runAnswered(t *testing.T, value *config.Config, answered Answered) [][]stri
 	return forms
 }
 
-var settingsAnswered = Answered{"profile", "wan-port", "vlan", "dhcp", "vlan-interface", "vlan-mac", "dhcp-options", "dhcp-routes", "lan", "nat", "proxy", "igmp", "quickleave", "debug"}
+var settingsAnswered = Answered{"profile", "wan-port", "vlan", "dhcp", "vlan-interface", "vlan-mac", "dhcp-options", "dhcp-routes", "lan", "nat", "proxy", "igmp", "mld", "quickleave", "debug"}
 
 func TestAnsweredFieldsSkipTheirPages(t *testing.T) {
 	t.Parallel()

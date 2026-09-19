@@ -468,7 +468,11 @@ func renderProxyConfig(value config.Config) (string, error) {
 func renderIMProxyConfig(value config.Config, target string) string {
 	var output strings.Builder
 	fmt.Fprintf(&output, "igmp enable version %d\n", value.Proxy.IGMPVersion)
-	output.WriteString("mld disable\n")
+	if value.Proxy.MLDVersion == 0 {
+		output.WriteString("mld disable\n")
+	} else {
+		fmt.Fprintf(&output, "mld enable version %d\n", value.Proxy.MLDVersion)
+	}
 	if value.Proxy.QuickLeave {
 		output.WriteString("quickleave enable\n")
 	} else {
