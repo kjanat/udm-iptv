@@ -113,6 +113,13 @@ func suggestedProvider(identity telemetry.NetworkIdentity) string {
 
 const previewHeader = "Preview"
 
+func examplePorts(value config.Config) config.Config {
+	value.WAN.Interface = "eth8"
+	value.LAN.Interfaces = []string{"br0"}
+
+	return value
+}
+
 func (application *Application) previewCommand() *cobra.Command {
 	return application.previewCommandWith(func(ctx context.Context, value *config.Config) error {
 		session := application.wizardSession(previewHeader)
@@ -142,7 +149,7 @@ func (application *Application) previewCommandWith(prompt func(context.Context, 
 		Short: "Try the configuration wizard using example data",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			value, err := config.FromProfile(profile, config.Default())
+			value, err := config.FromProfile(profile, examplePorts(config.Default()))
 			if err != nil {
 				return fmt.Errorf("apply --profile: %w", err)
 			}

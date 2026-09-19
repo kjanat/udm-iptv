@@ -13,6 +13,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 	"github.com/kjanat/udm-iptv/internal/installer"
 )
 
@@ -137,7 +138,7 @@ func runInstallPreviewCase(t *testing.T, testCase installPreviewCase) {
 	directory := t.TempDir()
 	var out bytes.Buffer
 	application := &Application{ConfigPath: filepath.Join(directory, "config.json"), StateDir: directory, Out: &out, Err: &out}
-	value := config.Default()
+	value := configtest.Custom()
 	value.Telemetry.Enabled = true
 	if testCase.existing {
 		if err := config.Save(application.ConfigPath, value); err != nil {
@@ -261,12 +262,12 @@ func runInstallSelectionCase(t *testing.T, testCase installSelectionCase) {
 	var out bytes.Buffer
 	application := &Application{ConfigPath: "/data/config.json", StateDir: "/data/iptv", Out: &out, Err: &out}
 	backend := &installTestBackend{}
-	value := config.Default()
+	value := configtest.Custom()
 	value.WAN.VLAN = 20
 	deps := installDependenciesBuilder{
 		current: value, currentFound: testCase.currentFound, currentErr: testCase.currentErr,
 		legacy: value, legacyFound: testCase.legacyFound, legacyErr: testCase.legacyErr,
-		defaults: config.DefaultKPN,
+		defaults: configtest.KPN,
 		prompt: func(_ context.Context, draft *config.Config) error {
 			if testCase.promptVLAN != 0 {
 				draft.WAN.VLAN = testCase.promptVLAN

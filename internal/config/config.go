@@ -193,13 +193,12 @@ type Proxy struct {
 	SourceRanges []string `json:"sourceRanges,omitempty"`
 }
 
-// genericBase holds the fallback values every profile inherits for fields it
-// does not set itself: the physical interface, VLAN interface name, proxy
-// choice and telemetry defaults.
+// genericBase holds the values every profile shares: the VLAN interface
+// name, the route policy, the proxy and the telemetry defaults. The WAN
+// port and the LAN bridges come from the console.
 func genericBase() Config {
 	return Config{
-		WAN:       WAN{Interface: "eth8", VLANInterface: "iptv", DHCPRoutes: RoutesNoDefault},
-		LAN:       LAN{Interfaces: []string{"br0"}},
+		WAN:       WAN{VLANInterface: "iptv", DHCPRoutes: RoutesNoDefault},
 		Proxy:     Proxy{Program: ProxyImproxy, IGMPVersion: DefaultIGMPVersion},
 		Telemetry: defaultTelemetry(),
 	}
@@ -268,7 +267,8 @@ func Save(path string, value Config) error {
 
 var configChecks = []func(Config) error{
 	validateTelemetrySampling,
-	validateWANLink,
+	validateWANInterface,
+	validateVLAN,
 	validateLANPresence,
 	validateProxy,
 	validateWANAddressing,
@@ -276,9 +276,27 @@ var configChecks = []func(Config) error{
 	validatePrefixLists,
 }
 
+// profileChecks leave out the port names a console supplies.
+var profileChecks = []func(Config) error{
+	validateTelemetrySampling,
+	validateDictatedWANInterface,
+	validateVLAN,
+	validateProxy,
+	validateWANAddressing,
+	validatePrefixLists,
+}
+
 // Validate reports whether value is a consistent, applyable configuration.
 func (value Config) Validate() error {
-	for _, check := range configChecks {
+	return runChecks(value, configChecks)
+}
+
+func (value Config) validateProfile() error {
+	return runChecks(value, profileChecks)
+}
+
+func runChecks(value Config, checks []func(Config) error) error {
+	for _, check := range checks {
 		if err := check(value); err != nil {
 			return err
 		}
@@ -295,10 +313,23 @@ func validateTelemetrySampling(value Config) error {
 	return nil
 }
 
-func validateWANLink(value Config) error {
+func validateWANInterface(value Config) error {
 	if !validInterface(value.WAN.Interface) {
 		return errWANInterfaceName
 	}
+
+	return nil
+}
+
+func validateDictatedWANInterface(value Config) error {
+	if value.WAN.Interface == "" {
+		return nil
+	}
+
+	return validateWANInterface(value)
+}
+
+func validateVLAN(value Config) error {
 	if value.WAN.VLAN < 0 || value.WAN.VLAN > 4094 {
 		return errWANVLANRange
 	}
@@ -434,6 +465,8 @@ func ValidateInterfaceName(name string) error {
 const (
 	legacyVLAN          = 0
 	legacyVLANInterface = "iptv"
+	legacyWANInterface  = "eth8"
+	legacyLANInterface  = "br0"
 	legacyProxyProgram  = ProxyIgmpproxy
 	legacyIGMPVersion   = 2
 )
@@ -443,8 +476,10 @@ var legacyDHCPOptions = []string{"-O", "staticroutes", "-V", "IPTV_RG"}
 func legacyBase() Config {
 	value := genericBase()
 	value.Profile = profileLegacy
+	value.WAN.Interface = legacyWANInterface
 	value.WAN.VLAN = legacyVLAN
 	value.WAN.VLANInterface = legacyVLANInterface
+	value.LAN.Interfaces = []string{legacyLANInterface}
 	value.Proxy.Program = legacyProxyProgram
 	value.Proxy.IGMPVersion = legacyIGMPVersion
 
@@ -471,7 +506,7 @@ func applyLegacyWAN(value *Config, values map[string]string) {
 	value.WAN.DHCPRoutes = legacyRoutePolicy(*value, values["NO_GATEWAY"])
 	value.WAN.NATDestinations = normalizeLegacyPrefixes(strings.Fields(values["IPTV_WAN_RANGES"]))
 	value.WAN.StaticRoutes = normalizeLegacyPrefixes(strings.Fields(values["IPTV_STATIC_ROUTES"]))
-	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], "br0"))
+	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], legacyLANInterface))
 }
 
 // A legacy file's quickleave defaults on for igmpproxy and off for improxy.

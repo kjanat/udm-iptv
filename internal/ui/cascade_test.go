@@ -8,6 +8,7 @@ import (
 	"charm.land/huh/v2"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
 
 func TestCascadeStepsBackAndForward(t *testing.T) {
@@ -53,7 +54,7 @@ func TestCascadeBackOutOfFirstStepPropagates(t *testing.T) {
 
 func TestShiftTabOnFirstPageStepsBackOnlyWithHistory(t *testing.T) {
 	for _, before := range []int{0, 1} {
-		value := config.Default()
+		value := configtest.Custom()
 		frame := NewFrame(wizardForm(newPage(telemetryConsent(&value.Telemetry))).steps(before, 0), "")
 		frame.Init()
 		frame.Update(tea.WindowSizeMsg{Width: 100, Height: 30})

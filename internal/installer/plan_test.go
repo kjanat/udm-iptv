@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
 
 var errInjectedPlanStep = errors.New("injected failure")
@@ -73,7 +73,7 @@ func stepNames(p Plan) []string {
 }
 
 func testPlan() Plan {
-	return Plan{Config: config.Default(), ConfigPath: "/data/config.json", StateDir: "/data/iptv", Executable: "/tmp/iptv", SaveConfig: true}
+	return Plan{Config: configtest.Custom(), ConfigPath: "/data/config.json", StateDir: "/data/iptv", Executable: "/tmp/iptv", SaveConfig: true}
 }
 
 func TestExecutionOrderAndEveryFailureBoundary(t *testing.T) {

@@ -7,11 +7,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 
-	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
 
 func TestFirstPageIsRecognizedOnEveryField(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}}, "", &fields, true)
 	frame := NewFrame(wizardForm(groups[1:]...).steps(1, 0), "")
@@ -45,7 +45,7 @@ func TestFirstPageIsRecognizedOnEveryField(t *testing.T) {
 }
 
 func TestNarrowTerminalDoesNotPanic(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	for _, size := range []tea.WindowSizeMsg{{Width: 10, Height: 5}, {Width: 30, Height: 8}, {Width: 1, Height: 1}} {
 		frame := NewFrame(wizardForm(newPage(telemetryConsent(&value.Telemetry))).steps(3, 9), "")
 		frame.Init()
@@ -57,7 +57,7 @@ func TestNarrowTerminalDoesNotPanic(t *testing.T) {
 }
 
 func TestEscapeClosesHelpLikeAnyOtherKey(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}}, "", &fields, true)
 	frame := NewFrame(wizardForm(groups[1:]...).steps(1, 0), "")

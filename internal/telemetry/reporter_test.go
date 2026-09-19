@@ -20,6 +20,7 @@ import (
 	"github.com/getsentry/sentry-go/attribute"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
 
 var (
@@ -50,7 +51,7 @@ func newTestReporter(settings config.Telemetry, transport sentry.Transport) (*Re
 }
 
 func testSettings() config.Telemetry {
-	settings := config.Default().Telemetry
+	settings := configtest.Custom().Telemetry
 	settings.Enabled, settings.TraceRate = true, 1
 
 	return settings
@@ -264,7 +265,7 @@ func TestSDKConfigurationPreservesPrivacyAndSampling(t *testing.T) {
 func TestDisabledDoesNotInitializeSDK(t *testing.T) {
 	t.Setenv("SENTRY_DSN", DSN)
 	transport := &recordingTransport{}
-	settings := config.Default().Telemetry
+	settings := configtest.Custom().Telemetry
 	settings.Enabled = false
 	r, err := newTestReporter(settings, transport)
 	if err != nil {
@@ -529,7 +530,7 @@ func TestPersistentLimitsAndRevokedConsent(t *testing.T) {
 	assertEqual(t, "budget after clock rollback", allowPersisted(dir, "errors", 5, now.Add(-time.Hour)), false)
 	assertEqual(t, "budget in the next window", allowPersisted(dir, "errors", 5, now.Add(time.Minute)), true)
 	path := filepath.Join(dir, "config.json")
-	value := config.Default()
+	value := configtest.Custom()
 	value.Telemetry = testSettings()
 	if err := config.Save(path, value); err != nil {
 		t.Fatal(err)

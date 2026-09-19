@@ -18,6 +18,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
 
 func researchReporter(t *testing.T) (*Reporter, *recordingTransport) {
@@ -169,7 +170,7 @@ func assertHistoryStep(t *testing.T, step historyStep, report researchReport, ea
 
 func TestResearchSavedVersusAppliedAndMeaningfulChanges(t *testing.T) {
 	r, transport := researchReporter(t)
-	value := config.Default()
+	value := configtest.Custom()
 	steps := configurationHistorySteps()
 	reports := make([]researchReport, 0, len(steps))
 	for index, step := range steps {
@@ -212,7 +213,7 @@ func TestConfigurationReportCarriesTheWholeConfiguration(t *testing.T) {
 
 func TestResearchSeparateProcessAndLiveRevocation(t *testing.T) {
 	r, transport := researchReporter(t)
-	value := config.Default()
+	value := configtest.Custom()
 	if err := r.RecordConfiguration(context.Background(), value, true, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +252,7 @@ type networkChoiceCase struct {
 }
 
 func networkChoiceConfig() config.Config {
-	value := config.Default()
+	value := configtest.Custom()
 	value.WAN.Interface = "private0"
 	value.WAN.VLANMAC = "aa:bb:cc:dd:ee:ff"
 	value.WAN.DHCPOptions = []string{"-V", "private-token"}
@@ -313,7 +314,7 @@ func TestResearchNetworkChoice(t *testing.T) {
 
 func TestResearchOptOutAndForgedEvents(t *testing.T) {
 	r, transport := researchReporter(t)
-	value := config.Default()
+	value := configtest.Custom()
 	value.Telemetry.Presets = false
 	r.configPath = filepath.Join(r.stateDir, "config.json")
 	err := config.Save(r.configPath, value)
@@ -352,7 +353,7 @@ func assertRejectedFeedback(t *testing.T, r *Reporter) {
 
 func TestResearchResetAndFeedback(t *testing.T) {
 	r, transport := researchReporter(t)
-	if err := r.RecordConfiguration(context.Background(), config.Default(), true, nil); err != nil {
+	if err := r.RecordConfiguration(context.Background(), configtest.Custom(), true, nil); err != nil {
 		t.Fatal(err)
 	}
 	old := r.installationID()
@@ -401,7 +402,7 @@ func TestResearchRejectsSymlinks(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(r.stateDir, "telemetry-research.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.RecordConfiguration(context.Background(), config.Default(), true, nil); err == nil {
+	if err := r.RecordConfiguration(context.Background(), configtest.Custom(), true, nil); err == nil {
 		t.Fatal("followed state symlink")
 	}
 	data, err := os.ReadFile(target)

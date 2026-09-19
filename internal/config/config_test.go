@@ -12,11 +12,18 @@ import (
 	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
+func withPorts(value Config) Config {
+	value.WAN.Interface = "eth8"
+	value.LAN.Interfaces = []string{"br0"}
+
+	return value
+}
+
 func TestSaveLoadRoundTrip(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state", "config.json")
 	// A provider config exercises every omitempty slice on the way out.
-	want := DefaultKPN()
+	want := withPorts(DefaultKPN())
 	want.WAN.DHCPRoutes = RoutesAllowDefault
 	want.Proxy.SourceRanges = []string{"195.121.0.0/16"}
 	if err := Save(path, want); err != nil {
@@ -79,16 +86,19 @@ func TestProfilesValidate(t *testing.T) {
 		if profile.ID == "custom" {
 			continue
 		}
-		err := profile.Config.Validate()
+		err := profile.Config.validateProfile()
 		if err != nil {
 			t.Errorf("profile %s: %v", profile.ID, err)
+		}
+		if err := withPorts(profile.Config).Validate(); err != nil {
+			t.Errorf("profile %s on a console: %v", profile.ID, err)
 		}
 	}
 }
 
 func TestValidateWANAddressing(t *testing.T) {
 	t.Parallel()
-	base := Default()
+	base := withPorts(Default())
 	base.WAN.VLANMAC = "00:11:22:33:44:55"
 	if err := base.Validate(); err != nil {
 		t.Fatalf("six-byte MAC rejected: %v", err)
@@ -98,7 +108,7 @@ func TestValidateWANAddressing(t *testing.T) {
 	if err := eui64.Validate(); !errors.Is(err, errVLANMAC) {
 		t.Fatalf("eight-byte MAC accepted: %v", err)
 	}
-	both := Default()
+	both := withPorts(Default())
 	both.WAN.DHCP = true
 	both.WAN.StaticAddress = "192.0.2.10/24"
 	if err := both.Validate(); !errors.Is(err, errDHCPWithStatic) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
 
 func TestHelpCopy(t *testing.T) {
@@ -55,7 +56,7 @@ func TestTelemetryConfigurationIsOptInAndPreservesSelection(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := config.Save(path, config.Default()); err != nil {
+	if err := config.Save(path, configtest.Custom()); err != nil {
 		t.Fatal(err)
 	}
 	application := &Application{ConfigPath: path, StateDir: dir, Out: io.Discard, Err: io.Discard}

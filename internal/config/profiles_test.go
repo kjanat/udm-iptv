@@ -20,7 +20,7 @@ func TestEmbeddedProfilesParse(t *testing.T) {
 		}
 	}
 	kpn, _ := parsed.Profile("kpn")
-	if kpn.Config.WAN.Interface != "eth8" || kpn.Config.WAN.VLANInterface != "iptv" || kpn.Config.Proxy.Program != "improxy" {
+	if kpn.Config.WAN.Interface != "" || kpn.Config.WAN.VLANInterface != "iptv" || kpn.Config.Proxy.Program != "improxy" {
 		t.Fatalf("base not applied: %#v", kpn.Config)
 	}
 	if !kpn.Config.Telemetry.Enabled {

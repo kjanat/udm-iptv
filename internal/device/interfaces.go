@@ -52,13 +52,13 @@ func withBoardInterface(value config.Config, board string) config.Config {
 	return rewriteWAN(value, wanInterfaceForBoard(board))
 }
 
+// A profile that needs a sub-interface of the WAN port names it as eth8.N.
 func rewriteWAN(value config.Config, detected string) config.Config {
-	defaultWAN := config.Default().WAN.Interface
 	switch {
-	case value.WAN.Interface == defaultWAN:
+	case value.WAN.Interface == "":
 		value.WAN.Interface = detected
-	case strings.HasPrefix(value.WAN.Interface, defaultWAN+"."):
-		value.WAN.Interface = detected + strings.TrimPrefix(value.WAN.Interface, defaultWAN)
+	case strings.HasPrefix(value.WAN.Interface, wanEth8+"."):
+		value.WAN.Interface = detected + strings.TrimPrefix(value.WAN.Interface, wanEth8)
 	}
 
 	return value

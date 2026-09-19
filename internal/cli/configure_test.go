@@ -12,6 +12,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
@@ -19,7 +20,7 @@ func TestConfigureSetAppliesFlagsAfterLoading(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.json")
-	current := config.Default()
+	current := configtest.Custom()
 	current.WAN.Interface = "eth8"
 	if err := config.Save(path, current); err != nil {
 		t.Fatal(err)
@@ -52,7 +53,7 @@ func TestConfigureSetKeepsSavedInterfaces(t *testing.T) {
 	for profile, want := range map[string][]string{config.ProfileCustom: {"br20", "br30"}, config.ProfileKPN: {"br20", "br30"}} {
 		directory := t.TempDir()
 		path := filepath.Join(directory, "config.json")
-		current := config.DefaultKPN()
+		current := configtest.KPN()
 		current.Profile = config.ProfileCustom
 		current.LAN.Interfaces = []string{"br20", "br30"}
 		if err := config.Save(path, current); err != nil {
@@ -151,7 +152,7 @@ func TestConfigureGetPrintsSettings(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.json")
-	current := config.DefaultKPN()
+	current := configtest.KPN()
 	current.WAN.NATDestinations = []string{"213.75.0.0/16", "217.166.0.0/16"}
 	if err := config.Save(path, current); err != nil {
 		t.Fatal(err)
