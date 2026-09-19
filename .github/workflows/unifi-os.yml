@@ -26,6 +26,7 @@ env:
   PR_CREATED_AT: "${{ github.event.pull_request.created_at }}"
 jobs:
   build-deb:
+    name: Build udm-iptv Debian package
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: udm-iptv } }
     timeout-minutes: 10
@@ -38,6 +39,7 @@ jobs:
         with: { name: build-artifacts, if-no-files-found: error, path: "*.deb" }
 
   catalog:
+    name: Catalog firmware
     runs-on: ubuntu-latest
     outputs: { matrix: "${{ steps.matrix.outputs.matrix }}" }
     timeout-minutes: 1
@@ -52,6 +54,7 @@ jobs:
 
   test-install:
     needs: [build-deb, catalog]
+    name: ${{ format('{0} ({1}) test install', matrix.model, matrix.version) }}
     runs-on: ubuntu-24.04-arm
     permissions: { contents: read, packages: write }
     defaults: { run: { working-directory: docker/unifi-os } }

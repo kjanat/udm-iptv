@@ -293,7 +293,8 @@ Below is a non-exhaustive list of issues that might occur while getting IPTV to 
    Your IPTV receiver might not be VLAN to which the IPTV traffic is forwarded.
 2. **Check if IPTV traffic is forwarded to the right VLAN**\
    Make sure that you have configured `IPTV_LAN_INTERFACES` correctly to forward to right interfaces (e.g., `br4` for VLAN 4).
-3. **If you have more than one IPTV decoder, disable the quickleave feature** Quickleave can be enabled for improxy (the default IGMP proxy) and igmpproxy. If you have multiple IPTV decoders, quickleave will stop a stream for all decoders when just one decoder changes to a different stream.
+3. **If you have more than one IPTV decoder, disable the quickleave feature**\
+   Quickleave can be enabled for improxy (the default IGMP proxy) and igmpproxy. If you have multiple IPTV decoders, quickleave will stop a stream for all decoders when just one decoder changes to a different stream.
 4. **Check if your kernel supports multicast routing**\
    If `MRT_INIT failed; Errno(92): Protocol not available` appears in diagnostics, your kernel does not support multicast routing.
 5. **Check if your issue has been reported already**\
