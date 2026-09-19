@@ -1,3 +1,17 @@
+udm-iptv (4.3.2) stable; urgency=medium
+
+  * Accept the v5 supervisor as the service process when verifying health
+
+ -- Kaj Kowalski <info@kajkowalski.nl>  Fri, 19 Sep 2026 14:00:00 +0200
+
+udm-iptv (4.3.1) stable; urgency=medium
+
+  * Resolve GitHub .deb assets by filter instead of a hardcoded filename
+  * Accept --prerelease when resolving the latest GitHub release
+  * Strip a leading v from --version so tags are not doubled
+
+ -- Kaj Kowalski <info@kajkowalski.nl>  Thu, 17 Sep 2026 19:00:00 +0200
+
 udm-iptv (4.3.0) stable; urgency=low
 
   * Add privacy-safe diagnostics in plain text and structured JSON Lines

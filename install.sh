@@ -10,15 +10,7 @@
 
 set -e
 
-if command -v unifi-os >/dev/null 2>&1; then
-	echo "error: You need to be in UniFi OS to run the installer."
-	echo "Please run the following command to enter UniFi OS:"
-	echo
-	printf "\t unifi-os shell\n"
-	exit 1
-fi
-
-UDM_IPTV_VERSION="${UDM_IPTV_VERSION:-4.3.0}"
+UDM_IPTV_VERSION="${UDM_IPTV_VERSION:-4.3.2}"
 UDM_IPTV_REPOSITORY="${UDM_IPTV_REPOSITORY:-kjanat/udm-iptv}"
 UDM_IPTV_STATE_DIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
 UDM_IPTV_RUN="${UDM_IPTV_RUN:-}"
@@ -26,6 +18,7 @@ UDM_IPTV_PR="${UDM_IPTV_PR:-}"
 UDM_IPTV_TOKEN="${UDM_IPTV_TOKEN:-${GITHUB_TOKEN:-}}"
 UDM_IPTV_TIMEOUT_SECONDS="${UDM_IPTV_TIMEOUT_SECONDS:-900}"
 UDM_IPTV_FORCE="${UDM_IPTV_FORCE:-false}"
+UDM_IPTV_PRERELEASE="${UDM_IPTV_PRERELEASE:-false}"
 
 case "${UDM_IPTV_PR}" in
 	*/*\#*)
@@ -60,6 +53,103 @@ json_field() {
 	sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" | head -n 1
 }
 
+json_field_all() {
+	sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p"
+}
+
+pick_latest_tag() {
+	tr '}' '\n' | while IFS= read -r obj; do
+		tag=$(printf '%s\n' "${obj}" | json_field tag_name)
+		[ -n "${tag}" ] || continue
+		draft=$(printf '%s\n' "${obj}" | json_field draft)
+		pre=$(printf '%s\n' "${obj}" | json_field prerelease)
+		[ "${draft}" != true ] || continue
+		if [ "${UDM_IPTV_PRERELEASE}" != true ] && [ "${pre}" = true ]; then
+			continue
+		fi
+		printf '%s\n' "${tag}"
+		break
+	done
+}
+
+plausible_debs() {
+	json_field_all name | while IFS= read -r name; do
+		case "${name}" in
+			udm-iptv*.deb) ;;
+			*) continue ;;
+		esac
+		case "${name}" in
+			*dbgsym* | *.udeb | *-src.deb | *_src.deb) continue ;;
+			*) ;;
+		esac
+		printf '%s\n' "${name}"
+	done | sort -u
+}
+
+count_lines() {
+	sed '/^$/d' | wc -l
+}
+
+release_deb_package() {
+	tag=$1
+	body=$2
+	debs=$(printf '%s\n' "${body}" | plausible_debs)
+	n=$(printf '%s\n' "${debs}" | count_lines)
+	n=$(printf '%s' "${n}" | tr -d ' ')
+	if [ "${n}" != 1 ]; then
+		echo "error: expected exactly one udm-iptv .deb on ${tag}, found ${n}:" >&2
+		printf '%s\n' "${debs}" >&2
+		return 1
+	fi
+	printf '%s\n' "${debs}"
+}
+
+# The Go package ships this file, and it supervises the proxy from its own
+# process instead of being the proxy.
+UDM_IPTV_GO_MARKER="${UDM_IPTV_GO_MARKER:-/usr/share/udm-iptv/go-package}"
+
+# service_process reads a process's arguments, one per line, and names the
+# argument that identifies a healthy udm-iptv service.
+service_process() {
+	while IFS= read -r process_argument; do
+		case "${process_argument}" in
+			improxy | */improxy | igmpproxy | */igmpproxy)
+				printf '%s\n' "${process_argument}"
+				return 0
+				;;
+			udm-iptv | */udm-iptv)
+				if [ -e "${UDM_IPTV_GO_MARKER}" ]; then
+					printf '%s\n' "${process_argument}"
+					return 0
+				fi
+				;;
+			*) ;;
+		esac
+	done
+	echo unknown
+}
+
+proxy_process() {
+	process_pid=$1
+	if [ ! -r "/proc/${process_pid}/cmdline" ]; then
+		echo unknown
+		return
+	fi
+	tr '\000' '\n' <"/proc/${process_pid}/cmdline" | service_process
+}
+
+if [ "${UDM_IPTV_SOURCE_ONLY:-}" = 1 ]; then
+	return 0
+fi
+
+if command -v unifi-os >/dev/null 2>&1; then
+	echo "error: You need to be in UniFi OS to run the installer."
+	echo "Please run the following command to enter UniFi OS:"
+	echo
+	printf "\t unifi-os shell\n"
+	exit 1
+fi
+
 skip_installed=false
 check_installed_version() {
 	version=$1
@@ -80,27 +170,6 @@ service_failure() {
 		systemctl status udm-iptv.service --no-pager >&2 || true
 	fi
 	exit 1
-}
-
-proxy_process() {
-	process_pid=$1
-	if [ ! -r "/proc/${process_pid}/cmdline" ]; then
-		echo unknown
-		return
-	fi
-	process_arguments=$(tr '\000' '\n' <"/proc/${process_pid}/cmdline")
-	while IFS= read -r process_argument; do
-		case "${process_argument}" in
-			improxy | */improxy | igmpproxy | */igmpproxy)
-				echo "${process_argument}"
-				return 0
-				;;
-			*) ;;
-		esac
-	done <<EOF
-${process_arguments}
-EOF
-	echo unknown
 }
 
 verify_service() {
@@ -262,7 +331,11 @@ if [ -n "${UDM_IPTV_RUN}" ] || [ -n "${UDM_IPTV_PR}" ]; then
 	mv "${deb}" "${dest}/udm-iptv.deb"
 else
 	if [ -z "${UDM_IPTV_PACKAGE:-}" ] && [ "${UDM_IPTV_VERSION}" = "latest" ]; then
-		latest_tag=$(api_get "${api}/releases/latest" | json_field tag_name)
+		if [ "${UDM_IPTV_PRERELEASE}" = true ]; then
+			latest_tag=$(api_get "${api}/releases?per_page=30" | pick_latest_tag)
+		else
+			latest_tag=$(api_get "${api}/releases/latest" | json_field tag_name)
+		fi
 		[ -n "${latest_tag}" ] || {
 			echo "error: Could not resolve the latest release of ${UDM_IPTV_REPOSITORY}."
 			exit 1
@@ -271,11 +344,17 @@ else
 		echo "Latest release is ${latest_tag}."
 	fi
 	if [ -z "${UDM_IPTV_PACKAGE:-}" ]; then
+		UDM_IPTV_VERSION=${UDM_IPTV_VERSION#v}
 		check_installed_version "${UDM_IPTV_VERSION}"
 		[ "${skip_installed}" != true ] || exit 0
+		release_json=$(api_get "${api}/releases/tags/v${UDM_IPTV_VERSION}")
+		[ -n "${release_json}" ] || {
+			echo "error: Could not resolve release v${UDM_IPTV_VERSION} of ${UDM_IPTV_REPOSITORY}."
+			exit 1
+		}
+		deb_name=$(release_deb_package "v${UDM_IPTV_VERSION}" "${release_json}")
+		UDM_IPTV_PACKAGE="https://github.com/${UDM_IPTV_REPOSITORY}/releases/download/v${UDM_IPTV_VERSION}/${deb_name}"
 	fi
-
-	UDM_IPTV_PACKAGE="${UDM_IPTV_PACKAGE:-https://github.com/${UDM_IPTV_REPOSITORY}/releases/download/v${UDM_IPTV_VERSION}/udm-iptv_${UDM_IPTV_VERSION}_all.deb}"
 
 	case "${UDM_IPTV_PACKAGE}" in
 		http://* | https://*)

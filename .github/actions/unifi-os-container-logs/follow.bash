@@ -10,6 +10,7 @@ follow_journal() {
 	local name=$1
 	local n=0
 	local started_at
+	local running
 
 	echo "Following journal in ${name}"
 	while ((n < 120)); do
@@ -25,7 +26,14 @@ follow_journal() {
 				--no-pager 2>&1 || true
 			return
 		fi
-		if [[ $(docker inspect --format '{{.State.Running}}' "${name}" 2>/dev/null) != true ]]; then
+		running=$(docker inspect --format '{{.State.Running}}' "${name}" 2>/dev/null || echo false)
+		if [[ ${running} != true ]]; then
+			echo "${name} stopped before its journal was available" >&2
+			docker inspect --format \
+				'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{printf "%q" .State.Error}}' \
+				"${name}" >&2 || true
+			echo "console output follows" >&2
+			docker logs "${name}" 2>&1 || true
 			return
 		fi
 		sleep 0.25

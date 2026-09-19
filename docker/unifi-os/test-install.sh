@@ -28,6 +28,10 @@ vol_data="${id}-data"
 vol_etc_overlay="${id}-etc-overlay"
 from_name="${id}-from"
 to_name="${id}-to"
+v5_name="${id}-v5"
+v5_deb="${work}/udm-iptv-v5.deb"
+vol_v5_data="${id}-v5-data"
+vol_v5_etc_overlay="${id}-v5-etc-overlay"
 group_open=0
 restore_lock_seconds=60
 declare -A dumped_containers=()
@@ -90,15 +94,16 @@ cleanup() {
 	trap - EXIT
 	group_end
 	if ((status != 0)); then
-		for name in "${from_name}" "${to_name}"; do
+		for name in "${from_name}" "${to_name}" "${v5_name}"; do
 			if docker inspect "${name}" >/dev/null 2>&1 \
 				&& [[ -z ${dumped_containers[${name}]+x} ]]; then
 				dump "${name}"
 			fi
 		done
 	fi
-	docker rm -f "${from_name}" "${to_name}" >/dev/null 2>&1 || true
-	docker volume rm "${vol_data}" "${vol_etc_overlay}" >/dev/null 2>&1 || true
+	docker rm -f "${from_name}" "${to_name}" "${v5_name}" >/dev/null 2>&1 || true
+	docker volume rm "${vol_data}" "${vol_etc_overlay}" \
+		"${vol_v5_data}" "${vol_v5_etc_overlay}" >/dev/null 2>&1 || true
 	rm -rf "${work}"
 	exit "${status}"
 }
@@ -118,7 +123,9 @@ dump() {
 	fi
 	dumped_containers["${name}"]=1
 	group_begin "Diagnostics: ${label}"
-	status=$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null) || status=gone
+	status=$(docker inspect -f \
+		'{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{printf "%q" .State.Error}}' \
+		"${name}" 2>/dev/null) || status=gone
 	echo "container status=${status}" >&2
 	docker logs "${name}" >&2 || true
 	docker exec "${name}" systemctl is-system-running >&2 || true
@@ -128,6 +135,8 @@ dump() {
 		udm-iptv-test.target network.target network-online.target >&2 || true
 	docker exec "${name}" systemctl status udm-iptv-restore.service udm-iptv.service >&2 || true
 	docker exec "${name}" journalctl -u udm-iptv-restore -u udm-iptv --no-pager >&2 || true
+	docker exec "${name}" systemctl status udm-iptv-test-dhcp.service udm-iptv-test-lock.service >&2 || true
+	docker exec "${name}" journalctl -u udm-iptv-test-dhcp -u udm-iptv-test-lock --no-pager >&2 || true
 	group_end
 }
 
@@ -248,23 +257,80 @@ assert_firmware_overlay_contract() {
 	echo "firmware overlay preserves custom systemd units in ${image}"
 }
 
+# The firmware images resolve no names, so the release is fetched on the
+# runner and handed to the console as a file.
+fetch_v5_package() {
+	local repository=${GITHUB_REPOSITORY:-kjanat/udm-iptv}
+	local url
+
+	url=$(curl -fsSL "https://api.github.com/repos/${repository}/releases?per_page=30" \
+		| jq -r 'map(select(.draft | not) | select(.prerelease)) | first
+			| .assets[] | select(.name | endswith(".deb")) | .browser_download_url')
+	if [[ -z ${url} || ${url} == null ]]; then
+		report_error "no prerelease .deb published on ${repository}"
+		return 1
+	fi
+	echo "v5 package ${url}" >&2
+	curl -fsSL -o "${v5_deb}" "${url}"
+}
+
+# The Go package runs a supervisor that owns the proxy, so the unit's main
+# process is udm-iptv. An installer that only recognises the proxy there
+# reports a failed install over an upgrade that worked.
+assert_v5_upgrade_reports_success() {
+	local name=$1
+	local installed
+	local output
+	local status=0
+
+	# /tmp is a tmpfs, and docker cp writes under it rather than into it.
+	docker exec -i "${name}" sh -c 'cat >/root/udm-iptv-v5.deb' <"${v5_deb}"
+	output=$(docker exec -e DEBIAN_FRONTEND=noninteractive "${name}" \
+		udm-iptv upgrade --package /root/udm-iptv-v5.deb 2>&1) || status=$?
+	echo "${output}"
+	if ((status != 0)) \
+		|| grep -Fq 'the service is not healthy' <<<"${output}" \
+		|| ! grep -Fq 'Installation successful' <<<"${output}"; then
+		report_error "upgrading to the v5 prerelease reported a failure in ${name}"
+		return 1
+	fi
+
+	installed=$(docker exec "${name}" dpkg-query -W -f='${Version}' udm-iptv)
+	case "${installed}" in
+		5.*) ;;
+		*)
+			report_error "expected a 5.x package in ${name}, found ${installed}"
+			return 1
+			;;
+	esac
+	if ! docker exec "${name}" test -e /usr/share/udm-iptv/go-package; then
+		report_error "the 5.x package in ${name} does not mark itself as the Go package"
+		return 1
+	fi
+	echo "upgraded to udm-iptv ${installed} without a reported failure"
+}
+
 boot() {
 	local name=$1
 	local image=$2
 	local network=${3:-bridge}
 	local lock_seconds=${4:-}
+	local data_volume=${5:-${vol_data}}
+	local etc_volume=${6:-${vol_etc_overlay}}
 	docker rm -f "${name}" >/dev/null 2>&1 || true
-	docker run -d --name "${name}" --platform linux/arm64 --privileged --cgroupns=host \
+	# Docker connects /dev/console to the container's output only with a terminal.
+	docker run -d -t --name "${name}" --platform linux/arm64 --privileged --cgroupns=host \
 		--network "${network}" \
 		--stop-signal SIGRTMIN+3 \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 		--tmpfs /run:exec --tmpfs /run/lock --tmpfs /tmp:exec \
-		-v "${vol_data}:/data" \
-		-v "${vol_etc_overlay}:/var/lib/udm-iptv-test/etc-overlay" \
+		-v "${data_volume}:/data" \
+		-v "${etc_volume}:/var/lib/udm-iptv-test/etc-overlay" \
 		-v "${deb}:/tmp/udm-iptv.deb:ro" \
 		-v "${old_deb}:/tmp/udm-iptv-old.deb:ro" \
 		-v "${repo}/install.sh:/tmp/install.sh:ro" \
 		-v "${here}/harness.sh:/harness.sh:ro" \
+		-v "${here}/fixtures.sh:/fixtures.sh:ro" \
 		-v "${here}/udm-iptv-test.target:/usr/local/lib/systemd/system/udm-iptv-test.target:ro" \
 		-e DEBIAN_FRONTEND=noninteractive \
 		-e UDM_IPTV_PACKAGE=/tmp/udm-iptv.deb \
@@ -350,12 +416,12 @@ assert_service_runtime_boundary() {
 	local observed_main_pid
 	local observed_restarts
 	local restarts
+	local improxy_path
 	while ((n < 180)); do
 		journal=$(service_journal "${name}")
+		improxy_path=$(docker exec "${name}" sh -c 'command -v improxy' 2>/dev/null) || improxy_path=
 		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv 2>/dev/null \
-			&& docker exec "${name}" test "$(docker exec "${name}" sh -c \
-				'command -v improxy')" = \
-				/usr/sbin/improxy; then
+			&& [[ ${improxy_path} == /usr/sbin/improxy ]]; then
 			active_state=$(docker exec "${name}" systemctl show \
 				--property ActiveState --value udm-iptv)
 			job=$(docker exec "${name}" systemctl show \
@@ -415,11 +481,18 @@ assert_restored() {
 	local deadline=$((180 + lock_seconds))
 	local n=0
 	local restore_journal
+	local restore_result
+	local restore_state
 	while ((n < deadline)); do
 		restore_journal=$(docker exec "${name}" \
 			journalctl -b -u udm-iptv-restore.service --no-pager)
-		if grep -Fq "Finished Reinstall udm-iptv after a firmware update." \
-			<<<"${restore_journal}"; then
+		# systemd's own messages follow --log-target.
+		restore_state=$(docker exec "${name}" systemctl show \
+			--property ActiveState --property Result --property ExecMainCode \
+			udm-iptv-restore.service)
+		if grep -Fqx 'ActiveState=inactive' <<<"${restore_state}" \
+			&& grep -Fqx 'Result=success' <<<"${restore_state}" \
+			&& grep -Fqx 'ExecMainCode=1' <<<"${restore_state}"; then
 			break
 		fi
 		if docker exec "${name}" systemctl is-failed --quiet \
@@ -437,8 +510,9 @@ assert_restored() {
 		return 1
 	fi
 	wait_pkg "${name}"
-	if [[ $(docker exec "${name}" systemctl show --property Result --value \
-		udm-iptv-restore.service) != success ]]; then
+	restore_result=$(docker exec "${name}" systemctl show --property Result --value \
+		udm-iptv-restore.service)
+	if [[ ${restore_result} != success ]]; then
 		report_error "restore service did not finish successfully in ${name}"
 		dump "${name}"
 		return 1
@@ -540,11 +614,21 @@ docker volume create "${vol_etc_overlay}" >/dev/null
 group_begin "Install on ${from_image}"
 boot "${from_name}" "${from_image}"
 wait_systemd "${from_name}"
-docker exec \
+install_status=0
+install_output=$(docker exec \
 	-e DEBIAN_FRONTEND=noninteractive \
 	-e UDM_IPTV_PACKAGE=/tmp/udm-iptv-old.deb \
 	"${from_name}" \
-	sh /tmp/install.sh
+	sh /tmp/install.sh 2>&1) || install_status=$?
+echo "${install_output}"
+if ((install_status != 0)); then
+	report_error "initial installation failed in ${from_name} (exit ${install_status})"
+	exit "${install_status}"
+fi
+if grep -Fq 'Illegal number' <<<"${install_output}"; then
+	report_error "debconf misread an interface name in ${from_name}"
+	exit 1
+fi
 assert_version "${from_name}" "${old_version}"
 assert_bash_completion "${from_name}"
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.deb
@@ -647,7 +731,8 @@ group_end
 group_begin "Restore across extracted rootfs swap to ${to_image}"
 boot "${to_name}" "${to_image}" none "${restore_lock_seconds}"
 wait_systemd "${to_name}"
-if [[ $(docker inspect -f '{{.HostConfig.NetworkMode}}' "${to_name}") != none ]]; then
+to_network=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "${to_name}")
+if [[ ${to_network} != none ]]; then
 	report_error "restore container still has Docker networking"
 	exit 1
 fi
@@ -701,4 +786,21 @@ wait_systemd "${to_name}"
 assert_removed "${to_name}"
 docker exec "${to_name}" test ! -e /data/udm-iptv
 echo "purged package stayed removed after reboot"
+group_end
+
+group_begin "Upgrade to the current v5 prerelease"
+fetch_v5_package
+docker volume create "${vol_v5_data}" >/dev/null
+docker volume create "${vol_v5_etc_overlay}" >/dev/null
+boot "${v5_name}" "${from_image}" bridge "" "${vol_v5_data}" "${vol_v5_etc_overlay}"
+wait_systemd "${v5_name}"
+docker exec \
+	-e DEBIAN_FRONTEND=noninteractive \
+	-e UDM_IPTV_PACKAGE=/tmp/udm-iptv.deb \
+	"${v5_name}" \
+	sh /tmp/install.sh
+assert_version "${v5_name}" "${current_version}"
+assert_service_runtime_boundary "${v5_name}"
+assert_v5_upgrade_reports_success "${v5_name}"
+docker stop "${v5_name}"
 group_end

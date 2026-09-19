@@ -47,6 +47,7 @@ assert_contains "${upgrade}" --package
 assert_contains "${upgrade}" --pr
 assert_contains "${upgrade}" --run
 assert_contains "${upgrade}" --force
+assert_contains "${upgrade}" --prerelease
 assert_contains "${upgrade}" --repository
 assert_contains "${upgrade}" --branch
 assert_contains "${upgrade}" --token-file

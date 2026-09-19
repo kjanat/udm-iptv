@@ -21,32 +21,57 @@ mount -t overlay overlay \
 
 printf 'APT::Get::Assume-Yes "true";\n' >/etc/apt/apt.conf.d/99yes
 
+# The extracted firmware root ships no machine-id, and dbus-daemon exits when it
+# cannot read one.
+if [ ! -s /etc/machine-id ]; then
+	if command -v systemd-machine-id-setup >/dev/null 2>&1; then
+		systemd-machine-id-setup
+	else
+		tr -d - </proc/sys/kernel/random/uuid >/etc/machine-id
+	fi
+fi
+
 if unifi_os=$(command -v unifi-os); then
 	mv "${unifi_os}" /usr/sbin/unifi-os.real
 fi
 
+# A dummy interface discards everything it transmits, so a DHCP request on one
+# reaches no server. Each WAN candidate is a veth pair instead, and its peer
+# carries the answering end. The package enumerates br* and eth0*.
 for iface in br0 eth0 eth1 eth2 eth3 eth4 eth8 eth9 eth18 eth19; do
-	ip link add "${iface}" type dummy 2>/dev/null || true
+	ip link add "${iface}" type veth peer name "peer-${iface}" 2>/dev/null || true
 	ip link set "${iface}" up 2>/dev/null || true
+	ip link set "peer-${iface}" up 2>/dev/null || true
 done
 ip address replace 192.0.2.1/24 dev br0
 
-# The default profile creates its VLAN interface during service startup. Give
-# both sides test-net addresses so the real proxy validates and runs.
-(
-	while true; do
-		if ip link show iptv >/dev/null 2>&1; then
-			ip address replace 198.51.100.2/24 dev iptv 2>/dev/null || true
-		fi
-		sleep 1
-	done
-) &
-
+# PID 1 detaches Docker's console at startup. Let systemd launch the helpers
+# afterwards so that terminal hangup cannot kill them.
+mkdir -p "/run/systemd/system/${test_target}.requires"
+printf '%s\n' \
+	'[Unit]' 'Description=IPTV test DHCP server' 'DefaultDependencies=no' \
+	"Before=${test_target}" \
+	'[Service]' 'Type=simple' 'ExecStart=/bin/sh /fixtures.sh dhcp' \
+	>/run/systemd/system/udm-iptv-test-dhcp.service
+ln -sf /run/systemd/system/udm-iptv-test-dhcp.service \
+	"/run/systemd/system/${test_target}.requires/udm-iptv-test-dhcp.service"
 if [ -n "${UDM_IPTV_TEST_LOCK_SECONDS:-}" ]; then
-	(
-		exec 9>/var/lib/dpkg/lock
-		sleep "${UDM_IPTV_TEST_LOCK_SECONDS}"
-	) &
+	case ${UDM_IPTV_TEST_LOCK_SECONDS} in
+		*[!0-9]*)
+			echo 'error: invalid lock duration' >&2
+			exit 1
+			;;
+		*) ;;
+	esac
+	printf '%s\n' \
+		'[Unit]' 'Description=IPTV test package-manager activity' \
+		'DefaultDependencies=no' 'Before=udm-iptv-restore.service' \
+		"Before=${test_target}" \
+		'[Service]' 'Type=notify' 'NotifyAccess=all' \
+		"ExecStart=/bin/sh /fixtures.sh lock ${UDM_IPTV_TEST_LOCK_SECONDS}" \
+		>/run/systemd/system/udm-iptv-test-lock.service
+	ln -sf /run/systemd/system/udm-iptv-test-lock.service \
+		"/run/systemd/system/${test_target}.requires/udm-iptv-test-lock.service"
 fi
 
 # The extracted root cannot reach the hardware-dependent multi-user target.
@@ -62,7 +87,11 @@ for enabled in /etc/systemd/system/multi-user.target.wants/*; do
 	if [ -e "${firmware_link}" ] || [ -L "${firmware_link}" ]; then
 		continue
 	fi
-	target=$(readlink -f "${enabled}")
+	# Some readlink builds fail on a dangling link instead of printing its target.
+	if ! target=$(readlink -f "${enabled}"); then
+		echo "harness: cannot resolve ${enabled}" >&2
+		continue
+	fi
 	if [ -e "${enabled}" ]; then
 		case ${target} in
 			/etc/systemd/system/* | */systemd/system/udm-iptv.service) ;;
@@ -72,11 +101,14 @@ for enabled in /etc/systemd/system/multi-user.target.wants/*; do
 	ln -sf "${target}" "/run/systemd/system/${test_target}.wants/${name}"
 done
 
+# systemd logs to the journal by default, which dies with the container, so a
+# boot failure leaves nothing behind for docker logs to show.
+echo "harness: starting systemd for ${test_target}" >&2
 if [ -x /lib/systemd/systemd ]; then
-	exec /lib/systemd/systemd --system --unit="${test_target}"
+	exec /lib/systemd/systemd --system --log-target=console --unit="${test_target}"
 fi
 if [ -x /sbin/init ]; then
-	exec /sbin/init --unit="${test_target}"
+	exec /sbin/init --log-target=console --unit="${test_target}"
 fi
 
 echo "error: no systemd in this image" >&2

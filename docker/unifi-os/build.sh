@@ -6,9 +6,10 @@ here=$(cd -- "${here}" && pwd)
 cache="${UNIFI_OS_CACHE:-${HOME}/.cache/unifi-os}"
 image="${UNIFI_OS_IMAGE:-ghcr.io/${GITHUB_REPOSITORY_OWNER:-kjanat}/unifi-os}"
 sku="${1:-}"
+build_uid=$(id -u)
 
 have_root() {
-	if [ "$(id -u)" -eq 0 ]; then
+	if [ "${build_uid}" -eq 0 ]; then
 		return 0
 	fi
 	command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
@@ -17,7 +18,7 @@ have_root() {
 remove_root() {
 	remove_path=$1
 	if have_root; then
-		if [ "$(id -u)" -eq 0 ]; then
+		if [ "${build_uid}" -eq 0 ]; then
 			rm -rf "${remove_path}"
 		else
 			sudo -n rm -rf "${remove_path}"
@@ -33,7 +34,7 @@ extract_rootfs() {
 	extract_source=$1
 	extract_target=$2
 	if have_root; then
-		if [ "$(id -u)" -eq 0 ]; then
+		if [ "${build_uid}" -eq 0 ]; then
 			unsquashfs -xattrs -d "${extract_target}" "${extract_source}"
 		else
 			sudo -n unsquashfs -xattrs -d "${extract_target}" "${extract_source}"
@@ -53,7 +54,7 @@ extract_rootfs() {
 archive_rootfs() {
 	archive_source=$1
 	if have_root; then
-		if [ "$(id -u)" -eq 0 ]; then
+		if [ "${build_uid}" -eq 0 ]; then
 			tar --xattrs --xattrs-include='*' --numeric-owner \
 				-C "${archive_source}" -cf - .
 		else

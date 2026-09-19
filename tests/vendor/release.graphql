@@ -1,0 +1,11 @@
+query($id: ID!) {
+	release(id: $id) {
+		id
+		title
+		version
+		links {
+			title
+			url
+		}
+	}
+}

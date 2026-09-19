@@ -26,18 +26,24 @@ env:
   PR_CREATED_AT: "${{ github.event.pull_request.created_at }}"
 jobs:
   build-deb:
+    name: Build udm-iptv Debian package
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: udm-iptv } }
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { path: udm-iptv }
-      - run: sudo apt-get update && sudo apt-get install -y devscripts debhelper build-essential
-      - run: debuild -uc -us --lintian-opts --profile debian
+      - parallel:
+          - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            with: { path: udm-iptv }
+          - name: Setup Dependencies
+            working-directory: ${{ github.workspace }}
+            run: sudo apt-get update && sudo apt-get install -y devscripts debhelper build-essential
+      - name: Build Package
+        run: debuild -uc -us --lintian-opts --profile debian
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with: { name: build-artifacts, if-no-files-found: error, path: "*.deb" }
 
   catalog:
+    name: Catalog firmware
     runs-on: ubuntu-latest
     outputs: { matrix: "${{ steps.matrix.outputs.matrix }}" }
     timeout-minutes: 1
@@ -52,6 +58,7 @@ jobs:
 
   test-install:
     needs: [build-deb, catalog]
+    name: ${{ format('{0} ({1} to {2}) {3} test install', matrix.model, matrix.firmwares[0].version, matrix.firmwares[1].version, matrix.channel) }}
     runs-on: ubuntu-24.04-arm
     permissions: { contents: read, packages: write }
     defaults: { run: { working-directory: docker/unifi-os } }
@@ -99,7 +106,7 @@ jobs:
           key: ${{ steps.firmware-cache.outputs.cache-primary-key }}
       - id: container-logs
         name: Follow integration container logs
-        uses: ./.github/actions/unifi-os-container-logs
+        uses: $/.github/actions/unifi-os-container-logs
         with: { model: "${{ matrix.model }}" }
         background: true
       - run: ./test-install.sh "${MODEL}" udm-iptv_*.deb
