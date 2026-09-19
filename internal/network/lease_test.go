@@ -38,7 +38,7 @@ func TestLeaseFailuresKeepOperationAndCause(t *testing.T) {
 			case "retire previous DHCP address":
 				ops.addresses = func(netlink.Link, int) ([]netlink.Addr, error) { return nil, want }
 			}
-			err := applyLease(testLease(), config.RoutesAllowDefault, ops)
+			err := applyLease(testLease(), ops)
 			if !errors.Is(err, want) || !strings.Contains(err.Error(), stage) {
 				t.Fatalf("missing cause or operation: %v", err)
 			}
@@ -166,7 +166,7 @@ func TestInvalidLeaseDoesNotMutateNetwork(t *testing.T) {
 		lease := testLease()
 		change(&lease)
 		fixture := &leaseFixture{}
-		err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+		err := applyLease(lease, fixture.ops())
 		if err == nil {
 			t.Errorf("invalid lease accepted: %+v", lease)
 		}
@@ -180,13 +180,13 @@ func TestUnchangedRenewalDoesNotReplaceOrDeleteRoutes(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+	err := applyLease(lease, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {
 		fixture.changes = nil
-		err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+		err := applyLease(lease, fixture.ops())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +204,7 @@ func TestChangedLeaseAppliesBeforeRemovingOldState(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		fixture := &leaseFixture{}
 		lease := testLease()
-		if err := applyLease(lease, config.RoutesAllowDefault, fixture.ops()); err != nil {
+		if err := applyLease(lease, fixture.ops()); err != nil {
 			t.Fatal(err)
 		}
 		old := fixture.routes[0]
@@ -214,7 +214,7 @@ func TestChangedLeaseAppliesBeforeRemovingOldState(t *testing.T) {
 		fixture.routes = append(fixture.routes, unrelated)
 		fixture.changes, fixture.failReplace = nil, fail
 		lease.Address, lease.StaticRoutes[0] = "192.0.2.3", "198.51.100.0/24"
-		err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+		err := applyLease(lease, fixture.ops())
 		if fail {
 			assertFailedReplacementKeepsOldState(t, fixture, err, []netlink.Route{old, unrelated})
 
@@ -345,12 +345,12 @@ func TestDeconfigRemovesLeaseState(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+	err := applyLease(lease, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease.Action = "deconfig"
-	err = applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+	err = applyLease(lease, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,15 +363,21 @@ func uplinkAddress() netlink.Addr {
 	return netlink.Addr{IPNet: &net.IPNet{IP: net.ParseIP("203.0.113.10").To4(), Mask: net.CIDRMask(24, 32)}}
 }
 
+func borrowedFixture() (*leaseFixture, leaseOperations) {
+	fixture := &leaseFixture{addresses: []netlink.Addr{uplinkAddress()}}
+	ops := fixture.ops()
+	ops.link = func(string) (netlink.Link, error) { return borrowedLink(), nil }
+
+	return fixture, ops
+}
+
 // A lease on an interface the firmware owns, such as an untagged uplink, must
 // leave the addresses the firmware put there alone.
 func TestBorrowedInterfaceKeepsForeignAddresses(t *testing.T) {
 	t.Parallel()
-	fixture := &leaseFixture{addresses: []netlink.Addr{uplinkAddress()}}
-	ops := fixture.ops()
-	ops.link = func(string) (netlink.Link, error) { return borrowedLink(), nil }
+	fixture, ops := borrowedFixture()
 	lease := testLease()
-	if err := applyLease(lease, config.RoutesAllowDefault, ops); err != nil {
+	if err := applyLease(lease, ops); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(fixture.changes, "address") || slices.Contains(fixture.changes, "delete-address") {
@@ -380,21 +386,54 @@ func TestBorrowedInterfaceKeepsForeignAddresses(t *testing.T) {
 	if len(fixture.addresses) != 2 {
 		t.Fatalf("uplink address lost: %v", fixture.addresses)
 	}
-	lease.Action = "deconfig"
-	if err := applyLease(lease, config.RoutesAllowDefault, ops); err != nil {
+	deconfig := Lease{Action: "deconfig", Interface: lease.Interface}
+	if err := applyLeaseChange(deconfig, lease, config.RoutesAllowDefault, ops); err != nil {
 		t.Fatal(err)
 	}
 	if len(fixture.addresses) != 1 || !sameAddress(fixture.addresses[0], uplinkAddress()) {
 		t.Fatalf("deconfig on a borrowed interface left %v", fixture.addresses)
 	}
-	lease.Address = ""
 	fixture.changes = nil
-	if err := applyLease(lease, config.RoutesAllowDefault, ops); err != nil {
+	if err := applyLease(deconfig, ops); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(fixture.changes, "delete-address") {
 		t.Fatalf("deconfig without a known address deleted one: %v", fixture.changes)
 	}
+}
+
+// When a lease moves to another address, the previous lease's address is the
+// one thing on a borrowed interface this program retires.
+func TestBorrowedInterfaceRetiresThePreviousLeaseAddress(t *testing.T) {
+	t.Parallel()
+	fixture, ops := borrowedFixture()
+	lease := testLease()
+	if err := applyLease(lease, ops); err != nil {
+		t.Fatal(err)
+	}
+	moved := lease
+	moved.Address = "192.0.2.3"
+	if err := applyLeaseChange(moved, lease, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	movedAddress, _, err := leaseAddress(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.addresses) != 2 || !sameAddress(fixture.addresses[0], uplinkAddress()) || !sameAddress(fixture.addresses[1], *movedAddress) {
+		t.Fatalf("a moved lease on a borrowed interface left %v", fixture.addresses)
+	}
+	fixture.changes = nil
+	if err := applyLeaseChange(moved, moved, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(fixture.changes, "delete-address") {
+		t.Fatalf("an unchanged renewal deleted an address: %v", fixture.changes)
+	}
+}
+
+func applyLease(lease Lease, ops leaseOperations) error {
+	return applyLeaseChange(lease, Lease{}, config.RoutesAllowDefault, ops)
 }
 
 func TestManagedVLANRequiresAliasOrMatchingConfiguration(t *testing.T) {
@@ -422,12 +461,12 @@ func TestLeaseSurvivesPrimaryAddressCleanup(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{dropSecondary: true}
 	lease := testLease()
-	err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+	err := applyLease(lease, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease.Address = "192.0.2.3"
-	err = applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+	err = applyLease(lease, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,13 +479,13 @@ func TestGatewayChangeReplacesRouteWithoutDeletingReplacement(t *testing.T) {
 	t.Parallel()
 	fixture := &leaseFixture{}
 	lease := testLease()
-	err := applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+	err := applyLease(lease, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.changes = nil
 	lease.StaticRoutes[1] = "192.0.2.254"
-	err = applyLease(lease, config.RoutesAllowDefault, fixture.ops())
+	err = applyLease(lease, fixture.ops())
 	if err != nil {
 		t.Fatal(err)
 	}

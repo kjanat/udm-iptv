@@ -55,15 +55,15 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read the DHCP lease from the environment: %w", err)
 			}
+			previous := network.Lease{}
+			if state, err := service.ReadLeaseState(); err == nil {
+				previous = state.Lease
+			}
 			switch arguments[0] {
 			case "deconfig":
-				if previous, err := service.ReadLeaseState(); err == nil {
-					lease.Address, lease.Mask = previous.Lease.Address, previous.Lease.Mask
-				}
-
-				return errors.Join(network.ApplyLease(lease, policy), service.RemoveLeaseState())
+				return errors.Join(network.ApplyLease(lease, previous, policy), service.RemoveLeaseState())
 			case "bound", "renew":
-				return errors.Join(network.ApplyLease(lease, policy), service.WriteLeaseState(lease))
+				return errors.Join(network.ApplyLease(lease, previous, policy), service.WriteLeaseState(lease))
 			case "leasefail":
 				return errLeaseAcquisitionFailed
 			case "nak":

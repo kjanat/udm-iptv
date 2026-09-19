@@ -25,35 +25,48 @@ func TestKernelLeaseRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The dummy carries no alias, so this is the borrowed-link path: the hook
+	// hands over the previous lease and only its address may be retired.
 	lease := testLease()
 	lease.Interface = link.Attrs().Name
 	lease.Action = "bound"
-	mustApplyLease(t, lease)
+	previous := Lease{}
+	apply := func() {
+		t.Helper()
+		mustApplyLease(t, lease, previous)
+		previous = lease
+	}
+	apply()
 	checkLease(t, link, lease.Address, 1)
 	lease.Action = "renew"
 	for range 3 {
-		mustApplyLease(t, lease)
+		apply()
 		checkLease(t, link, lease.Address, 1)
 	}
 	invalid := lease
 	invalid.StaticRoutes = []string{"198.51.100.0/24", "192.0.2.1", "invalid"}
-	if err := ApplyLease(invalid, config.RoutesAllowDefault); err == nil {
+	if err := ApplyLease(invalid, previous, config.RoutesAllowDefault); err == nil {
 		t.Fatal("invalid option accepted")
 	}
 	checkLease(t, link, lease.Address, 1)
 	// Same subnet, different host: Linux may remove a secondary address when
 	// the old primary address is deleted. The new address must survive cleanup.
 	lease.Address = "192.0.2.3"
-	mustApplyLease(t, lease)
+	apply()
 	checkLease(t, link, lease.Address, 1)
 	lease.StaticRoutes = []string{"198.51.100.0/24", "192.0.2.1"}
-	mustApplyLease(t, lease)
+	apply()
 	checkLease(t, link, lease.Address, 1)
 	lease.Address, lease.Mask = "198.51.100.2", "32"
-	mustApplyLease(t, lease)
+	apply()
 	checkLease(t, link, lease.Address, 2)
 	lease.Action = "deconfig"
-	mustApplyLease(t, lease)
+	apply()
+	checkCleared(t, link)
+}
+
+func checkCleared(t *testing.T, link netlink.Link) {
+	t.Helper()
 	addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
 	if err != nil || len(addresses) != 0 {
 		t.Fatalf("deconfig addresses: %v, %v", addresses, err)
@@ -90,9 +103,9 @@ func enterPrivateNamespace(t *testing.T) {
 	})
 }
 
-func mustApplyLease(t *testing.T, lease Lease) {
+func mustApplyLease(t *testing.T, lease, previous Lease) {
 	t.Helper()
-	if err := ApplyLease(lease, config.RoutesAllowDefault); err != nil {
+	if err := ApplyLease(lease, previous, config.RoutesAllowDefault); err != nil {
 		t.Fatal(err)
 	}
 }

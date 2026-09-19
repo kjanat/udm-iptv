@@ -386,7 +386,7 @@ func ApplyStatic(value config.Config, link netlink.Link) error {
 		if err := netlink.AddrReplace(link, address); err != nil {
 			return fmt.Errorf("apply static address %s: %w", value.WAN.StaticAddress, err)
 		}
-		if _, err := removeOtherAddresses(link, address, systemOperations()); err != nil {
+		if _, err := removeOtherAddresses(link, address, Lease{}, systemOperations()); err != nil {
 			return fmt.Errorf("retire the previous static address: %w", err)
 		}
 	}
@@ -471,9 +471,11 @@ func dhcpOptions(environment []string) map[string]string {
 	return options
 }
 
-// ApplyLease reconciles the interface's address and routes with a DHCP lease event.
-func ApplyLease(lease Lease, policy config.RoutePolicy) error {
-	return applyLease(lease, policy, systemOperations())
+// ApplyLease reconciles the interface's address and routes with a DHCP lease
+// event. previous is the lease the hook recorded before this event, or the
+// zero Lease; on a borrowed link its address is the one this program may retire.
+func ApplyLease(lease, previous Lease, policy config.RoutePolicy) error {
+	return applyLeaseChange(lease, previous, policy, systemOperations())
 }
 
 func systemOperations() leaseOperations {
@@ -496,7 +498,7 @@ type leaseOperations struct {
 	deleteRoute    func(*netlink.Route) error
 }
 
-func applyLease(lease Lease, policy config.RoutePolicy, ops leaseOperations) error {
+func applyLeaseChange(lease, previous Lease, policy config.RoutePolicy, ops leaseOperations) error {
 	if lease.Action != "deconfig" && lease.Action != "bound" && lease.Action != "renew" {
 		return nil
 	}
@@ -505,7 +507,7 @@ func applyLease(lease Lease, policy config.RoutePolicy, ops leaseOperations) err
 		return fmt.Errorf("find DHCP interface: %w", err)
 	}
 	if lease.Action == "deconfig" {
-		return clearLease(link, lease, ops)
+		return clearLease(link, previous, ops)
 	}
 	address, prefixLength, err := leaseAddress(lease)
 	if err != nil {
@@ -516,32 +518,17 @@ func applyLease(lease Lease, policy config.RoutePolicy, ops leaseOperations) err
 	if err != nil {
 		return fmt.Errorf("validate DHCP routes: %w", err)
 	}
-	return installLease(link, address, routes, ops)
+	return installLease(link, address, previous, routes, ops)
 }
 
-// clearLease removes the lease's routes, and its addresses: every IPv4
-// address on an owned link, and on a borrowed link only the address the
-// previous lease assigned, when the caller knows it.
-func clearLease(link netlink.Link, lease Lease, ops leaseOperations) error {
+// clearLease removes the lease's routes and its addresses: every IPv4
+// address on an owned link, on a borrowed link only the previous lease's.
+func clearLease(link netlink.Link, previous Lease, ops leaseOperations) error {
 	if err := reconcileLeaseRoutes(link.Attrs().Index, nil, ops); err != nil {
 		return fmt.Errorf("clear DHCP routes: %w", err)
 	}
-	if owned(link) {
-		if _, err := removeOtherAddresses(link, nil, ops); err != nil {
-			return fmt.Errorf("clear DHCP addresses: %w", err)
-		}
-
-		return nil
-	}
-	if lease.Address == "" {
-		return nil
-	}
-	address, _, err := leaseAddress(lease)
-	if err != nil {
-		return err
-	}
-	if err := ops.deleteAddress(link, address); err != nil && !errors.Is(err, unix.EADDRNOTAVAIL) {
-		return fmt.Errorf("clear DHCP address: %w", err)
+	if _, err := removeOtherAddresses(link, nil, previous, ops); err != nil {
+		return fmt.Errorf("clear DHCP addresses: %w", err)
 	}
 
 	return nil
@@ -568,7 +555,7 @@ func leaseAddress(lease Lease) (*netlink.Addr, int, error) {
 	return address, prefixLength, nil
 }
 
-func installLease(link netlink.Link, address *netlink.Addr, routes []netlink.Route, ops leaseOperations) error {
+func installLease(link netlink.Link, address *netlink.Addr, previous Lease, routes []netlink.Route, ops leaseOperations) error {
 	if err := ops.replaceAddress(link, address); err != nil {
 		return fmt.Errorf("apply DHCP address: %w", err)
 	}
@@ -578,7 +565,7 @@ func installLease(link netlink.Link, address *netlink.Addr, routes []netlink.Rou
 	if err := reconcileLeaseRoutes(link.Attrs().Index, routes, ops); err != nil {
 		return fmt.Errorf("apply DHCP routes: %w", err)
 	}
-	removed, err := removeOtherAddresses(link, address, ops)
+	removed, err := removeOtherAddresses(link, address, previous, ops)
 	if err != nil {
 		return fmt.Errorf("retire previous DHCP address: %w", err)
 	}
