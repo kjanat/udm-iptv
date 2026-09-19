@@ -85,10 +85,11 @@ func leaseRouteIdentity(route netlink.Route) string {
 }
 
 // removeOtherAddresses retires every IPv4 address but desired from an owned
-// link. A borrowed link keeps its other addresses.
-func removeOtherAddresses(link netlink.Link, desired *netlink.Addr, ops leaseOperations) (bool, error) {
+// link. A borrowed link keeps its other addresses except the one the
+// previous lease put there.
+func removeOtherAddresses(link netlink.Link, desired *netlink.Addr, previous Lease, ops leaseOperations) (bool, error) {
 	if !owned(link) {
-		return false, nil
+		return removePreviousAddress(link, desired, previous, ops)
 	}
 	addresses, err := ops.addresses(link, netlink.FAMILY_V4)
 	if err != nil {
@@ -107,4 +108,26 @@ func removeOtherAddresses(link netlink.Link, desired *netlink.Addr, ops leaseOpe
 	}
 
 	return removed, nil
+}
+
+func removePreviousAddress(link netlink.Link, desired *netlink.Addr, previous Lease, ops leaseOperations) (bool, error) {
+	if previous.Address == "" {
+		return false, nil
+	}
+	address, _, err := leaseAddress(previous)
+	if err != nil {
+		return false, err
+	}
+	if desired != nil && sameAddress(*address, *desired) {
+		return false, nil
+	}
+	err = ops.deleteAddress(link, address)
+	if errors.Is(err, unix.EADDRNOTAVAIL) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("remove the previous lease address: %w", err)
+	}
+
+	return true, nil
 }
