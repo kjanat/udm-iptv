@@ -65,7 +65,7 @@
 
 - [x] F01 `Installed` needs the unit file as well as the executable; `configure set` on an unpacked package saves without restarting
 - [x] F02 package bootstrap finds `/data/udm-iptv/udm-iptv.conf` through `configure get`
-- [x] F03 `--profile custom` keeps the saved interfaces; provider profiles are seeded with the detected ones
+- [x] F03 switching profile keeps the console's WAN port and LAN bridges; only `--profile custom` on a fresh console starts from the detected ones (`a4f54f1`)
 - [x] F04 VLAN ownership: created links carry alias `udm-iptv`; an unmarked link is replaced only when it already is the configured VLAN on the configured parent; borrowed interfaces keep their other addresses
 - [x] F05 `unpacked`, `half-configured`, `half-installed` and trigger states delegate to apt; `config-files` and `not-installed` do not
 - [x] F06 a dpkg-tracked installation upgrades through the attested `.deb` and `apt-get install`
@@ -78,7 +78,7 @@
 - [x] R01 attestation identity bound to `release.yml` at the candidate's own tag; token only over https
 - [x] R02 the hook records whether it applied the lease; the daemon waits for this run's applied record on its interface and fails on a recorded failure instead of an address
 - [x] R03 a configuration the service will not start with is moved to `config.json.rejected`, the previous file is restored and the service restarted on it; the report still says what was attempted and that it did not apply
-- [ ] Named profile on a saved configuration still reseeds WAN/LAN like the wizard does; decide whether saved hardware choices should survive a profile switch on the CLI
+- [x] Named profile on a saved configuration reseeded WAN/LAN; saved hardware choices survive a profile switch on the CLI and in the wizard (`a4f54f1`)
 
 ## Done earlier
 
