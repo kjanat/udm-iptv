@@ -342,6 +342,57 @@ func TestSetMetadataAllowlist(t *testing.T) {
 	}
 }
 
+// A package record that trails the executable has to be visible on every
+// report, so the tag names the kind of installation and the recorded version.
+func TestSetInstallationTagsThePackageRecord(t *testing.T) {
+	t.Parallel()
+	r, _ := newRecordingReporter(t, testSettings())
+	running := "5.0.0-preview.2"
+	r.release = "udm-iptv@" + running
+	if r.SetInstallation("") {
+		t.Fatal("a standalone installation reported as stale")
+	}
+	assertEqual(t, "standalone", r.eventTags()["installation"], installationStandalone)
+	if _, tagged := r.eventTags()["package_version"]; tagged {
+		t.Fatal("a standalone installation carries a package version")
+	}
+	if r.SetInstallation(running) {
+		t.Fatal("a matching record reported as stale")
+	}
+	assertEqual(t, "package", r.eventTags()["installation"], installationPackage)
+	assertEqual(t, "package version", r.eventTags()["package_version"], running)
+	if !r.SetInstallation("5.0.0-preview.1") {
+		t.Fatal("a trailing record was not reported as stale")
+	}
+	assertEqual(t, "stale", r.eventTags()["installation"], installationStale)
+	assertEqual(t, "stale version", r.eventTags()["package_version"], "5.0.0-preview.1")
+	if r.SetInstallation("5.0.0 && reboot") {
+		t.Fatal("garbage reported as stale")
+	}
+	assertEqual(t, "garbage", r.eventTags()["installation"], installationPackage)
+	if _, tagged := r.eventTags()["package_version"]; tagged {
+		t.Fatal("garbage kept as a package version")
+	}
+	event := r.filterEvent(&sentry.Event{}, nil)
+	assertEqual(t, "event tag", event.Tags["installation"], installationPackage)
+}
+
+func TestWarnRecordsAWarningLog(t *testing.T) {
+	r, transport := newRecordingReporter(t, testSettings())
+	r.Warn(context.Background(), "dpkg records udm-iptv 5.0.0-preview.1 while 5.0.0-preview.2 runs")
+	r.Close()
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	for _, event := range transport.events {
+		for _, log := range event.Logs {
+			if log.Body == "dpkg records udm-iptv 5.0.0-preview.1 while 5.0.0-preview.2 runs" && log.Level == sentry.LogLevelWarn {
+				return
+			}
+		}
+	}
+	t.Fatal("warning log not delivered")
+}
+
 func TestAllProductsDelivered(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
 	r.SetMetadata("UDMPRO", "5.1.31", "UDMPRO.al324.v5.1.31.5acc35d.260819.1714", "ea15", "improxy", "kpn")
