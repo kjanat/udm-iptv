@@ -294,6 +294,38 @@ func TestDecompressBundleRejectsInflatedBlock(t *testing.T) {
 	}
 }
 
+// An executable swapped in behind dpkg's back leaves the package record
+// behind; the next upgrade must reinstall the package even when the
+// executable already is the candidate, and say why.
+func TestPlanUpgradeRepairsAPackageRecordBehindTheExecutable(t *testing.T) {
+	t.Parallel()
+	installed := PackageRecord{Status: "installed", Version: "5.0.0~preview.2"}
+	stale := PackageRecord{Status: "installed", Version: "5.0.0~preview.1"}
+	for name, test := range map[string]struct {
+		running, candidate string
+		record             PackageRecord
+		force              bool
+		want               upgradePlan
+	}{
+		"standalone up to date":     {"5.0.0", "5.0.0", PackageRecord{}, false, upgradePlan{note: "udm-iptv 5.0.0 is already installed. Use --force to reinstall."}},
+		"standalone forced":         {"5.0.0", "5.0.0", PackageRecord{}, true, upgradePlan{proceed: true}},
+		"standalone newer":          {"5.0.0", "5.0.1", PackageRecord{}, false, upgradePlan{proceed: true}},
+		"package up to date":        {"5.0.0-preview.2", "5.0.0-preview.2", installed, false, upgradePlan{note: "udm-iptv 5.0.0-preview.2 is already installed. Use --force to reinstall."}},
+		"package forced":            {"5.0.0-preview.2", "5.0.0-preview.2", installed, true, upgradePlan{proceed: true, viaPackage: true}},
+		"package newer":             {"5.0.0-preview.1", "5.0.0-preview.2", installed, false, upgradePlan{proceed: true, viaPackage: true, note: "dpkg recorded udm-iptv 5.0.0-preview.2 while 5.0.0-preview.1 is running; the package is reinstalled to bring the two in line."}},
+		"record behind the binary":  {"5.0.0-preview.2", "5.0.0-preview.2", stale, false, upgradePlan{proceed: true, viaPackage: true, note: "dpkg recorded udm-iptv 5.0.0-preview.1 while 5.0.0-preview.2 is running; the package is reinstalled to bring the two in line."}},
+		"half configured, in line":  {"5.0.0-preview.2", "5.0.0-preview.2", PackageRecord{Status: "half-configured", Version: "5.0.0~preview.2"}, false, upgradePlan{note: "udm-iptv 5.0.0-preview.2 is already installed. Use --force to reinstall."}},
+		"config-files is not owned": {"5.0.0", "5.0.0", PackageRecord{Status: "config-files", Version: "4.3.1"}, false, upgradePlan{note: "udm-iptv 5.0.0 is already installed. Use --force to reinstall."}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := planUpgrade(test.running, test.candidate, test.record, test.force); got != test.want {
+				t.Fatalf("plan = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
 // A dpkg-tracked installation is upgraded through its package, so dpkg's
 // database and the shipped files advance with the executable.
 func TestPackageManagedUpgradeInstallsThePackage(t *testing.T) {
@@ -309,7 +341,9 @@ func TestPackageManagedUpgradeInstallsThePackage(t *testing.T) {
 			return nil
 		},
 		packages: packageCommands{
-			installed: func(context.Context) (bool, error) { return true, nil },
+			record: func(context.Context) (PackageRecord, error) {
+				return PackageRecord{Status: "installed", Version: "5.0.0"}, nil
+			},
 			install: func(_ context.Context, packagePath string, _, _ io.Writer) error {
 				installed = packagePath
 
@@ -342,7 +376,9 @@ func TestPackageManagedUpgradeInstallsThePackage(t *testing.T) {
 
 func TestPackageManagedUpgradeNeedsThePackageAsset(t *testing.T) {
 	t.Parallel()
-	upgrader := &Upgrader{StateDir: "/data/udm-iptv", Out: io.Discard, Err: io.Discard, packages: packageCommands{installed: func(context.Context) (bool, error) { return true, nil }}}
+	upgrader := &Upgrader{StateDir: "/data/udm-iptv", Out: io.Discard, Err: io.Discard, packages: packageCommands{record: func(context.Context) (PackageRecord, error) {
+		return PackageRecord{Status: "installed", Version: "5.0.0"}, nil
+	}}}
 	release := &github.RepositoryRelease{TagName: new("v5.0.0"), Assets: []*github.ReleaseAsset{{Name: new("udm-iptv-linux-arm64"), URL: new("https://api.github.com/1")}}}
 	err := upgrader.applyPackageRelease(context.Background(), upgradeCandidate{release: release, version: "5.0.0"})
 	if !errors.Is(err, errReleaseAssetsMissing) {

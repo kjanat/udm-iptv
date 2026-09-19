@@ -18,7 +18,8 @@
 - [x] Allowlist and scrubber removed; signed download URLs named without their query
 - [x] `docs/telemetry.md` and F1 help updated
 - [x] `tool govulncheck` out of `go.mod`; CI runs `go run …@latest`
-- [ ] New preview release so the two installations send all of this, ensure you ASAP modify the release notes with info ppls need2know!\
+- [x] New preview release so the two installations send all of this, ensure you ASAP modify the release notes with info ppls need2know!\
+      `v5.0.0-preview.2`: notes open with a "not for your router yet" block, prerelease flag set, `releases/latest` stays `v4.3.1`.\
       Prevent ppls from installing preview versions that are either intended for own testing only, or send ALL telemetry to sentry.\
       The latter has not occured, and I'd like to keep it that way.
 
@@ -86,6 +87,8 @@
 - [x] 14 stale agent worktrees and 25 merged branches removed
 - [x] Tab completion on UniFi OS (`b180e28`)
 - [x] `postinstall` called `configure --non-interactive` after that flag was removed in `9f1ee3f`; it calls `configure set` now
+- [x] preview.1 → preview.2 on the router swapped the executable behind dpkg, leaving `5.0.0~preview.1` recorded. `upgrade` now compares the candidate with dpkg's record as well as the running binary and reinstalls the package when they disagree, without `--force`; `status` prints `Installation: package …` and names a stale record
+- [x] `templates` used the po-debconf `_Description` field, so every install printed `debconf: Unknown template field '_description'`; it is `Description` now
 
 ## NAT evidence (router check 2026-09-19, preview.1 on the UDM-Pro)
 
@@ -101,7 +104,7 @@ Proposal, agreed 2026-09-19:
 - [x] Snapshot keeps every MASQUERADE rule on the IPTV interface, marked managed/unmanaged, with counters (`network.ListNAT`, `natRules` in the observation)
 - [x] Per-destination evidence derived from the route list (`routed (…)` / `no route via iptv`, packets, unmanaged rules for the same destination), in `status`, `diagnose`, and as `natEvidence` in the observation
 - [x] Counters logged when reconciliation or shutdown removes a rule (`NAT rule removed: …` to the journal and the Sentry log). A rule that stays keeps its counters; a `0.0.0.0/0` rule is now recognised in the form iptables prints it, so it stays too
-- [ ] Preview release so the router runs the reconciliation
+- [x] Preview release so the router runs the reconciliation: `v5.0.0-preview.2` on `f189e2b`, published 2026-09-19; router upgraded the same night, legacy rules removed (224 packets on `213.75.0.0/16` at removal), removal lines and counters confirmed in Sentry logs
 
 ## Provider catalog (research index)
 

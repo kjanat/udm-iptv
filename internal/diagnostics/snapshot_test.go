@@ -160,6 +160,22 @@ func TestNATEvidenceSeparatesRoutedFromUnreachableDestinations(t *testing.T) {
 	}
 }
 
+func TestSnapshotSaysWhoInstalledTheExecutable(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		snapshot Snapshot
+		want     string
+	}{
+		"standalone": {Snapshot{Version: "5.0.0"}, "Installation: standalone"},
+		"package":    {Snapshot{Version: "5.0.0-preview.2", Service: serviceStatus{Package: "5.0.0-preview.2"}}, "Installation: package 5.0.0-preview.2\n"},
+		"stale":      {Snapshot{Version: "5.0.0-preview.2", Service: serviceStatus{Package: "5.0.0-preview.1"}}, "Installation: package 5.0.0-preview.1 recorded by dpkg while 5.0.0-preview.2 runs; udm-iptv upgrade reinstalls the package"},
+	} {
+		if got := RenderSnapshot(test.snapshot); !strings.Contains(got, test.want) {
+			t.Errorf("%s: missing %q in:\n%s", name, test.want, got)
+		}
+	}
+}
+
 func TestNATEvidenceCountsBroadRoutesAndTheUnrestrictedDestination(t *testing.T) {
 	t.Parallel()
 	broad := natEvidence([]string{"213.75.0.0/16"}, []string{"default via 10.207.64.1"}, nil)

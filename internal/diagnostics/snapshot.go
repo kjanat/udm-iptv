@@ -17,6 +17,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/device"
+	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/mroute"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/kjanat/udm-iptv/internal/service"
@@ -64,6 +65,7 @@ type configSummary struct {
 }
 
 type serviceStatus struct {
+	Package     string `json:"package,omitempty"`
 	LoadState   string `json:"loadState"`
 	ActiveState string `json:"activeState"`
 	SubState    string `json:"subState"`
@@ -353,6 +355,9 @@ func summarizeConfig(value config.Config) configSummary {
 
 func inspectService(ctx context.Context) serviceStatus {
 	var status serviceStatus
+	if record, err := installer.QueryPackage(ctx); err == nil && record.Owned() {
+		status.Package = record.ReleaseVersion()
+	}
 	if state, err := service.ReadRuntimeState(); err == nil {
 		status.Proxy = state.Proxy
 		status.ProxyPID = state.ProxyPID
@@ -456,6 +461,7 @@ func inspectLink(target string) networkStatus {
 // Configured settings and observed state are labelled apart.
 func RenderSnapshot(value Snapshot) string {
 	return fmt.Sprintf(`udm-iptv %s
+Installation: %s
 Profile: %s
 WAN: %s, VLAN %d (%s), DHCP: %t
 Custom VLAN MAC: %t, static address: %t, DHCP options: %t
@@ -472,7 +478,7 @@ Addresses: %s
 Routes: %s
 Default route observed on %s: %s
 Multicast routes: %s
-`, value.Version, value.Config.Profile, value.Config.WANInterface, value.Config.VLAN, value.Config.IPTVInterface, value.Config.DHCP,
+`, value.Version, renderInstallation(value.Version, value.Service.Package), value.Config.Profile, value.Config.WANInterface, value.Config.VLAN, value.Config.IPTVInterface, value.Config.DHCP,
 		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, fallbackText(value.Config.DHCPRoutes),
 		strings.Join(value.Config.NATDestinations, ", "), natRuleCount(value.NAT), renderSourceRanges(value.Config), strings.Join(value.Config.LANInterfaces, ", "),
 		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts,
@@ -481,6 +487,19 @@ Multicast routes: %s
 		strings.Join(value.Network.Routes, ", "), value.Network.Target, presence(value.Network.DefaultRoute), multicastSummary(value.Multicast)) +
 		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderNATEvidence(value.NATEvidence, value.Network.Target) +
 		renderMemberships(value.Memberships) + renderLease(value.Lease) + renderDownstream(value)
+}
+
+// renderInstallation says who installed the executable and whether dpkg's
+// record still matches it.
+func renderInstallation(version, packageVersion string) string {
+	switch packageVersion {
+	case "":
+		return "standalone"
+	case version:
+		return "package " + packageVersion
+	default:
+		return "package " + packageVersion + " recorded by dpkg while " + version + " runs; udm-iptv upgrade reinstalls the package"
+	}
 }
 
 func presence(observed bool) string {
