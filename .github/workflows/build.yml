@@ -23,6 +23,9 @@ jobs:
           - name: Test UniFi OS image publishing
             working-directory: *WD
             run: ./tests/unifi-os-publish.sh
+          - name: Test UniFi OS fixtures
+            working-directory: *WD
+            run: bash ./tests/unifi-os-fixtures.sh
           - name: Test Bash Completion
             working-directory: *WD
             run: ./tests/bash-completion.sh

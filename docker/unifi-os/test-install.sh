@@ -135,6 +135,8 @@ dump() {
 		udm-iptv-test.target network.target network-online.target >&2 || true
 	docker exec "${name}" systemctl status udm-iptv-restore.service udm-iptv.service >&2 || true
 	docker exec "${name}" journalctl -u udm-iptv-restore -u udm-iptv --no-pager >&2 || true
+	docker exec "${name}" systemctl status udm-iptv-test-dhcp.service udm-iptv-test-lock.service >&2 || true
+	docker exec "${name}" journalctl -u udm-iptv-test-dhcp -u udm-iptv-test-lock --no-pager >&2 || true
 	group_end
 }
 
@@ -328,6 +330,7 @@ boot() {
 		-v "${old_deb}:/tmp/udm-iptv-old.deb:ro" \
 		-v "${repo}/install.sh:/tmp/install.sh:ro" \
 		-v "${here}/harness.sh:/harness.sh:ro" \
+		-v "${here}/fixtures.sh:/fixtures.sh:ro" \
 		-v "${here}/udm-iptv-test.target:/usr/local/lib/systemd/system/udm-iptv-test.target:ro" \
 		-e DEBIAN_FRONTEND=noninteractive \
 		-e UDM_IPTV_PACKAGE=/tmp/udm-iptv.deb \
@@ -611,12 +614,17 @@ docker volume create "${vol_etc_overlay}" >/dev/null
 group_begin "Install on ${from_image}"
 boot "${from_name}" "${from_image}"
 wait_systemd "${from_name}"
+install_status=0
 install_output=$(docker exec \
 	-e DEBIAN_FRONTEND=noninteractive \
 	-e UDM_IPTV_PACKAGE=/tmp/udm-iptv-old.deb \
 	"${from_name}" \
-	sh /tmp/install.sh 2>&1)
+	sh /tmp/install.sh 2>&1) || install_status=$?
 echo "${install_output}"
+if ((install_status != 0)); then
+	report_error "initial installation failed in ${from_name} (exit ${install_status})"
+	exit "${install_status}"
+fi
 if grep -Fq 'Illegal number' <<<"${install_output}"; then
 	report_error "debconf misread an interface name in ${from_name}"
 	exit 1

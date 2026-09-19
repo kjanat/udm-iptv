@@ -45,40 +45,33 @@ for iface in br0 eth0 eth1 eth2 eth3 eth4 eth8 eth9 eth18 eth19; do
 done
 ip address replace 192.0.2.1/24 dev br0
 
-# The profile picks its WAN port and VLAN through debconf, so both are only
-# known once the daemon has created the VLAN interface.
-serve_dhcp() {
-	vlan_link=$1
-	parent=${vlan_link#*@}
-	vlan=$(ip -details link show "${vlan_link%@*}" | sed -n 's/.*vlan protocol [^ ]* id \([0-9]\{1,\}\).*/\1/p')
-	if [ -z "${vlan}" ] || [ "${parent}" = "${vlan_link}" ]; then
-		return 0
-	fi
-	ip link add link "peer-${parent}" name iptv-peer type vlan id "${vlan}"
-	ip link set iptv-peer up
-	ip address replace 198.51.100.1/24 dev iptv-peer
-	dnsmasq --port=0 --bind-interfaces --interface=iptv-peer \
-		--dhcp-range=198.51.100.100,198.51.100.150,255.255.255.0,2h \
-		--dhcp-option=3,198.51.100.1 \
-		--pid-file=/run/udm-iptv-test/dnsmasq.pid
-	touch /run/udm-iptv-test/dhcp-served
-}
-
-(
-	while true; do
-		link=$(ip -oneline link show iptv 2>/dev/null | sed -n 's/^[0-9]\{1,\}: \([^:]*\):.*/\1/p')
-		if [ -n "${link}" ] && [ ! -e /run/udm-iptv-test/dhcp-served ]; then
-			serve_dhcp "${link}"
-		fi
-		sleep 1
-	done
-) &
-
+# PID 1 detaches Docker's console at startup. Let systemd launch the helpers
+# afterwards so that terminal hangup cannot kill them.
+mkdir -p "/run/systemd/system/${test_target}.requires"
+printf '%s\n' \
+	'[Unit]' 'Description=IPTV test DHCP server' 'DefaultDependencies=no' \
+	"Before=${test_target}" \
+	'[Service]' 'Type=simple' 'ExecStart=/bin/sh /fixtures.sh dhcp' \
+	>/run/systemd/system/udm-iptv-test-dhcp.service
+ln -sf /run/systemd/system/udm-iptv-test-dhcp.service \
+	"/run/systemd/system/${test_target}.requires/udm-iptv-test-dhcp.service"
 if [ -n "${UDM_IPTV_TEST_LOCK_SECONDS:-}" ]; then
-	(
-		exec 9>/var/lib/dpkg/lock
-		sleep "${UDM_IPTV_TEST_LOCK_SECONDS}"
-	) &
+	case ${UDM_IPTV_TEST_LOCK_SECONDS} in
+		*[!0-9]*)
+			echo 'error: invalid lock duration' >&2
+			exit 1
+			;;
+		*) ;;
+	esac
+	printf '%s\n' \
+		'[Unit]' 'Description=IPTV test package-manager activity' \
+		'DefaultDependencies=no' 'Before=udm-iptv-restore.service' \
+		"Before=${test_target}" \
+		'[Service]' 'Type=notify' 'NotifyAccess=all' \
+		"ExecStart=/bin/sh /fixtures.sh lock ${UDM_IPTV_TEST_LOCK_SECONDS}" \
+		>/run/systemd/system/udm-iptv-test-lock.service
+	ln -sf /run/systemd/system/udm-iptv-test-lock.service \
+		"/run/systemd/system/${test_target}.requires/udm-iptv-test-lock.service"
 fi
 
 # The extracted root cannot reach the hardware-dependent multi-user target.
