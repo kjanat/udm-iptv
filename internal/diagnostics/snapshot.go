@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,13 +79,14 @@ type serviceStatus struct {
 }
 
 type networkStatus struct {
-	Target       string   `json:"target"`
-	LinkState    string   `json:"linkState"`
-	AddressCount int      `json:"addressCount"`
-	Addresses    []string `json:"addresses"`
-	AddressesV6  []string `json:"addressesV6,omitempty"`
-	Routes       []string `json:"routes"`
-	DefaultRoute bool     `json:"defaultRoute"`
+	Target       string            `json:"target"`
+	LinkState    string            `json:"linkState"`
+	AddressCount int               `json:"addressCount"`
+	Addresses    []string          `json:"addresses"`
+	AddressesV6  []string          `json:"addressesV6,omitempty"`
+	IPv6Knobs    map[string]string `json:"ipv6Knobs,omitempty"`
+	Routes       []string          `json:"routes"`
+	DefaultRoute bool              `json:"defaultRoute"`
 }
 
 // MulticastInfo is the kernel forwarding cache: Routes counts the entries
@@ -135,6 +138,9 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		Service:    inspectService(ctx),
 		Network:    inspectLink(network.Target(value)),
 		Downstream: inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces),
+	}
+	if value.Proxy.MLDVersion != 0 {
+		result.Network.IPv6Knobs = network.IPv6MulticastState(value)
 	}
 	if usage, err := multicastUsage(); err == nil {
 		result.Multicast = &usage
@@ -239,15 +245,25 @@ func renderMemberships(memberships *[]Membership) string {
 	return output.String()
 }
 
-// renderIPv6 reports the IPv6 addresses the IPTV interface carries. The
-// lease and NAT paths are IPv4 only, so this is evidence rather than state
-// udm-iptv put there.
+// renderIPv6 reports the IPv6 addresses the IPTV interface carries and the
+// forwarding knobs MLD needs. A forwarding interface with accept_ra below 2
+// never takes the provider's Router Advertisement, so it carries no global
+// address and the proxy has no upstream.
 func renderIPv6(network networkStatus) string {
-	if len(network.AddressesV6) == 0 {
-		return ""
+	var output strings.Builder
+	if len(network.AddressesV6) > 0 {
+		fmt.Fprintf(&output, "IPv6 addresses on %s: %s\n", network.Target, strings.Join(network.AddressesV6, ", "))
+	}
+	if len(network.IPv6Knobs) > 0 {
+		names := slices.Sorted(maps.Keys(network.IPv6Knobs))
+		settings := make([]string, 0, len(names))
+		for _, name := range names {
+			settings = append(settings, name+"="+network.IPv6Knobs[name])
+		}
+		fmt.Fprintf(&output, "IPv6 multicast knobs: %s\n", strings.Join(settings, ", "))
 	}
 
-	return fmt.Sprintf("IPv6 addresses on %s: %s\n", network.Target, strings.Join(network.AddressesV6, ", "))
+	return output.String()
 }
 
 func renderLease(lease *service.LeaseState) string {

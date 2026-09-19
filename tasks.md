@@ -147,3 +147,10 @@ Operator pages fetched 2026-09-19. Init7 pages are JavaScript-rendered (WebFetch
 - [ ] `postinstall` Custom branch without automated coverage
 - [ ] Unknown stager putting files in the index
 - [ ] Working tree: uncommitted changes
+
+## IPv6 IPTV
+
+- [x] improxy proxies MLD; `--mld-version` selects MLDv1 or MLDv2 (`c48411f`)
+- [x] `net.ipv6.conf.<iface>.forwarding` and `accept_ra=2` on the IPTV lane and the LAN bridges, restored on exit; without them a forwarding console drops the provider's Router Advertisement and the MLD proxy has no upstream
+- [ ] DHCPv6: udhcpc is IPv4 only, so a provider that hands out the IPTV prefix over DHCPv6 (IA_NA or IA_PD) instead of SLAAC has no client here
+- [ ] IPv6 equivalents of the lease routes and the NAT destinations

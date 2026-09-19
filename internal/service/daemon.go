@@ -83,6 +83,11 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 		return fmt.Errorf("prepare the IPTV interface: %w", err)
 	}
 	defer func() { result = errors.Join(result, network.RemoveLink(value)) }()
+	restoreIPv6, err := network.EnableIPv6Multicast(value)
+	defer func() { result = errors.Join(result, restoreIPv6()) }()
+	if err != nil {
+		return fmt.Errorf("prepare IPv6 multicast: %w", err)
+	}
 	defer func() {
 		removed, _ := network.RemoveNAT(value)
 		application.logRemovedNAT(context.WithoutCancel(ctx), removed)
