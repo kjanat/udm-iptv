@@ -20,14 +20,17 @@ func Defaults() config.Config {
 	return WithInterfaces(config.DefaultKPN())
 }
 
-// WithInterfaces replaces value's WAN interface with the one detected for this
-// board, and seeds a single downstream interface. A console can carry VLAN and
-// container bridges besides the home LAN, and the proxy exposes multicast on
-// every interface it is given, so the rest are offered by the wizard's LAN
-// list rather than enabled without being chosen.
+// WithInterfaces fills an empty WAN interface with the one detected for this
+// board, and an empty LAN list with a single downstream interface. A console
+// can carry VLAN and container bridges besides the home LAN, and the proxy
+// exposes multicast on every interface it is given, so the rest are offered
+// by the wizard's LAN list rather than enabled without being chosen.
 func WithInterfaces(value config.Config) config.Config {
 	board := Board()
 	value = withBoardInterface(value, board)
+	if len(value.LAN.Interfaces) > 0 {
+		return value
+	}
 	if primary := primaryDownstream(downstreamInterfaces(board)); primary != "" {
 		value.LAN.Interfaces = []string{primary}
 	}

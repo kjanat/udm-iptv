@@ -29,7 +29,15 @@ func (application *Application) installCommand() *cobra.Command {
 	return application.installCommandWith(installDependencies{
 		load: func() (config.Config, error) { return config.Load(application.ConfigPath) },
 		legacy: func() (config.Config, bool, error) {
-			return config.ImportFirstLegacy(legacyCandidates(application.StateDir))
+			value, found, err := config.ImportFirstLegacy(legacyCandidates(application.StateDir))
+			if err != nil {
+				return config.Config{}, false, fmt.Errorf("import the legacy configuration: %w", err)
+			}
+			if !found {
+				return value, false, nil
+			}
+
+			return application.seedInterfaces()(value), true, nil
 		},
 		defaults: device.Defaults,
 		prompt: func(ctx context.Context, value *config.Config) error {

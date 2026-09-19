@@ -465,8 +465,6 @@ func ValidateInterfaceName(name string) error {
 const (
 	legacyVLAN          = 0
 	legacyVLANInterface = "iptv"
-	legacyWANInterface  = "eth8"
-	legacyLANInterface  = "br0"
 	legacyProxyProgram  = ProxyIgmpproxy
 	legacyIGMPVersion   = 2
 )
@@ -476,10 +474,8 @@ var legacyDHCPOptions = []string{"-O", "staticroutes", "-V", "IPTV_RG"}
 func legacyBase() Config {
 	value := genericBase()
 	value.Profile = profileLegacy
-	value.WAN.Interface = legacyWANInterface
 	value.WAN.VLAN = legacyVLAN
 	value.WAN.VLANInterface = legacyVLANInterface
-	value.LAN.Interfaces = []string{legacyLANInterface}
 	value.Proxy.Program = legacyProxyProgram
 	value.Proxy.IGMPVersion = legacyIGMPVersion
 
@@ -489,7 +485,7 @@ func legacyBase() Config {
 // A legacy file runs DHCP only on a tagged uplink, and applies its static
 // address only when DHCP is disabled by name.
 func applyLegacyWAN(value *Config, values map[string]string) {
-	value.WAN.Interface = fallback(values["IPTV_WAN_INTERFACE"], value.WAN.Interface)
+	value.WAN.Interface = values["IPTV_WAN_INTERFACE"]
 	if vlan, err := strconv.Atoi(values["IPTV_WAN_VLAN"]); err == nil {
 		value.WAN.VLAN = vlan
 	}
@@ -506,7 +502,7 @@ func applyLegacyWAN(value *Config, values map[string]string) {
 	value.WAN.DHCPRoutes = legacyRoutePolicy(*value, values["NO_GATEWAY"])
 	value.WAN.NATDestinations = normalizeLegacyPrefixes(strings.Fields(values["IPTV_WAN_RANGES"]))
 	value.WAN.StaticRoutes = normalizeLegacyPrefixes(strings.Fields(values["IPTV_STATIC_ROUTES"]))
-	value.LAN.Interfaces = strings.Fields(fallback(values["IPTV_LAN_INTERFACES"], legacyLANInterface))
+	value.LAN.Interfaces = strings.Fields(values["IPTV_LAN_INTERFACES"])
 }
 
 // A legacy file's quickleave defaults on for igmpproxy and off for improxy.
@@ -548,7 +544,7 @@ func ImportLegacy(path string) (Config, error) {
 		value.Proxy.SourceRanges = mergePrefixes(known.Config.Proxy.SourceRanges, legacyLANSources)
 	}
 
-	return value, value.Validate()
+	return value, value.validateProfile()
 }
 
 func parseLegacyAssignments(text string) (map[string]string, error) {

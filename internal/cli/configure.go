@@ -30,9 +30,9 @@ func legacyCandidates(stateDir string) []string {
 }
 
 // loadOrImportConfig loads the saved configuration, falls back to importing a
-// legacy config file, and otherwise reports fresh so the caller can suggest a
-// provider profile.
-func loadOrImportConfig(path, stateDir string) (config.Config, bool, error) {
+// legacy config file with the console's ports filled in, and otherwise
+// reports fresh so the caller can suggest a provider profile.
+func loadOrImportConfig(path, stateDir string, seed func(config.Config) config.Config) (config.Config, bool, error) {
 	current, err := config.Load(path)
 	if err == nil {
 		return current, false, nil
@@ -45,7 +45,7 @@ func loadOrImportConfig(path, stateDir string) (config.Config, bool, error) {
 		return config.Config{}, false, fmt.Errorf("import the legacy configuration: %w", err)
 	}
 	if found {
-		return legacy, false, nil
+		return seed(legacy), false, nil
 	}
 
 	return device.Defaults(), true, nil
@@ -335,7 +335,7 @@ func (application *Application) configureGetCommand() *cobra.Command {
 			return flags.settingNames(&config.Config{}), cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(_ *cobra.Command, args []string) error {
-			value, fresh, err := loadOrImportConfig(application.ConfigPath, application.StateDir)
+			value, fresh, err := loadOrImportConfig(application.ConfigPath, application.StateDir, application.seedInterfaces())
 			if err != nil {
 				return err
 			}
@@ -364,7 +364,7 @@ func (application *Application) configureGetCommand() *cobra.Command {
 
 // draft loads the saved configuration and folds the given flags into it.
 func (application *Application) draft(command *cobra.Command, flags *configureFlags) (config.Config, bool, error) {
-	value, fresh, err := loadOrImportConfig(application.ConfigPath, application.StateDir)
+	value, fresh, err := loadOrImportConfig(application.ConfigPath, application.StateDir, application.seedInterfaces())
 	if err != nil {
 		return config.Config{}, false, err
 	}
