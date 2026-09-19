@@ -48,7 +48,7 @@ func loadOrImportConfig(path, stateDir string, seed func(config.Config) config.C
 		return seed(legacy), false, nil
 	}
 
-	return device.Defaults(), true, nil
+	return seed(config.DefaultKPN()), true, nil
 }
 
 // startingPoint keeps an unconfigured console off the KPN defaults when the

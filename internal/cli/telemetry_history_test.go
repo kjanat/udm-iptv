@@ -39,7 +39,7 @@ func runFirstConfigurationCase(t *testing.T, testCase firstConfigurationCase) {
 	directory := t.TempDir()
 	lookups := 0
 	application := &Application{
-		ConfigPath: filepath.Join(directory, "config.json"), StateDir: directory, Out: io.Discard, Err: io.Discard,
+		ConfigPath: filepath.Join(directory, "config.json"), StateDir: directory, Out: io.Discard, Err: io.Discard, seed: seedBR0,
 		networkIdentity: func(context.Context) telemetry.NetworkIdentity {
 			lookups++
 

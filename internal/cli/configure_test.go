@@ -42,6 +42,7 @@ func TestConfigureSetAppliesFlagsAfterLoading(t *testing.T) {
 }
 
 func seedBR0(value config.Config) config.Config {
+	value.WAN.Interface = "eth8"
 	value.LAN.Interfaces = []string{"br0"}
 
 	return value
