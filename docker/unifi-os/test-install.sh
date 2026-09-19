@@ -28,6 +28,9 @@ vol_data="${id}-data"
 vol_etc_overlay="${id}-etc-overlay"
 from_name="${id}-from"
 to_name="${id}-to"
+v5_name="${id}-v5"
+vol_v5_data="${id}-v5-data"
+vol_v5_etc_overlay="${id}-v5-etc-overlay"
 group_open=0
 restore_lock_seconds=60
 declare -A dumped_containers=()
@@ -90,15 +93,16 @@ cleanup() {
 	trap - EXIT
 	group_end
 	if ((status != 0)); then
-		for name in "${from_name}" "${to_name}"; do
+		for name in "${from_name}" "${to_name}" "${v5_name}"; do
 			if docker inspect "${name}" >/dev/null 2>&1 \
 				&& [[ -z ${dumped_containers[${name}]+x} ]]; then
 				dump "${name}"
 			fi
 		done
 	fi
-	docker rm -f "${from_name}" "${to_name}" >/dev/null 2>&1 || true
-	docker volume rm "${vol_data}" "${vol_etc_overlay}" >/dev/null 2>&1 || true
+	docker rm -f "${from_name}" "${to_name}" "${v5_name}" >/dev/null 2>&1 || true
+	docker volume rm "${vol_data}" "${vol_etc_overlay}" \
+		"${vol_v5_data}" "${vol_v5_etc_overlay}" >/dev/null 2>&1 || true
 	rm -rf "${work}"
 	exit "${status}"
 }
@@ -248,19 +252,55 @@ assert_firmware_overlay_contract() {
 	echo "firmware overlay preserves custom systemd units in ${image}"
 }
 
+# The Go package runs a supervisor that owns the proxy, so the unit's main
+# process is udm-iptv. An installer that only recognises the proxy there
+# reports a failed install over an upgrade that worked.
+assert_v5_upgrade_reports_success() {
+	local name=$1
+	local installed
+	local output
+	local status=0
+
+	output=$(docker exec -e DEBIAN_FRONTEND=noninteractive "${name}" \
+		udm-iptv upgrade --prerelease 2>&1) || status=$?
+	echo "${output}"
+	if ((status != 0)) \
+		|| grep -Fq 'the service is not healthy' <<<"${output}" \
+		|| ! grep -Fq 'Installation successful' <<<"${output}"; then
+		report_error "upgrading to the v5 prerelease reported a failure in ${name}"
+		return 1
+	fi
+
+	installed=$(docker exec "${name}" dpkg-query -W -f='${Version}' udm-iptv)
+	case "${installed}" in
+		5.*) ;;
+		*)
+			report_error "expected a 5.x package in ${name}, found ${installed}"
+			return 1
+			;;
+	esac
+	if ! docker exec "${name}" test -e /usr/share/udm-iptv/go-package; then
+		report_error "the 5.x package in ${name} does not mark itself as the Go package"
+		return 1
+	fi
+	echo "upgraded to udm-iptv ${installed} without a reported failure"
+}
+
 boot() {
 	local name=$1
 	local image=$2
 	local network=${3:-bridge}
 	local lock_seconds=${4:-}
+	local data_volume=${5:-${vol_data}}
+	local etc_volume=${6:-${vol_etc_overlay}}
 	docker rm -f "${name}" >/dev/null 2>&1 || true
 	docker run -d --name "${name}" --platform linux/arm64 --privileged --cgroupns=host \
 		--network "${network}" \
 		--stop-signal SIGRTMIN+3 \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 		--tmpfs /run:exec --tmpfs /run/lock --tmpfs /tmp:exec \
-		-v "${vol_data}:/data" \
-		-v "${vol_etc_overlay}:/var/lib/udm-iptv-test/etc-overlay" \
+		-v "${data_volume}:/data" \
+		-v "${etc_volume}:/var/lib/udm-iptv-test/etc-overlay" \
 		-v "${deb}:/tmp/udm-iptv.deb:ro" \
 		-v "${old_deb}:/tmp/udm-iptv-old.deb:ro" \
 		-v "${repo}/install.sh:/tmp/install.sh:ro" \
@@ -701,4 +741,20 @@ wait_systemd "${to_name}"
 assert_removed "${to_name}"
 docker exec "${to_name}" test ! -e /data/udm-iptv
 echo "purged package stayed removed after reboot"
+group_end
+
+group_begin "Upgrade to the current v5 prerelease"
+docker volume create "${vol_v5_data}" >/dev/null
+docker volume create "${vol_v5_etc_overlay}" >/dev/null
+boot "${v5_name}" "${from_image}" bridge "" "${vol_v5_data}" "${vol_v5_etc_overlay}"
+wait_systemd "${v5_name}"
+docker exec \
+	-e DEBIAN_FRONTEND=noninteractive \
+	-e UDM_IPTV_PACKAGE=/tmp/udm-iptv.deb \
+	"${v5_name}" \
+	sh /tmp/install.sh
+assert_version "${v5_name}" "${current_version}"
+assert_service_runtime_boundary "${v5_name}"
+assert_v5_upgrade_reports_success "${v5_name}"
+docker stop "${v5_name}"
 group_end
