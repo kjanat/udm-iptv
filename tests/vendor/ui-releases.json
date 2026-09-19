@@ -1,368 +1,512 @@
 {
-	"data": {
-		"releases": {
-			"items": [
-				{
-					"id": "900a40e2-7d12-4645-80f2-e060a72693c4",
-					"version": "11.0.3",
-					"stage": "GA",
-					"slug": "UniFi-Android-11-0-3"
-				},
-				{
-					"id": "a954058e-f094-4204-936f-44a1caa7b103",
-					"version": "6.0.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Cloud-Gateways-6-0-9"
-				},
-				{
-					"id": "15cf3927-615a-450d-8e91-20e0a4284a97",
-					"version": "6.0.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Wall-6-0-9"
-				},
-				{
-					"id": "577c3c3c-f0d8-4dce-8fb9-637033acc8b4",
-					"version": "6.0.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Routers-6-0-9"
-				},
-				{
-					"id": "fe8a8b03-c117-419c-bad1-e23e7331492c",
-					"version": "6.0.9",
-					"stage": "T",
-					"slug": "UniFi-OS-Enterprise-Network-Attached-Storage-6-0-9"
-				},
-				{
-					"id": "169f2e1d-78a5-43bf-ae04-7fb318fd8d6f",
-					"version": "6.0.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Network-Attached-Storage-6-0-9"
-				},
-				{
-					"id": "10883000-5cdc-481d-ad23-2b8e0f324e32",
-					"version": "6.0.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Network-Video-Recorders-6-0-9"
-				},
-				{
-					"id": "8f0aa0d4-4e4a-427a-8a01-681a086968f3",
-					"version": "6.0.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Enterprise-Network-Video-Recorders-6-0-9"
-				},
-				{
-					"id": "28d0a7b3-5c1e-477c-95f2-aefa3077853b",
-					"version": "6.0.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Cloud-Keys-6-0-9"
-				},
-				{
-					"id": "09e58c09-cadd-445a-81ba-db232e6703db",
-					"version": "4.0.21",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-4-0-21"
-				},
-				{
-					"id": "65972647-c61f-4a5c-a43b-734c8280443a",
-					"version": "3.8.3",
-					"stage": "GA",
-					"slug": "UniFi-Protect-Android-3-8-3"
-				},
-				{
-					"id": "3035a218-8d88-41e6-952f-f0fddf418452",
-					"version": "10.38.1",
-					"stage": "GA",
-					"slug": "UniFi-iOS-10-38-1"
-				},
-				{
-					"id": "2142a5ce-327f-4397-889f-ae88d573005c",
-					"version": "10.38.1 (1)",
-					"stage": "RC",
-					"slug": "UniFi-iOS-10-38-1-1"
-				},
-				{
-					"id": "197f004d-9b75-4d0d-86f2-4376090d7ae4",
-					"version": "5.2.10",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-7-5-2-10"
-				},
-				{
-					"id": "911768a1-a20c-40e6-a9fa-3139ea683006",
-					"version": "4.0.21",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-4-0-21"
-				},
-				{
-					"id": "c36ce07d-2375-4270-9203-38a75deb3607",
-					"version": "5.2.10",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-7-5-2-10"
-				},
-				{
-					"id": "995b3657-28c5-4bf8-934f-bcf5804fc199",
-					"version": "11.0.1",
-					"stage": "GA",
-					"slug": "UniFi-Android-11-0-1"
-				},
-				{
-					"id": "e2e08387-156f-41f6-9885-fc7cecadae5a",
-					"version": "11.0.0 (8)",
-					"stage": "T",
-					"slug": "UniFi-iOS-11-0-0-8"
-				},
-				{
-					"id": "4a47263f-5f34-4da9-8a27-7744af24f1d0",
-					"version": "6.0.7",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Routers-6-0-7"
-				},
-				{
-					"id": "509f4de9-8fe4-4718-abad-1bb6990dedcc",
-					"version": "5.1.42",
-					"stage": "GA",
-					"slug": "UniFi-OS-Server-5-1-42"
-				},
-				{
-					"id": "6cca7fd6-4a64-4fd0-acf8-de57c55f0823",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Enterprise-Network-Attached-Storage-5-1-33"
-				},
-				{
-					"id": "bdb30bcf-c8b9-4713-8fc7-2405d9de1f8d",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Machines-5-1-33"
-				},
-				{
-					"id": "9d984e61-4337-4376-a080-d3cf8527b278",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Routers-5-1-33"
-				},
-				{
-					"id": "18be6e23-2e17-439d-a298-dd5e2f14583b",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Wall-5-1-33"
-				},
-				{
-					"id": "404a58e5-f0a1-43e5-b86b-9ae16976db12",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Cloud-Gateways-5-1-33"
-				},
-				{
-					"id": "32df76e9-8873-4580-9243-e0a2c2e0ddd6",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Enterprise-Firewalls-5-1-33"
-				},
-				{
-					"id": "687f77f2-257f-46ce-be7e-fbdaa125aa97",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Network-Attached-Storage-5-1-33"
-				},
-				{
-					"id": "7d77aa1e-1b61-487e-bf4e-4ce25a5519f5",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Cloud-Keys-5-1-33"
-				},
-				{
-					"id": "72d781f3-47a2-48a4-9a57-7237dfdc55f3",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Enterprise-Network-Video-Recorders-5-1-33"
-				},
-				{
-					"id": "a615bd5f-a16a-40ea-80d7-903e4b46ef6d",
-					"version": "5.1.33",
-					"stage": "GA",
-					"slug": "UniFi-OS-Network-Video-Recorders-5-1-33"
-				},
-				{
-					"id": "be084ca2-65b5-41c9-a68b-d87a34e99926",
-					"version": "4.0.20",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-4-0-20"
-				},
-				{
-					"id": "886c9d26-2bef-4422-9d86-a79a09e8d801",
-					"version": "6.0.8",
-					"stage": "GA",
-					"slug": "UniFi-OS-Enterprise-Network-Video-Recorders-6-0-8"
-				},
-				{
-					"id": "3fc7aa1d-95a0-47fa-ba4e-9e180e7ed830",
-					"version": "6.0.8",
-					"stage": "GA",
-					"slug": "UniFi-OS-Network-Video-Recorders-6-0-8"
-				},
-				{
-					"id": "5d4d8715-5185-4708-ba59-f455df74a7b1",
-					"version": "4.0.19",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-4-0-19"
-				},
-				{
-					"id": "e641e902-1e76-4f47-b61b-9e3b8d88bab8",
-					"version": "6.0.7",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Wall-6-0-7"
-				},
-				{
-					"id": "439a4756-3fa0-4529-ba89-719ae900c752",
-					"version": "6.0.7",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Machines-6-0-7"
-				},
-				{
-					"id": "acd82908-35aa-4c31-95c2-17cf7f6846b7",
-					"version": "6.0.7",
-					"stage": "GA",
-					"slug": "UniFi-OS-Cloud-Gateways-6-0-7"
-				},
-				{
-					"id": "59a211f7-233a-437f-a019-8576c87f2274",
-					"version": "6.0.7",
-					"stage": "GA",
-					"slug": "UniFi-OS-Enterprise-Firewalls-6-0-7"
-				},
-				{
-					"id": "bba100b1-5976-4f1b-9520-8b9145284ef1",
-					"version": "6.0.7",
-					"stage": "T",
-					"slug": "UniFi-OS-Enterprise-Network-Attached-Storage-6-0-7"
-				},
-				{
-					"id": "f960f831-cde0-4d86-add0-1a36b686bc7f",
-					"version": "6.0.7",
-					"stage": "GA",
-					"slug": "UniFi-OS-Network-Attached-Storage-6-0-7"
-				},
-				{
-					"id": "07e0318b-287e-4819-bcf1-2bb27f4c92e0",
-					"version": "6.0.7",
-					"stage": "GA",
-					"slug": "UniFi-OS-Cloud-Keys-6-0-7"
-				},
-				{
-					"id": "a489d2b1-7b8c-4ab6-8abb-6ecbabbe7c17",
-					"version": "6.0.7",
-					"stage": "GA",
-					"slug": "UniFi-OS-Network-Video-Recorders-6-0-7"
-				},
-				{
-					"id": "21df6909-8bf0-4a48-acaf-0bad330489d9",
-					"version": "4.0.19",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-4-0-19"
-				},
-				{
-					"id": "ee35c29a-7310-4284-b9fa-7e5cd6db1bfe",
-					"version": "5.2.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-7-5-2-9"
-				},
-				{
-					"id": "de89bc30-bd96-4953-9d5c-d64069e0b1d8",
-					"version": "4.0.18",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-4-0-18"
-				},
-				{
-					"id": "b65fa5e0-5797-4efe-89d6-666b391973ed",
-					"version": "5.1.40",
-					"stage": "GA",
-					"slug": "UniFi-OS-Server-5-1-40"
-				},
-				{
-					"id": "4a787637-2e7b-4701-ab21-32e28dfa537c",
-					"version": "3.8.2",
-					"stage": "GA",
-					"slug": "UniFi-Protect-Android-3-8-2"
-				},
-				{
-					"id": "10552da9-464d-45ec-8024-052fbeff8704",
-					"version": "3.8.2 (655)",
-					"stage": "RC",
-					"slug": "UniFi-Protect-Android-3-8-2-655"
-				},
-				{
-					"id": "bc30e845-4e3a-4501-823e-dfa7a009d092",
-					"version": "5.1.40",
-					"stage": "T",
-					"slug": "UniFi-OS-Server-5-1-40"
-				},
-				{
-					"id": "a8423cd5-b4c5-4929-9dc4-62788a662406",
-					"version": "4.0.18",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-4-0-18"
-				},
-				{
-					"id": "ab1a372c-9e4d-4f84-bad1-76cf83f19403",
-					"version": "3.10.0 (1074)",
-					"stage": "RC",
-					"slug": "UniFi-Protect-iOS-3-10-0-1074"
-				},
-				{
-					"id": "fc4a3488-7c43-4628-8bab-f715e96dbfc9",
-					"version": "067",
-					"stage": "GA",
-					"slug": "Security-Advisory-Bulletin-067"
-				},
-				{
-					"id": "ac8f3320-6ca1-4770-ae06-50074050e4b4",
-					"version": "5.1.32",
-					"stage": "GA",
-					"slug": "UniFi-OS-Network-Attached-Storage-5-1-32"
-				},
-				{
-					"id": "03b70993-400b-4306-ab63-7bb589dceda3",
-					"version": "5.1.31",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-7-5-1-31"
-				},
-				{
-					"id": "1c1d113a-77f3-40cf-a597-0f83803b01d4",
-					"version": "5.2.9",
-					"stage": "GA",
-					"slug": "UniFi-OS-Express-7-5-2-9"
-				},
-				{
-					"id": "ba488ae0-9e0e-4937-aa11-295fb67010fc",
-					"version": "5.1.31",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Wall-5-1-31"
-				},
-				{
-					"id": "c922a942-a986-4151-9c39-45fa687be497",
-					"version": "5.1.31",
-					"stage": "GA",
-					"slug": "UniFi-OS-Cloud-Gateways-5-1-31"
-				},
-				{
-					"id": "0000f8df-12e4-4b2d-9ea7-6a57bd9e7790",
-					"version": "5.1.31",
-					"stage": "GA",
-					"slug": "UniFi-OS-Enterprise-Fortress-Gateway-5-1-31"
-				},
-				{
-					"id": "ae1111a4-f32d-459b-9ede-169e50352b1d",
-					"version": "5.1.31",
-					"stage": "GA",
-					"slug": "UniFi-OS-Dream-Routers-5-1-31"
-				},
-				{
-					"id": "70df1c30-3a3a-4304-9c9b-5ea64ad5f006",
-					"version": "5.1.31",
-					"stage": "GA",
-					"slug": "UniFi-OS-Enterprise-Firewall-Core-5-1-31"
-				}
-			]
+	"Security-Advisory-Bulletin": [
+		{
+			"version": "067",
+			"stage": "GA",
+			"id": "fc4a3488-7c43-4628-8bab-f715e96dbfc9"
 		}
-	}
+	],
+	"UniFi-Android": [
+		{
+			"version": "11.0.3",
+			"stage": "GA",
+			"id": "900a40e2-7d12-4645-80f2-e060a72693c4"
+		},
+		{
+			"version": "11.0.1",
+			"stage": "GA",
+			"id": "995b3657-28c5-4bf8-934f-bcf5804fc199"
+		}
+	],
+	"UniFi-OS-Cloud-Gateways": [
+		{
+			"version": "6.0.9",
+			"stage": "GA",
+			"id": "a954058e-f094-4204-936f-44a1caa7b103"
+		},
+		{
+			"version": "6.0.7",
+			"stage": "GA",
+			"id": "acd82908-35aa-4c31-95c2-17cf7f6846b7"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "404a58e5-f0a1-43e5-b86b-9ae16976db12"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "c922a942-a986-4151-9c39-45fa687be497"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "45436af9-16d5-4d17-9dae-fe80be010ad2"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "fd648eb2-3556-46fb-9b8b-89567c5636bd"
+		}
+	],
+	"UniFi-OS-Cloud-Keys": [
+		{
+			"version": "6.0.9",
+			"stage": "GA",
+			"id": "28d0a7b3-5c1e-477c-95f2-aefa3077853b"
+		},
+		{
+			"version": "6.0.7",
+			"stage": "GA",
+			"id": "07e0318b-287e-4819-bcf1-2bb27f4c92e0"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "7d77aa1e-1b61-487e-bf4e-4ce25a5519f5"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "799661f9-444a-4870-80be-ea8185aec47c"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "88c3f1ff-64f7-44bb-b699-ebb32e5c173b"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "f022d1f8-a789-4161-b3de-fef0760f89fd"
+		}
+	],
+	"UniFi-OS-Dream-Machines": [
+		{
+			"version": "6.0.7",
+			"stage": "GA",
+			"id": "439a4756-3fa0-4529-ba89-719ae900c752"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "bdb30bcf-c8b9-4713-8fc7-2405d9de1f8d"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "43fabe07-77c5-42e9-ba67-2b87543e800a"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "ef80a242-8e01-446e-a678-41cb122cbb1f"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "71e4d598-7895-4da5-8359-69ea6dd93577"
+		},
+		{
+			"version": "5.1.29",
+			"stage": "GA",
+			"id": "81b32c89-a81c-4412-94f2-7275400874b1"
+		}
+	],
+	"UniFi-OS-Dream-Routers": [
+		{
+			"version": "6.0.9",
+			"stage": "GA",
+			"id": "577c3c3c-f0d8-4dce-8fb9-637033acc8b4"
+		},
+		{
+			"version": "6.0.7",
+			"stage": "GA",
+			"id": "4a47263f-5f34-4da9-8a27-7744af24f1d0"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "9d984e61-4337-4376-a080-d3cf8527b278"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "ae1111a4-f32d-459b-9ede-169e50352b1d"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "01636c9c-aa0e-4e99-a71c-dd8f43ba8c89"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "fdf5e02a-f140-4aba-8058-c20474f198bc"
+		},
+		{
+			"version": "5.1.29",
+			"stage": "GA",
+			"id": "febfc58a-34ea-4a65-a0c8-e261ed78786e"
+		}
+	],
+	"UniFi-OS-Dream-Wall": [
+		{
+			"version": "6.0.9",
+			"stage": "GA",
+			"id": "15cf3927-615a-450d-8e91-20e0a4284a97"
+		},
+		{
+			"version": "6.0.7",
+			"stage": "GA",
+			"id": "e641e902-1e76-4f47-b61b-9e3b8d88bab8"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "18be6e23-2e17-439d-a298-dd5e2f14583b"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "ba488ae0-9e0e-4937-aa11-295fb67010fc"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "0596c07e-a3b5-4104-95bd-6a8a7cff783c"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "221a25f8-54c7-43d3-820e-9ef919f8028d"
+		}
+	],
+	"UniFi-OS-Enterprise-Firewall-Core": [
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "70df1c30-3a3a-4304-9c9b-5ea64ad5f006"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "T",
+			"id": "95b8c242-d3b1-4a82-a187-5fbc1809d776"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "08a9e7aa-0682-4b6d-a5d4-128a2c2fd1f3"
+		},
+		{
+			"version": "5.1.29",
+			"stage": "T",
+			"id": "15a950b3-8f59-496c-ad61-1a93c84b8f85"
+		}
+	],
+	"UniFi-OS-Enterprise-Firewalls": [
+		{
+			"version": "6.0.7",
+			"stage": "GA",
+			"id": "59a211f7-233a-437f-a019-8576c87f2274"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "32df76e9-8873-4580-9243-e0a2c2e0ddd6"
+		}
+	],
+	"UniFi-OS-Enterprise-Fortress-Gateway": [
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "0000f8df-12e4-4b2d-9ea7-6a57bd9e7790"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "6b6bfd6a-a522-4110-95db-3aee9cc4f74e"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "247521e1-17a4-4c26-b350-da1d9c2f2097"
+		},
+		{
+			"version": "5.1.29",
+			"stage": "GA",
+			"id": "f413c634-37a8-4e6d-a307-337a98a22eb6"
+		}
+	],
+	"UniFi-OS-Enterprise-Network-Attached-Storage": [
+		{
+			"version": "6.0.9",
+			"stage": "T",
+			"id": "fe8a8b03-c117-419c-bad1-e23e7331492c"
+		},
+		{
+			"version": "6.0.7",
+			"stage": "T",
+			"id": "bba100b1-5976-4f1b-9520-8b9145284ef1"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "6cca7fd6-4a64-4fd0-acf8-de57c55f0823"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "13a3cb28-6736-4eab-82cc-fdb222e259ae"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "T",
+			"id": "b6bf029d-1de0-4a85-b595-69a1486f7541"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "309c2eab-d080-4482-afcf-b8f81af91d14"
+		}
+	],
+	"UniFi-OS-Enterprise-Network-Video-Recorders": [
+		{
+			"version": "6.0.9",
+			"stage": "GA",
+			"id": "8f0aa0d4-4e4a-427a-8a01-681a086968f3"
+		},
+		{
+			"version": "6.0.8",
+			"stage": "GA",
+			"id": "886c9d26-2bef-4422-9d86-a79a09e8d801"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "72d781f3-47a2-48a4-9a57-7237dfdc55f3"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "d0dc2173-557d-486f-9734-7da0ff55ab34"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "980f7215-a4ae-4fc6-8a4d-e30b62694291"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "6c46ffbf-d46d-436a-93fb-96eea179edb2"
+		},
+		{
+			"version": "5.1.29",
+			"stage": "GA",
+			"id": "ba394163-abed-4b9c-abf3-0a62f5f663b4"
+		}
+	],
+	"UniFi-OS-Express": [
+		{
+			"version": "4.0.21",
+			"stage": "GA",
+			"id": "09e58c09-cadd-445a-81ba-db232e6703db"
+		},
+		{
+			"version": "4.0.20",
+			"stage": "GA",
+			"id": "be084ca2-65b5-41c9-a68b-d87a34e99926"
+		},
+		{
+			"version": "4.0.19",
+			"stage": "GA",
+			"id": "5d4d8715-5185-4708-ba59-f455df74a7b1"
+		},
+		{
+			"version": "4.0.18",
+			"stage": "GA",
+			"id": "de89bc30-bd96-4953-9d5c-d64069e0b1d8"
+		},
+		{
+			"version": "4.0.17",
+			"stage": "GA",
+			"id": "89813804-9deb-4cd9-a5dc-f36f6c7514b4"
+		}
+	],
+	"UniFi-OS-Express-7": [
+		{
+			"version": "5.2.10",
+			"stage": "GA",
+			"id": "197f004d-9b75-4d0d-86f2-4376090d7ae4"
+		},
+		{
+			"version": "5.2.9",
+			"stage": "GA",
+			"id": "ee35c29a-7310-4284-b9fa-7e5cd6db1bfe"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "03b70993-400b-4306-ab63-7bb589dceda3"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "2c0980f1-de0e-4e54-b3f8-ba972dbaf973"
+		}
+	],
+	"UniFi-OS-Network-Attached-Storage": [
+		{
+			"version": "6.0.9",
+			"stage": "GA",
+			"id": "169f2e1d-78a5-43bf-ae04-7fb318fd8d6f"
+		},
+		{
+			"version": "6.0.7",
+			"stage": "GA",
+			"id": "f960f831-cde0-4d86-add0-1a36b686bc7f"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "687f77f2-257f-46ce-be7e-fbdaa125aa97"
+		},
+		{
+			"version": "5.1.32",
+			"stage": "GA",
+			"id": "ac8f3320-6ca1-4770-ae06-50074050e4b4"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "RC",
+			"id": "29404fda-53d2-4aac-bea7-b786e73b3955"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "e5ecd34d-143a-4da2-96df-e75f4985c909"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "5d15dbfd-22b4-475c-bc00-011c19b8c20b"
+		}
+	],
+	"UniFi-OS-Network-Video-Recorders": [
+		{
+			"version": "6.0.9",
+			"stage": "GA",
+			"id": "10883000-5cdc-481d-ad23-2b8e0f324e32"
+		},
+		{
+			"version": "6.0.8",
+			"stage": "GA",
+			"id": "3fc7aa1d-95a0-47fa-ba4e-9e180e7ed830"
+		},
+		{
+			"version": "6.0.7",
+			"stage": "GA",
+			"id": "a489d2b1-7b8c-4ab6-8abb-6ecbabbe7c17"
+		},
+		{
+			"version": "5.1.33",
+			"stage": "GA",
+			"id": "a615bd5f-a16a-40ea-80d7-903e4b46ef6d"
+		},
+		{
+			"version": "5.1.31",
+			"stage": "GA",
+			"id": "7a703038-6610-4ba7-a0df-9e65cc2b2bd3"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "RC",
+			"id": "eee86169-a1d2-430d-9605-5a41e324461f"
+		},
+		{
+			"version": "5.1.30",
+			"stage": "GA",
+			"id": "a6d48446-cb23-4b52-bd20-34a4638e369e"
+		},
+		{
+			"version": "5.1.29",
+			"stage": "GA",
+			"id": "46044a02-3096-4af5-8985-37ec39e3f9be"
+		}
+	],
+	"UniFi-OS-Server": [
+		{
+			"version": "5.1.42",
+			"stage": "GA",
+			"id": "509f4de9-8fe4-4718-abad-1bb6990dedcc"
+		},
+		{
+			"version": "5.1.40",
+			"stage": "T",
+			"id": "bc30e845-4e3a-4501-823e-dfa7a009d092"
+		},
+		{
+			"version": "5.1.40",
+			"stage": "GA",
+			"id": "b65fa5e0-5797-4efe-89d6-666b391973ed"
+		},
+		{
+			"version": "5.1.37",
+			"stage": "T",
+			"id": "61c2bff7-a9bf-4248-abe1-d4383cc9d041"
+		},
+		{
+			"version": "5.1.37",
+			"stage": "GA",
+			"id": "ca9003ca-2c3f-42e6-9a1c-0a4f8edc0854"
+		},
+		{
+			"version": "5.1.34",
+			"stage": "T",
+			"id": "c729736d-385c-45ef-93a7-f8634567c7bd"
+		}
+	],
+	"UniFi-Protect-Android": [
+		{
+			"version": "3.8.3",
+			"stage": "GA",
+			"id": "65972647-c61f-4a5c-a43b-734c8280443a"
+		},
+		{
+			"version": "3.8.2 (655)",
+			"stage": "RC",
+			"id": "10552da9-464d-45ec-8024-052fbeff8704"
+		},
+		{
+			"version": "3.8.2",
+			"stage": "GA",
+			"id": "4a787637-2e7b-4701-ab21-32e28dfa537c"
+		}
+	],
+	"UniFi-Protect-iOS": [
+		{
+			"version": "3.10.0 (1074)",
+			"stage": "RC",
+			"id": "ab1a372c-9e4d-4f84-bad1-76cf83f19403"
+		}
+	],
+	"UniFi-iOS": [
+		{
+			"version": "11.0.0 (8)",
+			"stage": "T",
+			"id": "e2e08387-156f-41f6-9885-fc7cecadae5a"
+		},
+		{
+			"version": "10.38.1 (1)",
+			"stage": "RC",
+			"id": "2142a5ce-327f-4397-889f-ae88d573005c"
+		},
+		{
+			"version": "10.38.1",
+			"stage": "GA",
+			"id": "3035a218-8d88-41e6-952f-f0fddf418452"
+		}
+	]
 }

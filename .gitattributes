@@ -1,7 +1,8 @@
-.github/actions/**/*.bash linguist-language=Shell -linguist-vendored
-completions/udm-iptv linguist-language=Shell
-debian/config linguist-language=Shell -linguist-vendored
-debian/postinst linguist-language=Shell -linguist-vendored
-debian/postrm linguist-language=Shell -linguist-vendored
-debian/rules linguist-language=Makefile -linguist-vendored
-tests/vendor/**/*.json -diff linguist-vendored
+**/*.schema.json          diff                             -linguist-vendored
+.github/actions/**/*.bash       linguist-language=Shell    -linguist-vendored
+completions/udm-iptv            linguist-language=Shell
+debian/config                   linguist-language=Shell    -linguist-vendored
+debian/postinst                 linguist-language=Shell    -linguist-vendored
+debian/postrm                   linguist-language=Shell    -linguist-vendored
+debian/rules                    linguist-language=Makefile -linguist-vendored
+tests/vendor/**/*.json   -diff                              linguist-vendored

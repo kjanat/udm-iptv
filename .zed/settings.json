@@ -41,6 +41,18 @@
 					"functionTypeParameters": true
 				}
 			}
+		},
+		"json-language-server": {
+			"settings": {
+				"json": {
+					"schemas": [
+						{
+							"fileMatch": ["ui-releases.json"],
+							"url": "./tests/vendor/ui-releases.schema.json"
+						}
+					]
+				}
+			}
 		}
 	}
 }
