@@ -84,3 +84,16 @@ func TestStyledWriterStripsColourWithoutATerminal(t *testing.T) {
 		t.Fatalf("piped output = %q", got)
 	}
 }
+
+// bubbletea drives the terminal file itself; a styling wrapper in between
+// leaves it drawing nothing.
+func TestTerminalUnwrapsTheStyledWriter(t *testing.T) {
+	t.Parallel()
+	var buffer bytes.Buffer
+	if got := Terminal(Styled(&buffer)); got != &buffer {
+		t.Fatalf("Terminal returned %T", got)
+	}
+	if got := Terminal(&buffer); got != &buffer {
+		t.Fatalf("a plain writer came back as %T", got)
+	}
+}
