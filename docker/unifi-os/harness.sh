@@ -21,6 +21,16 @@ mount -t overlay overlay \
 
 printf 'APT::Get::Assume-Yes "true";\n' >/etc/apt/apt.conf.d/99yes
 
+# The extracted firmware root ships no machine-id, and dbus-daemon exits when it
+# cannot read one.
+if [ ! -s /etc/machine-id ]; then
+	if command -v systemd-machine-id-setup >/dev/null 2>&1; then
+		systemd-machine-id-setup
+	else
+		tr -d - </proc/sys/kernel/random/uuid >/etc/machine-id
+	fi
+fi
+
 if unifi_os=$(command -v unifi-os); then
 	mv "${unifi_os}" /usr/sbin/unifi-os.real
 fi
