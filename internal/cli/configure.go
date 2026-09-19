@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/device"
+	"github.com/kjanat/udm-iptv/internal/filemode"
 	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/ui"
 )
@@ -400,17 +403,8 @@ func (application *Application) saveConfiguration(command *cobra.Command, value 
 		return fmt.Errorf("start the configuration change: %w", err)
 	}
 	defer func() { result = errors.Join(result, release()) }()
-	installed := installer.Installed(application.StateDir)
-	if installed {
-		if err := installer.PreserveProxy(application.StateDir, value.Proxy.Program); err != nil {
-			return fmt.Errorf("snapshot the proxy into %s: %w", application.StateDir, err)
-		}
-	}
-	if err := config.Save(application.ConfigPath, value); err != nil {
-		return fmt.Errorf("save configuration to %s: %w", application.ConfigPath, err)
-	}
-	application.reportConfig = &value
-	if err := writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath); err != nil {
+	installed, previous, err := application.persistConfiguration(value)
+	if err != nil {
 		return err
 	}
 	if !installed {
@@ -418,6 +412,73 @@ func (application *Application) saveConfiguration(command *cobra.Command, value 
 	}
 	err = application.restart(command.Context(), true)
 	application.reportApplied = err == nil
+	if err == nil || previous == nil {
+		return err
+	}
 
-	return err
+	return errors.Join(err, application.restoreConfiguration(command.Context(), previous))
+}
+
+// persistConfiguration writes value and returns whether the service is
+// installed and the file it replaced, nil when there was none.
+func (application *Application) persistConfiguration(value config.Config) (bool, []byte, error) {
+	installed := installer.Installed(application.StateDir)
+	if installed {
+		if err := installer.PreserveProxy(application.StateDir, value.Proxy.Program); err != nil {
+			return false, nil, fmt.Errorf("snapshot the proxy into %s: %w", application.StateDir, err)
+		}
+	}
+	previous, err := os.ReadFile(application.ConfigPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, nil, fmt.Errorf("read the configuration being replaced: %w", err)
+	}
+	if err := config.Save(application.ConfigPath, value); err != nil {
+		return false, nil, fmt.Errorf("save configuration to %s: %w", application.ConfigPath, err)
+	}
+	application.reportConfig = &value
+	if err := writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath); err != nil {
+		return false, nil, err
+	}
+
+	return installed, previous, nil
+}
+
+// rejectedSuffix names the copy a configuration keeps when the service
+// would not run with it.
+const rejectedSuffix = ".rejected"
+
+// restoreConfiguration puts the configuration the service was running back
+// after a change it would not start with, keeps the rejected one beside it,
+// and restarts the service on the restored one.
+func (application *Application) restoreConfiguration(ctx context.Context, previous []byte) error {
+	rejected, err := rollbackConfiguration(application.ConfigPath, previous)
+	if err != nil {
+		return err
+	}
+	if err := writef(application.Out, "The service did not come up with the new configuration. The previous configuration is back at %s; the rejected one is kept at %s.\n", application.ConfigPath, rejected); err != nil {
+		return err
+	}
+	if err := application.restart(ctx, true); err != nil {
+		return fmt.Errorf("restart on the previous configuration: %w", err)
+	}
+
+	return nil
+}
+
+// rollbackConfiguration moves the saved file to its rejected copy and writes
+// previous in its place. It returns the rejected copy's path.
+func rollbackConfiguration(path string, previous []byte) (string, error) {
+	rejected := path + rejectedSuffix
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read the rejected configuration: %w", err)
+	}
+	if err := atomicfile.Write(rejected, current, filemode.PrivateFile); err != nil {
+		return "", fmt.Errorf("keep the rejected configuration at %s: %w", rejected, err)
+	}
+	if err := atomicfile.Write(path, previous, filemode.PrivateFile); err != nil {
+		return "", fmt.Errorf("restore the previous configuration to %s: %w", path, err)
+	}
+
+	return rejected, nil
 }

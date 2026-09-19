@@ -106,7 +106,7 @@ func ownedStateFiles(root *os.Root, configPath string, keepConfig bool) []string
 	if keepConfig {
 		return files
 	}
-	files = append(files, "config.json", "legacy.conf", "udm-iptv.conf", "udm-iptv.deb", "udm-iptv-restore", "debconf.preseed", "telemetry-research.json", "telemetry-research.lock")
+	files = append(files, "config.json", "config.json.rejected", "legacy.conf", "udm-iptv.conf", "udm-iptv.deb", "udm-iptv-restore", "debconf.preseed", "telemetry-research.json", "telemetry-research.lock")
 	for _, kind := range []string{"errors", "logs", "metrics", "traces", "presets", "network"} {
 		files = append(files, "telemetry-"+kind+".rate")
 	}
