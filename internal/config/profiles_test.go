@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -215,5 +216,26 @@ func TestProviderByPointerNameMatchesLabelBoundaries(t *testing.T) {
 				t.Errorf("suffix %s of %s resolves to %s", suffix, provider.ID, owner.ID)
 			}
 		}
+	}
+}
+
+// A provider profile carries no opinion about which ports a console uses.
+func TestApplyKeepsTheConsoleInterfaces(t *testing.T) {
+	t.Parallel()
+	catalog := DefaultCatalog()
+	current := DefaultKPN()
+	current.Profile = ProfileCustom
+	current.WAN.Interface = "eth9"
+	current.LAN.Interfaces = []string{"br20", "br30"}
+	applied, err := catalog.Apply("tweak", current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Profile != "tweak" || applied.WAN.Interface != "eth9" || !slices.Equal(applied.LAN.Interfaces, []string{"br20", "br30"}) {
+		t.Fatalf("applied %#v", applied)
+	}
+	tweak, _ := catalog.Profile("tweak")
+	if applied.WAN.VLAN != tweak.Config.WAN.VLAN {
+		t.Fatalf("VLAN %d, want the profile's %d", applied.WAN.VLAN, tweak.Config.WAN.VLAN)
 	}
 }

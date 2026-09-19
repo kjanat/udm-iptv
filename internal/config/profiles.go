@@ -357,7 +357,8 @@ func KeepsSettings(id string) bool {
 }
 
 // Apply returns current re-labelled for "custom" or "legacy", or a fresh copy
-// of the named profile's settings that keeps current's telemetry choice.
+// of the named profile's settings that keeps current's telemetry choice and
+// interface names.
 func (catalog Catalog) Apply(id string, current Config) (Config, error) {
 	if KeepsSettings(id) {
 		current.Profile = id
@@ -370,6 +371,12 @@ func (catalog Catalog) Apply(id string, current Config) (Config, error) {
 	}
 	value := profile.Config.Clone()
 	value.Telemetry = current.Telemetry
+	if current.WAN.Interface != "" {
+		value.WAN.Interface = current.WAN.Interface
+	}
+	if len(current.LAN.Interfaces) > 0 {
+		value.LAN.Interfaces = slices.Clone(current.LAN.Interfaces)
+	}
 
 	return value, nil
 }

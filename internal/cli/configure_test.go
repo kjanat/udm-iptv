@@ -46,11 +46,10 @@ func seedBR0(value config.Config) config.Config {
 	return value
 }
 
-// Relabelling a saved configuration as custom keeps the interfaces it holds;
-// a provider profile is seeded with the detected ones.
-func TestConfigureSetCustomKeepsSavedInterfaces(t *testing.T) {
+// Switching profile keeps the interfaces a saved configuration holds.
+func TestConfigureSetKeepsSavedInterfaces(t *testing.T) {
 	t.Parallel()
-	for profile, want := range map[string][]string{config.ProfileCustom: {"br20", "br30"}, config.ProfileKPN: {"br0"}} {
+	for profile, want := range map[string][]string{config.ProfileCustom: {"br20", "br30"}, config.ProfileKPN: {"br20", "br30"}} {
 		directory := t.TempDir()
 		path := filepath.Join(directory, "config.json")
 		current := config.DefaultKPN()
