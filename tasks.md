@@ -131,7 +131,9 @@ Operator pages fetched 2026-09-19. Init7 pages are JavaScript-rendered (WebFetch
 - `log.zip` = `/var/log` (daemon.log, messages, kern.log, ppp0.log, wan-diag-*); `ppp.zip` = `/etc/ppp` with secrets; neither read yet
 - `Per_issue.txt`, `Samenvatting_feiten.md`, `preview1.md`: v4-era notes; `Alles_gevonden…`, `Stand_van_zaken.md`: unrelated (Zed)
 
-## Auto-discovery (todo.md implementation order)
+## Auto-discovery ([todo.md] implementation order)
+
+[todo.md]: todo.md
 
 - [ ] Step 1 observation collector: kernel side done, UDAPI side not
 - [x] Step 2 lease evidence from the hook
