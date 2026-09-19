@@ -102,16 +102,11 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 		return err
 	}
 	defer removeIgnoringError(proxyConfigPath)
-	proxy, err := application.proxyCommand(ctx, value)
+	process, stopProxy, err := application.launchProxy(ctx, value)
 	if err != nil {
 		return err
 	}
-	state := RuntimeState{StartedAt: time.Now().UTC(), Proxy: value.Proxy.Program, Target: network.Target(value)}
-	process, err := startProxy(proxy, runtimeStatePath, state)
-	if err != nil {
-		return fmt.Errorf("start %s: %w", value.Proxy.Program, err)
-	}
-	defer func() { result = errors.Join(result, process.stop()) }()
+	defer func() { result = errors.Join(result, stopProxy()) }()
 	defer removeIgnoringError(runtimeStatePath)
 
 	return application.supervise(ctx, supervised{
@@ -216,22 +211,47 @@ func writeProxyConfig(value config.Config) error {
 	return nil
 }
 
-func (application *Daemon) proxyCommand(ctx context.Context, value config.Config) (*exec.Cmd, error) {
+// launchProxy starts the multicast proxy and returns it with the function
+// that stops it and closes its output.
+func (application *Daemon) launchProxy(ctx context.Context, value config.Config) (*managedProcess, func() error, error) {
+	proxy, output, err := application.proxyCommand(ctx, value)
+	if err != nil {
+		return nil, nil, err
+	}
+	state := RuntimeState{StartedAt: time.Now().UTC(), Proxy: value.Proxy.Program, Target: network.Target(value)}
+	process, err := startProxy(proxy, runtimeStatePath, state)
+	if err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("start %s: %w", value.Proxy.Program, err), output.finish())
+	}
+	if err := output.started(); err != nil {
+		return nil, nil, errors.Join(err, process.stop(), output.finish())
+	}
+
+	return process, func() error { return errors.Join(process.stop(), output.finish()) }, nil
+}
+
+func (application *Daemon) proxyCommand(ctx context.Context, value config.Config) (*exec.Cmd, *processOutput, error) {
 	arguments := proxyArguments(value)
 	binary, err := exec.LookPath(value.Proxy.Program)
 	if err != nil {
 		binary, arguments, err = runtimebundle.Command(application.StateDir, value.Proxy.Program, arguments)
 		if err != nil {
-			return nil, fmt.Errorf("find %s: %w", value.Proxy.Program, err)
+			return nil, nil, fmt.Errorf("find %s: %w", value.Proxy.Program, err)
 		}
 	}
 	proxy := exec.CommandContext(ctx, binary, arguments...)
 	proxyLog := application.Monitor.LineWriter(ctx, "proxy")
-	proxy.Stdout, proxy.Stderr = io.MultiWriter(application.Out, proxyLog), io.MultiWriter(application.Err, proxyLog)
+	out := io.MultiWriter(application.Out, proxyLog)
+	proxy.Stderr = io.MultiWriter(application.Err, proxyLog)
+	output, err := attachTerminal(proxy, out)
+	if err != nil {
+		_, _ = fmt.Fprintf(application.Err, "%s output through a pipe: %v\n", value.Proxy.Program, err)
+		proxy.Stdout = out
+	}
 	proxy.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(proxy)
 
-	return proxy, nil
+	return proxy, output, nil
 }
 
 func proxyArguments(value config.Config) []string {
