@@ -5,14 +5,8 @@
 	"markdown": {
 		"emphasisKind": "asterisks",
 		"lineWidth": 100,
-		"textWrap": "maintain",
+		"textWrap": "never",
 		"codeBlock.useTabs": false,
-		"overrides": [
-			{
-				"files": ["**/README.md"],
-				"textWrap": "never"
-			}
-		]
 	},
 	"shfmt": {
 		"useTabs": true,
