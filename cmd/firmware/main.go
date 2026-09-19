@@ -42,16 +42,19 @@ const (
 	operationBuild = "build"
 )
 
+var errUnknownTrack = errors.New("unknown firmware track")
+
 func command() *cobra.Command {
 	root := &cobra.Command{Use: "firmware", Short: "Manage UniFi OS test images.", SilenceUsage: true, SilenceErrors: true}
 	var image, model, output string
 	root.PersistentFlags().StringVar(&image, "image", os.Getenv("IMAGE"), "Container repository.")
 	client := &http.Client{Timeout: catalogClientTimeout}
 	pipeline := firmware.Pipeline{Runner: firmware.Commands{Log: os.Stderr}, Client: client, Log: os.Stderr}
-	catalog := &cobra.Command{Use: "catalog", Short: "Discover stable firmware pairs.", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	configureTrack(root, &pipeline)
+	catalog := &cobra.Command{Use: "catalog", Short: "Discover firmware pairs on the selected track.", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, cancel := context.WithTimeout(cmd.Context(), catalogRequestTimeout)
 		defer cancel()
-		matrix, err := firmware.Discover(ctx, client, firmware.CatalogURL, image, model, time.Now())
+		matrix, err := firmware.Discover(ctx, client, firmware.CatalogURL, image, model, time.Now(), pipeline.Track)
 		if err != nil {
 			return fmt.Errorf("discover firmware pairs: %w", err)
 		}
@@ -99,6 +102,19 @@ func command() *cobra.Command {
 	}
 
 	return root
+}
+
+func configureTrack(root *cobra.Command, pipeline *firmware.Pipeline) {
+	var name string
+	root.PersistentFlags().StringVar(&name, "track", "release", "Firmware track: release or beta.")
+	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
+		track, ok := firmware.TrackNamed(name)
+		if !ok {
+			return fmt.Errorf("%w %q: use release or beta", errUnknownTrack, name)
+		}
+		pipeline.Track = track
+		return nil
+	}
 }
 
 func writeMatrix(output io.Writer, filename string, matrix firmware.Matrix) (err error) {

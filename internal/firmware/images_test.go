@@ -189,7 +189,7 @@ func TestHTTPFailuresRetainCloseError(t *testing.T) {
 	client := &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: failedCloseBody{strings.NewReader(""), want}}, nil
 	})}
-	_, err := Discover(t.Context(), client, "https://example.invalid/catalog", testImage, "udmpro", time.Now())
+	_, err := Discover(t.Context(), client, "https://example.invalid/catalog", testImage, "udmpro", time.Now(), ReleaseTrack())
 	if !errors.Is(err, want) || !strings.Contains(err.Error(), "HTTP 503") {
 		t.Fatalf("catalog lost an error: %v", err)
 	}

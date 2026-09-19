@@ -45,6 +45,7 @@ jobs:
         include:
           - { package: network, test: TestKernelLeaseRenewal, privileged: true }
           - { package: service, test: "TestProxy(StateFailureReapsProcess|StateAndStop)", privileged: false }
+          - { package: service, test: "TestSystemd(Lifecycle|PauseFailureRestoresService)", privileged: true }
     steps:
       - *Checkout
       - parallel:

@@ -52,6 +52,7 @@ func (c Commands) Run(ctx context.Context, output io.Writer, name string, args .
 
 // Pipeline builds, publishes and selects firmware test images.
 type Pipeline struct {
+	Track  Track
 	Runner Runner
 	Images Images
 	Client *http.Client
@@ -78,7 +79,7 @@ func (p Pipeline) Build(ctx context.Context, image, model, cache string, release
 	if err != nil {
 		return err
 	}
-	err = ValidatePair(model, releases)
+	err = p.Track.ValidatePair(model, releases)
 	if err != nil {
 		return err
 	}
@@ -100,7 +101,7 @@ func (p Pipeline) Build(ctx context.Context, image, model, cache string, release
 }
 
 func (p Pipeline) buildRelease(ctx context.Context, cache, image, model string, release Release) error {
-	ref := image + ":" + model + "-" + release.Version
+	ref := image + ":" + p.Track.versionTag(model, release.Version)
 	fingerprint := Fingerprint(model, release)
 	validated, err := p.validatedImage(ctx, ref, fingerprint)
 	if err != nil {
@@ -229,7 +230,7 @@ func (p Pipeline) Publish(ctx context.Context, image, model string, releases []R
 	if err := ValidateImage(image); err != nil {
 		return err
 	}
-	if err := ValidatePair(model, releases); err != nil {
+	if err := p.Track.ValidatePair(model, releases); err != nil {
 		return err
 	}
 	owner := strings.Split(image, "/")[1]
@@ -241,12 +242,13 @@ func (p Pipeline) Publish(ctx context.Context, image, model string, releases []R
 		return errPackageNotPublic
 	}
 	for index, release := range releases {
-		source := image + ":" + model + "-" + release.Version
-		tags := []string{source, image + ":" + release.Board + "-" + release.Version}
+		source := image + ":" + p.Track.versionTag(model, release.Version)
+		tags := []string{source, image + ":" + p.Track.versionTag(release.Board, release.Version)}
 		if index == len(releases)-1 {
-			tags = append(tags, image+":"+model+"-latest", image+":"+release.Board+"-latest")
+			alias := p.Track.latestAlias()
+			tags = append(tags, image+":"+model+"-"+alias, image+":"+release.Board+"-"+alias)
 			if model == "udmpro" {
-				tags = append(tags, image+":latest")
+				tags = append(tags, image+":"+alias)
 			}
 		}
 		for _, tag := range tags {
@@ -300,5 +302,5 @@ func (p Pipeline) Published(ctx context.Context, image string) (Matrix, error) {
 		return Matrix{}, err
 	}
 
-	return Published(tags, image)
+	return p.Track.Published(tags, image)
 }

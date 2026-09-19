@@ -7,9 +7,54 @@ import (
 	"io"
 	"reflect"
 	"testing"
+
+	systemd "github.com/coreos/go-systemd/v22/dbus"
 )
 
 var errInjectedUninstallStep = errors.New("injected uninstall failure")
+
+type uninstallBus struct {
+	uninstallConnection
+
+	calls     []string
+	failTimer bool
+}
+
+func (b *uninstallBus) StopUnitContext(_ context.Context, unit, _ string, result chan<- string) (int, error) {
+	b.calls = append(b.calls, "stop "+unit)
+	if b.failTimer && unit == "udm-iptv.timer" {
+		return 0, errInjectedUninstallStep
+	}
+	result <- "done"
+	return 1, nil
+}
+
+func (b *uninstallBus) DisableUnitFilesContext(context.Context, []string, bool) ([]systemd.DisableUnitFileChange, error) {
+	b.calls = append(b.calls, "disable")
+	return nil, nil
+}
+
+func TestUninstallCancelsResumeBeforeRemovingService(t *testing.T) {
+	t.Parallel()
+	for _, fail := range []bool{false, true} {
+		bus := &uninstallBus{failTimer: fail}
+		remover := uninstaller{connection: bus}
+		step := func(name string) func(context.Context) error {
+			return func(context.Context) error { bus.calls = append(bus.calls, name); return nil }
+		}
+		err := executeUninstall(t.Context(), uninstallActions{
+			stop: remover.stopService, disable: remover.disableService, removeNAT: step("NAT"),
+			removeFiles: step("files"), removeState: step("state"), reload: step("reload"),
+		})
+		want := []string{"stop udm-iptv.timer", "stop udm-iptv.service", "disable", "NAT", "files", "state", "reload"}
+		if fail {
+			want = want[:1]
+		}
+		if !reflect.DeepEqual(bus.calls, want) || errors.Is(err, errInjectedUninstallStep) != fail || (err != nil) != fail {
+			t.Fatalf("calls=%v err=%v", bus.calls, err)
+		}
+	}
+}
 
 func TestUninstallFailureBoundaries(t *testing.T) {
 	all := []string{"stop", "disable", "NAT", "files", "state", "reload"}

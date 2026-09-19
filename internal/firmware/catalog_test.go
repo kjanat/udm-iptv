@@ -25,7 +25,7 @@ func catalogFixture(t *testing.T, cutoff time.Time) (string, string) {
 	tags := make([]string, 0, len(versions)*len(models))
 	for _, model := range models {
 		for _, version := range versions {
-			entry := catalogRelease{Platform: model.Board, Version: "v" + version + "+1", Created: cutoff, SHA256: strings.Repeat("a", 64)}
+			entry := catalogRelease{Platform: model.Board, Channel: channelRelease, Version: "v" + version + "+1", Created: cutoff, SHA256: strings.Repeat("a", 64)}
 			entry.Links.Data.Href = "https://fw-download.ubnt.com/firmware.bin"
 			entries = append(entries, entry)
 			tags = append(tags, model.Name+"-"+version)

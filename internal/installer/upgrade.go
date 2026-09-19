@@ -26,6 +26,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
+	"golang.org/x/mod/semver"
 
 	"github.com/kjanat/udm-iptv/internal/filemode"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
@@ -60,6 +61,7 @@ var (
 	errDownloadFailed       = errors.New("download failed")
 	errChecksumEntryMissing = errors.New("SHA256SUMS has no entry")
 	errChecksumMismatch     = errors.New("downloaded binary does not match SHA256SUMS")
+	errDowngrade            = errors.New("downgrade refused")
 )
 
 // UpgradeOptions selects the release to install and how to authenticate GitHub.
@@ -69,25 +71,18 @@ type UpgradeOptions struct {
 	TokenFile  string
 	Force      bool
 	Prerelease bool
+	DryRun     bool
 }
 
 // Upgrade downloads, verifies and activates a GitHub release, rolling back on failure.
 func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions) error {
-	if err := validateStatePath(application.StateDir); err != nil {
-		return err
+	if options.DryRun {
+		return application.preview(ctx, options)
 	}
-	if !Installed(application.StateDir) {
-		return errNotInstalled
-	}
-	candidate, err := resolveUpgrade(ctx, options)
+	candidate, plan, err := application.prepare(ctx, options)
 	if err != nil {
 		return err
 	}
-	record, err := application.packageCommands().record(ctx)
-	if err != nil {
-		return err
-	}
-	plan := planUpgrade(application.Version, candidate.version, record, options.Force)
 	if plan.note != "" {
 		if err := writef(application.Out, "%s\n", plan.note); err != nil {
 			return err
@@ -97,7 +92,7 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 		return nil
 	}
 	if plan.viaPackage {
-		err = application.applyPackageRelease(ctx, candidate)
+		err = application.applyPackageRelease(ctx, candidate, options.Force)
 	} else {
 		err = application.applyStandaloneRelease(ctx, candidate)
 	}
@@ -106,6 +101,102 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 	}
 
 	return writef(application.Out, "Upgraded udm-iptv to %s.\n", candidate.version)
+}
+
+func (application *Upgrader) preview(ctx context.Context, options UpgradeOptions) error {
+	channel := channelFor(application.Version, options.Prerelease)
+	if err := writef(application.Out, "Dry run: nothing is downloaded or installed.\nRunning udm-iptv %s on the %s channel.\n", application.Version, channel); err != nil {
+		return err
+	}
+	candidate, plan, err := application.prepare(ctx, options)
+	if err != nil {
+		return err
+	}
+
+	return application.describe(candidate, plan)
+}
+
+func (application *Upgrader) describe(candidate upgradeCandidate, plan upgradePlan) error {
+	if err := writef(application.Out, "Release found: udm-iptv %s.\n", candidate.version); err != nil {
+		return err
+	}
+	if plan.note != "" {
+		if err := writef(application.Out, "%s\n", plan.note); err != nil {
+			return err
+		}
+	}
+	if !plan.proceed {
+		return nil
+	}
+	assets, err := candidateAssets(candidate, plan.viaPackage)
+	if err != nil {
+		return err
+	}
+	if plan.viaPackage {
+		return writef(application.Out, "Would download %s and install it with apt-get.\n", assets.name)
+	}
+
+	return writef(application.Out, "Would download %s, replace %s and restart udm-iptv.service.\n", assets.name, installedTarget(application.StateDir))
+}
+
+func (application *Upgrader) prepare(ctx context.Context, options UpgradeOptions) (upgradeCandidate, upgradePlan, error) {
+	if err := validateStatePath(application.StateDir); err != nil {
+		return upgradeCandidate{}, upgradePlan{}, err
+	}
+	installed := application.installed
+	if installed == nil {
+		installed = Installed
+	}
+	if !installed(application.StateDir) {
+		return upgradeCandidate{}, upgradePlan{}, errNotInstalled
+	}
+	resolve := application.resolve
+	if resolve == nil {
+		resolve = resolveUpgrade
+	}
+	candidate, err := resolve(ctx, options, channelFor(application.Version, options.Prerelease))
+	if err != nil {
+		return upgradeCandidate{}, upgradePlan{}, err
+	}
+	record, err := application.packageCommands().record(ctx)
+	if err != nil {
+		return upgradeCandidate{}, upgradePlan{}, err
+	}
+	plan, err := planUpgrade(application.Version, candidate.version, record, options.Force)
+	if err != nil {
+		return upgradeCandidate{}, upgradePlan{}, err
+	}
+
+	return candidate, plan, nil
+}
+
+type releaseChannel int
+
+const (
+	stableChannel releaseChannel = iota
+	prereleaseChannel
+)
+
+func (channel releaseChannel) String() string {
+	if channel == prereleaseChannel {
+		return "prerelease"
+	}
+
+	return "stable"
+}
+
+func channelFor(running string, prerelease bool) releaseChannel {
+	if prerelease || semver.Prerelease("v"+running) != "" {
+		return prereleaseChannel
+	}
+
+	return stableChannel
+}
+
+func olderThan(candidate, running string) bool {
+	candidate, running = "v"+candidate, "v"+running
+
+	return semver.IsValid(candidate) && semver.IsValid(running) && semver.Compare(candidate, running) < 0
 }
 
 // upgradePlan is the decision an upgrade takes before touching anything.
@@ -119,24 +210,27 @@ type upgradePlan struct {
 // installation, with what dpkg recorded. An executable swapped in behind
 // dpkg's back leaves the record behind, and the package path repairs it
 // without being forced.
-func planUpgrade(running, candidate string, record PackageRecord, force bool) upgradePlan {
+func planUpgrade(running, candidate string, record PackageRecord, force bool) (upgradePlan, error) {
+	if !force && olderThan(candidate, running) {
+		return upgradePlan{}, fmt.Errorf("%w: udm-iptv %s is running, which is newer than %s; use --force to install it anyway", errDowngrade, running, candidate)
+	}
 	if !record.Owned() {
 		if !force && running == candidate {
-			return upgradePlan{note: "udm-iptv " + candidate + " is already installed. Use --force to reinstall."}
+			return upgradePlan{note: "udm-iptv " + candidate + " is already installed. Use --force to reinstall."}, nil
 		}
 
-		return upgradePlan{proceed: true}
+		return upgradePlan{proceed: true}, nil
 	}
 	recorded := record.ReleaseVersion()
 	if !force && running == candidate && recorded == candidate {
-		return upgradePlan{note: "udm-iptv " + candidate + " is already installed. Use --force to reinstall."}
+		return upgradePlan{note: "udm-iptv " + candidate + " is already installed. Use --force to reinstall."}, nil
 	}
 	plan := upgradePlan{proceed: true, viaPackage: true}
 	if recorded != running {
 		plan.note = "dpkg recorded udm-iptv " + recorded + " while " + running + " is running; the package is reinstalled to bring the two in line."
 	}
 
-	return plan
+	return plan, nil
 }
 
 // applyStandaloneRelease replaces the executable this program installed.
@@ -154,12 +248,11 @@ func (application *Upgrader) applyStandaloneRelease(ctx context.Context, candida
 // the package database, maintainer scripts and shipped files advance with
 // the executable. apt runs postinst, which installs under the operation
 // lock, so this path holds none of its own.
-func (application *Upgrader) applyPackageRelease(ctx context.Context, candidate upgradeCandidate) error {
+func (application *Upgrader) applyPackageRelease(ctx context.Context, candidate upgradeCandidate, force bool) error {
 	candidate.stateDir = application.StateDir
-	assetName := packageAssetName()
-	assetURL, checksumURL := releaseAssetURLs(candidate.release, assetName)
-	if assetURL == "" || checksumURL == "" {
-		return fmt.Errorf("%w: %s has no %s or SHA256SUMS", errReleaseAssetsMissing, candidate.release.GetTagName(), assetName)
+	assets, err := candidateAssets(candidate, true)
+	if err != nil {
+		return err
 	}
 	directory, err := os.MkdirTemp("", "udm-iptv-upgrade-*")
 	if err != nil {
@@ -172,7 +265,7 @@ func (application *Upgrader) applyPackageRelease(ctx context.Context, candidate 
 	if err := writef(application.Out, "Downloading the udm-iptv %s package...\n", candidate.version); err != nil {
 		return err
 	}
-	packagePath, err := application.fetchAsset()(ctx, candidate, directory, assetName, assetURL, checksumURL, filemode.SharedFile)
+	packagePath, err := application.fetchAsset()(ctx, candidate, directory, assets.name, assets.url, assets.checksumURL, filemode.SharedFile)
 	if err != nil {
 		return err
 	}
@@ -180,11 +273,36 @@ func (application *Upgrader) applyPackageRelease(ctx context.Context, candidate 
 		return err
 	}
 
-	return application.packageCommands().install(ctx, packagePath, application.Out, application.Err)
+	return application.packageCommands().install(ctx, packagePath, force, application.Out, application.Err)
 }
 
 func packageAssetName() string {
 	return "udm-iptv-" + runtime.GOARCH + ".deb"
+}
+
+func standaloneAssetName() string {
+	return "udm-iptv-linux-" + runtime.GOARCH
+}
+
+func installedTarget(stateDir string) string {
+	return filepath.Join(stateDir, "bin", "udm-iptv")
+}
+
+type releaseAssets struct {
+	name, url, checksumURL string
+}
+
+func candidateAssets(candidate upgradeCandidate, viaPackage bool) (releaseAssets, error) {
+	name := standaloneAssetName()
+	if viaPackage {
+		name = packageAssetName()
+	}
+	assetURL, checksumURL := releaseAssetURLs(candidate.release, name)
+	if assetURL == "" || checksumURL == "" {
+		return releaseAssets{}, fmt.Errorf("%w: %s has no %s or SHA256SUMS", errReleaseAssetsMissing, candidate.release.GetTagName(), name)
+	}
+
+	return releaseAssets{name: name, url: assetURL, checksumURL: checksumURL}, nil
 }
 
 func (application *Upgrader) packageCommands() packageCommands {
@@ -215,7 +333,7 @@ type upgradeCandidate struct {
 	stateDir   string
 }
 
-func resolveUpgrade(ctx context.Context, options UpgradeOptions) (upgradeCandidate, error) {
+func resolveUpgrade(ctx context.Context, options UpgradeOptions, channel releaseChannel) (upgradeCandidate, error) {
 	owner, repository, err := splitRepository(options.Repository)
 	if err != nil {
 		return upgradeCandidate{}, err
@@ -225,7 +343,7 @@ func resolveUpgrade(ctx context.Context, options UpgradeOptions) (upgradeCandida
 		return upgradeCandidate{}, err
 	}
 	client := upgradeHTTPClient(token)
-	release, err := fetchRelease(ctx, github.NewClient(client), owner, repository, options.Version, options.Prerelease)
+	release, err := fetchRelease(ctx, github.NewClient(client), owner, repository, options.Version, channel)
 	if err != nil {
 		return upgradeCandidate{}, err
 	}
@@ -273,11 +391,11 @@ func upgradeHTTPClient(token string) *http.Client {
 	return &http.Client{Timeout: upgradeClientTimeout, Transport: transport}
 }
 
-func fetchRelease(ctx context.Context, client *github.Client, owner, repository, version string, prerelease bool) (*github.RepositoryRelease, error) {
+func fetchRelease(ctx context.Context, client *github.Client, owner, repository, version string, channel releaseChannel) (*github.RepositoryRelease, error) {
 	var release *github.RepositoryRelease
 	var err error
 	if version == "" || version == "latest" {
-		if prerelease {
+		if channel == prereleaseChannel {
 			release, err = latestPublishedRelease(ctx, client, owner, repository)
 		} else {
 			release, _, err = client.Repositories.GetLatestRelease(ctx, owner, repository)
@@ -320,10 +438,9 @@ func newestPublishedRelease(releases []*github.RepositoryRelease) *github.Reposi
 
 func (application *Upgrader) applyRelease(ctx context.Context, candidate upgradeCandidate) error {
 	candidate.stateDir = application.StateDir
-	assetName := "udm-iptv-linux-" + runtime.GOARCH
-	assetURL, checksumURL := releaseAssetURLs(candidate.release, assetName)
-	if assetURL == "" || checksumURL == "" {
-		return fmt.Errorf("%w: %s has no %s or SHA256SUMS", errReleaseAssetsMissing, candidate.release.GetTagName(), assetName)
+	assets, err := candidateAssets(candidate, false)
+	if err != nil {
+		return err
 	}
 	directory, err := os.MkdirTemp("", "udm-iptv-upgrade-*")
 	if err != nil {
@@ -333,13 +450,12 @@ func (application *Upgrader) applyRelease(ctx context.Context, candidate upgrade
 	if err := writef(application.Out, "Downloading udm-iptv %s...\n", candidate.version); err != nil {
 		return err
 	}
-	binaryPath, err := application.fetchAsset()(ctx, candidate, directory, assetName, assetURL, checksumURL, filemode.Executable)
+	binaryPath, err := application.fetchAsset()(ctx, candidate, directory, assets.name, assets.url, assets.checksumURL, filemode.Executable)
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(application.StateDir, "bin", "udm-iptv")
 
-	return activateUpgrade(ctx, binaryPath, target, candidate.version, systemUpgradeActions(application.Restart))
+	return activateUpgrade(ctx, binaryPath, installedTarget(application.StateDir), candidate.version, systemUpgradeActions(application.Restart))
 }
 
 func downloadVerifiedAsset(ctx context.Context, candidate upgradeCandidate, directory, assetName, assetURL, checksumURL string, mode os.FileMode) (string, error) {
@@ -730,4 +846,6 @@ type Upgrader struct {
 	Restart           func(context.Context, bool) error
 	packages          packageCommands
 	fetch             assetFetcher
+	installed         func(string) bool
+	resolve           func(context.Context, UpgradeOptions, releaseChannel) (upgradeCandidate, error)
 }

@@ -46,8 +46,13 @@ func Uninstall(ctx context.Context, configPath, stateDir string, keepConfig bool
 	})
 }
 
+type uninstallConnection interface {
+	service.LifecycleConnection
+	DisableUnitFilesContext(context.Context, []string, bool) ([]systemd.DisableUnitFileChange, error)
+}
+
 type uninstaller struct {
-	connection *systemd.Conn
+	connection uninstallConnection
 	root       *os.Root
 	configPath string
 	stateDir   string
@@ -55,7 +60,8 @@ type uninstaller struct {
 }
 
 func (u uninstaller) stopService(ctx context.Context) error {
-	err := service.Stop(ctx, u.connection, "udm-iptv.service")
+	lifecycle := service.Lifecycle{Connection: u.connection, Unit: service.Unit}
+	err := lifecycle.Stop(ctx)
 	if service.NoSuchUnit(err) {
 		return nil
 	}
@@ -158,7 +164,7 @@ const packageName = "udm-iptv"
 type packageCommands struct {
 	record  func(context.Context) (PackageRecord, error)
 	remove  func(ctx context.Context, action string, out, errOut io.Writer) error
-	install func(ctx context.Context, packagePath string, out, errOut io.Writer) error
+	install func(ctx context.Context, packagePath string, allowDowngrade bool, out, errOut io.Writer) error
 }
 
 func systemPackageCommands() packageCommands {
@@ -223,8 +229,12 @@ func aptRemove(ctx context.Context, action string, out, errOut io.Writer) error 
 	return runApt(ctx, out, errOut, action, "-y", packageName)
 }
 
-func aptInstall(ctx context.Context, packagePath string, out, errOut io.Writer) error {
-	return runApt(ctx, out, errOut, "install", "-y", packagePath)
+func aptInstall(ctx context.Context, packagePath string, allowDowngrade bool, out, errOut io.Writer) error {
+	arguments := []string{"install", "-y"}
+	if allowDowngrade {
+		arguments = append(arguments, "--allow-downgrades")
+	}
+	return runApt(ctx, out, errOut, append(arguments, packagePath)...)
 }
 
 func runApt(ctx context.Context, out, errOut io.Writer, arguments ...string) error {

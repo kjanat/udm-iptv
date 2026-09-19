@@ -84,7 +84,8 @@ func (application *Application) root() *cobra.Command {
 		&cobra.Group{ID: "observe", Title: "Observability Commands:"},
 	)
 	management := []*cobra.Command{
-		application.configureCommand(), application.installCommand(), application.restartCommand(),
+		application.configureCommand(), application.installCommand(), application.startCommand(),
+		application.stopCommand(), application.restartCommand(),
 		application.uninstallCommand(), application.upgradeCommand(),
 		application.previewCommand(),
 	}

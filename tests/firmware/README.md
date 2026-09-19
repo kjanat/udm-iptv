@@ -34,6 +34,12 @@ CI resolves version pairs before starting the model matrix.
 
 `cmd/firmware` owns image orchestration; Docker operations use its SDK.
 
+The default track is `release`. Pass `--track beta` consistently to `catalog`,
+`build`, `publish`, and `published` to include beta and release-candidate versions.
+Beta version tags include `-beta-` (for example `udmpro-beta-5.1.0`), so
+stable selection cannot pick a beta-channel build with a plain version number.
+Beta publication updates `beta` aliases, preserving stable `latest` aliases.
+
 - Daily at 03:17 UTC; manual runs support model selection.
 - Ubiquiti's catalog supplies two stable versions per model.
 - Matching fingerprints reuse images; downloads require checksum verification.
