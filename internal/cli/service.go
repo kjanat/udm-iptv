@@ -63,7 +63,9 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 			case "deconfig":
 				return errors.Join(network.ApplyLease(lease, previous, policy), service.RemoveLeaseState())
 			case "bound", "renew":
-				return errors.Join(network.ApplyLease(lease, previous, policy), service.WriteLeaseState(lease))
+				applied := network.ApplyLease(lease, previous, policy)
+
+				return errors.Join(applied, service.WriteLeaseState(lease, applied))
 			case "leasefail":
 				return errLeaseAcquisitionFailed
 			case "nak":
