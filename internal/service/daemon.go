@@ -82,14 +82,19 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	if err != nil {
 		return fmt.Errorf("prepare the IPTV interface: %w", err)
 	}
-	defer func() { _ = network.RemoveNAT(value) }()
+	defer func() {
+		removed, _ := network.RemoveNAT(value)
+		application.logRemovedNAT(context.WithoutCancel(ctx), removed)
+	}()
 	var dhcp *managedProcess
 	defer func() { result = errors.Join(result, dhcp.stop()) }()
 	dhcp, staticFailure, err := application.startConnection(ctx, value, link)
 	if err != nil {
 		return err
 	}
-	if err := network.EnsureNAT(value); err != nil {
+	removed, err := network.EnsureNAT(value)
+	application.logRemovedNAT(ctx, removed)
+	if err != nil {
 		return fmt.Errorf("configure IPTV NAT: %w", err)
 	}
 	if err := writeProxyConfig(value); err != nil {
@@ -111,6 +116,17 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	return application.supervise(ctx, supervised{
 		program: value.Proxy.Program, proxy: process, dhcp: dhcp, static: staticFailure,
 	})
+}
+
+// iptables discards a rule's counters with the rule.
+func (application *Daemon) logRemovedNAT(ctx context.Context, removed []network.NATRule) {
+	if len(removed) == 0 {
+		return
+	}
+	output := io.MultiWriter(application.Out, application.Monitor.LineWriter(ctx, "nat"))
+	for _, rule := range removed {
+		_, _ = fmt.Fprintf(output, "NAT rule removed: %s\n", rule)
+	}
 }
 
 // supervised names the ways a started run can end.

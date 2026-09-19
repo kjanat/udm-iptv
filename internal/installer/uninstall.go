@@ -80,7 +80,7 @@ func (u uninstaller) removeNAT(context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load configuration for NAT cleanup: %w", err)
 	}
-	if err := network.RemoveNAT(value); err != nil {
+	if _, err := network.RemoveNAT(value); err != nil {
 		return fmt.Errorf("delete nat POSTROUTING masquerade rules: %w", err)
 	}
 	return nil

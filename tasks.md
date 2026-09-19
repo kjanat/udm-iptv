@@ -96,11 +96,11 @@ Found with `iptables -t nat -L POSTROUTING -v -n -x`, `ip -4 route show dev iptv
 - `195.121.94.212` is the SAP announcer (group `224.0.250.64`, mroute iif `iptv` → `br0`, ~198k packets): a multicast source, never a unicast NAT target.
 - Snapshot keeps only rules containing `udm-iptv` (`managedNATRules`, `ListWithCounters`), so the shadowing is invisible in Sentry. Counters reset whenever rules are re-appended.
 
-Proposal, agreed in principle 2026-09-19, not started:
+Proposal, agreed 2026-09-19:
 
-- [ ] Snapshot keeps every MASQUERADE rule on the IPTV interface, marked managed/foreign, with counters
-- [ ] Per-destination evidence line derived from the route list (`routed via …, N packets` / `no route via iptv`), in `status`, `diagnose`, and as `natEvidence` in the observation
-- [ ] Counters read and logged before reconciliation deletes or re-appends rules
+- [x] Snapshot keeps every MASQUERADE rule on the IPTV interface, marked managed/unmanaged, with counters (`network.ListNAT`, `natRules` in the observation)
+- [x] Per-destination evidence derived from the route list (`routed (…)` / `no route via iptv`, packets, unmanaged rules for the same destination), in `status`, `diagnose`, and as `natEvidence` in the observation
+- [x] Counters logged when reconciliation or shutdown removes a rule (`NAT rule removed: …` to the journal and the Sentry log). A rule that stays keeps its counters; a `0.0.0.0/0` rule is now recognised in the form iptables prints it, so it stays too
 - [ ] Preview release so the router runs the reconciliation
 
 ## Provider catalog (research index)

@@ -46,7 +46,7 @@ Individual category flags do not enable the master switch.
 - Software version, git revision, Go toolchain, router model, subsystem id, firmware, firmware discovery string, CPU, OS, Go runtime and the module list of the binary.
 - Which settings changed, configuration revisions and saved/applied change timestamps.
 - A random installation ID connects configuration history with failures.
-- Hourly service observations with a diagnostics snapshot: service and proxy state, the IPTV interface's addresses and routes, the multicast forwarding table with per-route counters, bridge group memberships, NAT rules and the last DHCP lease with every option the server sent.
+- Hourly service observations with a diagnostics snapshot: service and proxy state, the IPTV interface's addresses and routes, the multicast forwarding table with per-route counters, bridge group memberships, every MASQUERADE rule on the IPTV interface with its packet counters, whether each configured NAT destination has a route through that interface, and the last DHCP lease with every option the server sent. The service log records the counters of NAT rules it removes.
 - Provider guesses remain separate from your selected provider profile.
 - Reports inform preset improvements; presets never change automatically.
 
