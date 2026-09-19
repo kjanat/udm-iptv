@@ -261,7 +261,9 @@ assert_v5_upgrade_reports_success() {
 	local output
 	local status=0
 
-	output=$(docker exec -e DEBIAN_FRONTEND=noninteractive "${name}" \
+	# boot() points UDM_IPTV_PACKAGE at the local package, and --prerelease
+	# does not clear it the way --latest and --version do.
+	output=$(docker exec -e DEBIAN_FRONTEND=noninteractive -e UDM_IPTV_PACKAGE= "${name}" \
 		udm-iptv upgrade --prerelease 2>&1) || status=$?
 	echo "${output}"
 	if ((status != 0)) \
