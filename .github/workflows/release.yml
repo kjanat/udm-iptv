@@ -1,17 +1,18 @@
 name: Release
 on: { push: { tags: ["v*"] } }
-
+permissions: { contents: read }
 jobs:
   build:
     name: Build
     runs-on: [ubuntu-latest]
     permissions: { contents: read, id-token: write, attestations: write, artifact-metadata: write }
     steps:
-      - name: Checkout Sources
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { path: udm-iptv, submodules: recursive }
-      - name: Setup Dependencies
-        run: sudo apt-get install devscripts debhelper build-essential
+      - parallel:
+          - name: Checkout Sources
+            uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            with: { path: udm-iptv, submodules: recursive }
+          - name: Setup Dependencies
+            run: sudo apt-get install devscripts debhelper build-essential
       - name: Build Package
         working-directory: udm-iptv
         run: debuild -uc -us --lintian-opts --profile debian
