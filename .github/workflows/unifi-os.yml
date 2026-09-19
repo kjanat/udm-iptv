@@ -35,6 +35,7 @@ jobs:
           - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
             with: { path: udm-iptv }
           - name: Setup Dependencies
+            working-directory: ${{ github.workspace }}
             run: sudo apt-get update && sudo apt-get install -y devscripts debhelper build-essential
       - name: Build Package
         run: debuild -uc -us --lintian-opts --profile debian
