@@ -18,15 +18,31 @@ For getting IPTV to work on the legacy UniFi Security Gateway, please refer to t
 
 The installation and firmware-restoration lifecycle is exercised in CI using firmware images from Ubiquiti for these models:
 
-| Model       | Firmware platform |
-| ----------- | ----------------- |
-| UDM         | `UDM`             |
-| UDM Pro     | `UDMPRO`          |
-| UDM SE      | `UDMPROSE`        |
-| UDM Pro Max | `UDMPROMAX`       |
-| UDM Beast   | `UDMEA4C`         |
+| Model          | Line                        | Firmware platform |
+| -------------- | --------------------------- | ----------------- |
+| UDM            | Dream Machines              | `UDM`             |
+| UDM-Beast      | Dream Machines              | `UDMEA4C`         |
+| UDM-Pro        | Dream Machines              | `UDMPRO`          |
+| UDM-Pro-Max    | Dream Machines              | `UDMPROMAX`       |
+| UDM-SE         | Dream Machines              | `UDMPROSE`        |
+| UDR            | Dream Routers               | `UDR`             |
+| UDR-5G-Max     | Dream Routers               | `UDR5G`           |
+| UDR-7          | Dream Routers               | `UDR7`            |
+| UDW            | Dream Wall                  | `UDW`             |
+| UCG-Fiber      | Cloud Gateways              | `UCGF`            |
+| UCG-Industrial | Cloud Gateways              | `UCGA6AD`         |
+| UCG-Max        | Cloud Gateways              | `UCGMAX`          |
+| UCG-Ultra      | Cloud Gateways              | `UDRULT`          |
+| EF-Core        | Enterprise Firewall Core    | `EFGCORE`         |
+| EFG            | Enterprise Fortress Gateway | `UDMENT`          |
+| Express        | Express                     | `UX`              |
+| Express 7      | Express 7                   | `UXMAX`           |
 
-For every pull request, the test installs the package on the previous firmware, persists it, transitions to the newest firmware that predates the pull request, and exercises the real restore unit. UDM Pro has additionally been verified on physical hardware across UniFi OS 5.1.26 to 5.1.31, including automatic package restoration and working live television. The other models have not yet been verified on physical hardware by this fork.
+Ubiquiti's platform codes do not track its product lines. `UDRULT` is a Cloud Gateway Ultra and `UDMENT` is an Enterprise Fortress Gateway, so the line is worth reading before the code.
+
+The model list and the firmware versions come from Ubiquiti's own catalogue, so a console Ubiquiti adds appears here without this table being the thing that decides it.
+
+For every pull request, the test installs the package on the previous firmware, persists it, transitions to the newest firmware that predates the pull request, and exercises the real restore unit. The five Dream Machines additionally run a 5.1.33 to 6.0.7 transition, using builds named by hand because Ubiquiti announces Early Access on community.ui.com and never indexes it in the firmware API. UDM Pro has additionally been verified on physical hardware across UniFi OS 5.1.26 to 5.1.31, including automatic package restoration and working live television. The other models have not yet been verified on physical hardware by this fork.
 
 ## Global Design
 
