@@ -11,6 +11,7 @@ import (
 	"charm.land/huh/v2"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
 
 type suggestionResult struct {
@@ -32,7 +33,7 @@ func assertPreselected(t *testing.T, wizard *Wizard, preselected map[int]string,
 
 func runSuggestedWizard(t *testing.T, suggestion string, preselected map[int]string, abortAt int) suggestionResult {
 	t.Helper()
-	value := config.Default()
+	value := configtest.Custom()
 	result := suggestionResult{before: clone(value)}
 	result.err = ConfigureSuggested(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {
 		result.calls++
@@ -77,7 +78,7 @@ func TestSuggestedProviderIsDraftUntilReview(t *testing.T) {
 }
 
 func TestReviewDeclinePreservesConfiguration(t *testing.T) {
-	value := config.DefaultKPN()
+	value := configtest.KPN()
 	original := clone(value)
 	calls := 0
 	err := Configure(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {
@@ -97,7 +98,7 @@ func TestReviewDeclinePreservesConfiguration(t *testing.T) {
 }
 
 func TestProviderSuggestionCanBeOverridden(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	chosen := ""
 	calls := 0
 	catalog := config.DefaultCatalog()

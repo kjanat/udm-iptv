@@ -78,8 +78,8 @@
       "patternErrorMessage": "Remove leading and trailing whitespace."
     },
     "profile": {
-      "description": "Network settings for one IPTV network. Fields not listed here (LAN interface, proxy program, IGMP version, telemetry) come from the generic base.",
-      "markdownDescription": "Network settings for one IPTV network.\n\nFields not listed here (LAN interface `br0`, proxy `improxy`, IGMPv3, telemetry defaults, VLAN interface `iptv`, physical port `eth8`) come from the generic base in Go and can be overridden by the user.",
+      "description": "Network settings for one IPTV network. Fields not listed here (proxy program, IGMP version, telemetry) come from the generic base; the WAN port and LAN bridges come from the console.",
+      "markdownDescription": "Network settings for one IPTV network.\n\nFields not listed here (proxy `improxy`, IGMPv3, telemetry defaults, VLAN interface `iptv`) come from the generic base in Go and can be overridden by the user. The physical port and the LAN bridges come from the console.",
       "type": "object",
       "required": [
         "name",
@@ -190,8 +190,8 @@
         },
         "interface": {
           "$ref": "#/$defs/interface",
-          "description": "Physical port or PPP interface carrying IPTV. Omit for the base default eth8; the user picks the real port in the wizard.",
-          "markdownDescription": "Physical port or PPP interface carrying IPTV. Omit for the base default `eth8`; the user picks the real port in the wizard.\n\nSet it only when the provider dictates it, such as `ppp0` for MagentaTV."
+          "description": "Physical port or PPP interface carrying IPTV. Omit it; the console detects the port and the user picks it in the wizard.",
+          "markdownDescription": "Physical port or PPP interface carrying IPTV. Omit it; the console detects the port and the user picks it in the wizard.\n\nSet it only when the provider dictates it, such as `ppp0` for MagentaTV. `eth8.N` names a sub-interface of the detected port."
         },
         "natDestinations": {
           "$ref": "#/$defs/cidrList",

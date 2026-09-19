@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
@@ -119,7 +120,7 @@ func TestReportRunUsesSavedConfigWhenInstallHadNoMonitor(t *testing.T) {
 	capture := captureTelemetry(t)
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.json")
-	value := config.Default()
+	value := configtest.Custom()
 	value.Telemetry.Logs = true
 	if err := config.Save(path, value); err != nil {
 		t.Fatal(err)
@@ -165,7 +166,7 @@ func runCommandInvocationCase(t *testing.T, testCase commandInvocationCase) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "config.json")
 	if testCase.saveConfig {
-		value := config.Default()
+		value := configtest.Custom()
 		value.Telemetry.Enabled = testCase.telemetryEnabled
 		value.Telemetry.Logs = true
 		if err := config.Save(path, value); err != nil {

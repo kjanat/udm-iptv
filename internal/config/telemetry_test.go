@@ -9,7 +9,7 @@ import (
 )
 
 func TestTelemetryDefaultsAndExistingChoice(t *testing.T) {
-	value := Default()
+	value := withPorts(Default())
 	if !value.Telemetry.Enabled {
 		t.Fatal("new configuration must enable telemetry")
 	}

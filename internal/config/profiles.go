@@ -200,7 +200,7 @@ func (document catalogDocument) resolve() (Catalog, error) {
 			return Catalog{}, fmt.Errorf("%w: profile %s has no provider", errCatalogReference, id)
 		}
 		profile := definition.resolve(id)
-		if err := profile.Config.Validate(); err != nil {
+		if err := profile.Config.validateProfile(); err != nil {
 			return Catalog{}, fmt.Errorf("profile %s: %w", id, err)
 		}
 		catalog.Profiles = append(catalog.Profiles, profile)

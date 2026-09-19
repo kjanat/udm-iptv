@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
 
 var errProfileSwitchAborted = errors.New("cancelled")
@@ -32,7 +33,7 @@ type profileSwitchResult struct {
 
 func twoProfileCatalog(t *testing.T) (config.Config, config.Config, config.Catalog) {
 	t.Helper()
-	value := config.DefaultKPN()
+	value := configtest.KPN()
 	value.Telemetry.Enabled = true
 	selected, err := config.FromProfile("tweak", value)
 	if err != nil {
@@ -131,7 +132,7 @@ func TestConfigurationPagesFollowAnswers(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			value := config.DefaultKPN()
+			value := configtest.KPN()
 			if test.edit != nil {
 				test.edit(&value)
 			}
@@ -163,7 +164,7 @@ type pageBox struct {
 }
 
 func previewFrame(width, height int) *Frame {
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, []Port{
 		{Name: "eth8", Description: "connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true},
@@ -252,7 +253,7 @@ func TestConfigurationPageFits(t *testing.T) {
 
 func TestConfigureFailureDoesNotChangeInput(t *testing.T) {
 	for _, failAt := range []int{1, 2} {
-		value := config.Default()
+		value := configtest.Custom()
 		value.WAN.VLAN = 5000
 		original := clone(value)
 		calls := 0
@@ -271,7 +272,7 @@ func TestConfigureFailureDoesNotChangeInput(t *testing.T) {
 }
 
 func TestFrameFitsBoxToEachForm(t *testing.T) {
-	settings := config.Default()
+	settings := configtest.Custom()
 	fields := newFormValues(settings)
 	groups := configurationPages(&settings, nil, "", &fields)
 	frame := NewFrame(wizardForm(newPage(telemetryConsent(&settings.Telemetry))), "")
@@ -325,7 +326,7 @@ func focusPage(frame *Frame, key string) {
 }
 
 func TestEveryQuestionHasHelp(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, []Port{{Name: "eth8"}}, "", &fields)
 	keys := []string{"country", "provider", "accept"}
@@ -346,7 +347,7 @@ func TestEveryQuestionHasHelp(t *testing.T) {
 }
 
 func TestHelpOverlayExplainsFocusedQuestion(t *testing.T) {
-	value := config.DefaultKPN()
+	value := configtest.KPN()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, nil, "", &fields)
 	frame := NewFrame(wizardForm(groups...).steps(1, 1), "")
@@ -371,7 +372,7 @@ func TestHelpOverlayExplainsFocusedQuestion(t *testing.T) {
 }
 
 func TestEnterOnManualNetworkEntryOpensPicker(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups, selectedPort, selectedLAN := configurationGroups(&value, []Port{{Name: "br0", AddressesKnown: true}, {Name: "eth9", AddressesKnown: true}}, "", &fields, true)
 	*selectedPort = "eth8"
@@ -403,7 +404,7 @@ func TestEnterOnManualNetworkEntryOpensPicker(t *testing.T) {
 }
 
 func TestCtrlCAsksBeforeLeaving(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups, _, _ := configurationGroups(&value, nil, "", &fields, true)
 	var events []string
@@ -439,7 +440,7 @@ func TestCtrlCAsksBeforeLeaving(t *testing.T) {
 }
 
 func TestEscapeLeavesUnlessFiltering(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups, _, _ := configurationGroups(&value, []Port{{Name: "eth8"}, {Name: "eth9"}}, "", &fields, true)
 	frame := NewFrame(wizardForm(groups...), "")
@@ -468,7 +469,7 @@ func TestEscapeLeavesUnlessFiltering(t *testing.T) {
 }
 
 func TestCloseButtonAndPopupButtonsAreClickable(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups, _, _ := configurationGroups(&value, nil, "", &fields, true)
 	frame := NewFrame(wizardForm(groups...), "Preview")
@@ -511,7 +512,7 @@ func TestFrameScalesWithTerminal(t *testing.T) {
 			t.Errorf("width %d: content %d, want %d", test.width, got, test.want)
 		}
 	}
-	value := config.Default()
+	value := configtest.Custom()
 	fields := newFormValues(value)
 	groups, _, _ := configurationGroups(&value, nil, "", &fields, true)
 	frame := NewFrame(wizardForm(groups...), "")
@@ -523,7 +524,7 @@ func TestFrameScalesWithTerminal(t *testing.T) {
 }
 
 func TestCountryListShowsEveryCountry(t *testing.T) {
-	value := config.Default()
+	value := configtest.Custom()
 	calls := 0
 	err := Configure(context.Background(), &value, config.DefaultCatalog(), func(_ context.Context, wizard *Wizard) error {
 		calls++
@@ -548,7 +549,7 @@ func TestCountryListShowsEveryCountry(t *testing.T) {
 }
 
 func TestVLANFieldAcceptsDigitsOnly(t *testing.T) {
-	value := config.DefaultKPN()
+	value := configtest.KPN()
 	fields := newFormValues(value)
 	groups := configurationPages(&value, nil, "", &fields)
 	frame := NewFrame(wizardForm(groups...), "")
@@ -579,7 +580,7 @@ func TestVLANFieldAcceptsDigitsOnly(t *testing.T) {
 // hands discover the answer rather than the defaults.
 func TestConfigureFreshAsksBeforeItLooksUp(t *testing.T) {
 	t.Parallel()
-	value := config.Default()
+	value := configtest.Custom()
 	if !value.Telemetry.Enabled || !value.Telemetry.NetworkIdentity {
 		t.Fatal("defaults no longer enable reporting, so this asserts nothing")
 	}
@@ -619,7 +620,7 @@ func TestConfigureFreshAsksBeforeItLooksUp(t *testing.T) {
 // not ask again; a saved configuration is edited with the question in place.
 func TestSettingsPagesAskReportingOnlyWhenNotAlreadyAnswered(t *testing.T) {
 	t.Parallel()
-	value := config.DefaultKPN()
+	value := configtest.KPN()
 	fields := newFormValues(value)
 	for askConsent, want := range map[bool]bool{true: true, false: false} {
 		groups, _, _ := configurationGroups(&value, nil, "", &fields, askConsent)
@@ -665,7 +666,7 @@ var settingsAnswered = Answered{"profile", "wan-port", "vlan", "dhcp", "vlan-int
 
 func TestAnsweredFieldsSkipTheirPages(t *testing.T) {
 	t.Parallel()
-	value := config.DefaultKPN()
+	value := configtest.KPN()
 	forms := runAnswered(t, &value, settingsAnswered)
 	if len(forms) != 2 || !slices.Equal(forms[0], []string{"telemetry"}) || !slices.Equal(forms[1], []string{"accept"}) {
 		t.Fatalf("forms asked %q", forms)
@@ -677,7 +678,7 @@ func TestAnsweredFieldsSkipTheirPages(t *testing.T) {
 
 func TestAnsweredConsentSkipsTheSettingsFormEntirely(t *testing.T) {
 	t.Parallel()
-	value := config.DefaultKPN()
+	value := configtest.KPN()
 	forms := runAnswered(t, &value, append(slices.Clone(settingsAnswered), "telemetry"))
 	if len(forms) != 1 || !slices.Equal(forms[0], []string{"accept"}) {
 		t.Fatalf("forms asked %q", forms)
