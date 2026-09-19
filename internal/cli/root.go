@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
+	"github.com/kjanat/udm-iptv/internal/ui"
 )
 
 var (
@@ -41,9 +43,9 @@ func Execute(version string) error {
 		Version:         version,
 		ConfigPath:      env("UDM_IPTV_CONFIG", config.DefaultPath),
 		StateDir:        env("UDM_IPTV_STATE_DIR", "/data/udm-iptv"),
-		Out:             os.Stdout,
+		Out:             ui.Styled(os.Stdout),
 		In:              os.Stdin,
-		Err:             os.Stderr,
+		Err:             ui.Styled(os.Stderr),
 		networkIdentity: telemetry.LookupNetwork,
 	}
 	executed, err := application.root().ExecuteC()
@@ -64,6 +66,15 @@ func (application *Application) root() *cobra.Command {
 	}
 	command.SetOut(application.Out)
 	command.SetErr(application.Err)
+	plainHelp := command.HelpFunc()
+	command.SetHelpFunc(func(current *cobra.Command, arguments []string) {
+		var rendered bytes.Buffer
+		out := current.OutOrStdout()
+		current.SetOut(&rendered)
+		plainHelp(current, arguments)
+		current.SetOut(out)
+		_, _ = io.WriteString(out, ui.HelpText(rendered.String()))
+	})
 	command.Version = application.Version
 	command.SetVersionTemplate("udm-iptv {{.Version}}\n")
 	command.CompletionOptions.DisableDefaultCmd = true

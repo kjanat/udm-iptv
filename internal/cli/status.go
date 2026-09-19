@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kjanat/udm-iptv/internal/diagnostics"
+	"github.com/kjanat/udm-iptv/internal/ui"
 )
 
 func (application *Application) statusCommand() *cobra.Command {
@@ -25,7 +26,7 @@ func (application *Application) statusCommand() *cobra.Command {
 				return encoder.Encode(value)
 			}
 
-			return writeString(application.Out, diagnostics.RenderSnapshot(value))
+			return writeString(application.Out, ui.StatusText(diagnostics.RenderSnapshot(value)))
 		},
 	}
 	command.Flags().BoolVar(&outputJSON, "json", false, "write structured JSON")
