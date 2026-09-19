@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -152,7 +153,7 @@ func applyMAC(link netlink.Link, address string) error {
 
 // natTable is the iptables NAT table, narrowed to what NAT reconciliation uses.
 type natTable interface {
-	List(table, chain string) ([]string, error)
+	ListWithCounters(table, chain string) ([]string, error)
 	Delete(table, chain string, rulespec ...string) error
 	AppendUnique(table, chain string, rulespec ...string) error
 }
@@ -178,77 +179,125 @@ func natRule(destination, target string) []string {
 
 // EnsureNAT makes the MASQUERADE rules on the IPTV interface exactly value's
 // NAT destinations, removing any other MASQUERADE rule bound to that interface.
-func EnsureNAT(value config.Config) error {
+// It returns the rules it removed, with the counters iptables discards with them.
+func EnsureNAT(value config.Config) ([]NATRule, error) {
 	table, err := openNATTable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return reconcileNAT(table, value)
 }
 
-func reconcileNAT(table natTable, value config.Config) error {
+func reconcileNAT(table natTable, value config.Config) ([]NATRule, error) {
 	target := Target(value)
 	wanted := map[string]bool{}
 	for _, destination := range value.WAN.NATDestinations {
-		wanted[destination] = true
+		wanted[canonicalPrefix(destination)] = true
 	}
 	rules, err := masqueradeRules(table, target)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var removed []NATRule
 	for _, rule := range rules {
-		if rule.managed && wanted[rule.destination] {
+		if rule.Managed && wanted[rule.Destination] {
 			continue
 		}
 		if err := table.Delete(natTableName, natChain, rule.spec...); err != nil {
-			return fmt.Errorf("remove NAT rule for %s: %w", rule.destination, err)
+			return removed, fmt.Errorf("remove NAT rule for %s: %w", rule.Destination, err)
 		}
+		removed = append(removed, rule.NATRule)
 	}
 	for _, destination := range value.WAN.NATDestinations {
 		if err := table.AppendUnique(natTableName, natChain, natRule(destination, target)...); err != nil {
-			return fmt.Errorf("add NAT rule for %s: %w", destination, err)
+			return removed, fmt.Errorf("add NAT rule for %s: %w", destination, err)
 		}
 	}
 
-	return nil
+	return removed, nil
 }
 
-// RemoveNAT removes every MASQUERADE rule bound to the IPTV interface.
-func RemoveNAT(value config.Config) error {
+// RemoveNAT removes every MASQUERADE rule bound to the IPTV interface and
+// returns the removed rules with their counters.
+func RemoveNAT(value config.Config) ([]NATRule, error) {
 	table, err := openNATTable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return removeNAT(table, value)
 }
 
-func removeNAT(table natTable, value config.Config) error {
+func removeNAT(table natTable, value config.Config) ([]NATRule, error) {
 	rules, err := masqueradeRules(table, Target(value))
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var removed []NATRule
 	var joined error
 	for _, rule := range rules {
 		if err := table.Delete(natTableName, natChain, rule.spec...); err != nil {
-			joined = errors.Join(joined, fmt.Errorf("remove NAT rule for %s: %w", rule.destination, err))
+			joined = errors.Join(joined, fmt.Errorf("remove NAT rule for %s: %w", rule.Destination, err))
+
+			continue
 		}
+		removed = append(removed, rule.NATRule)
 	}
 
-	return joined
+	return removed, joined
+}
+
+// NATRule is one MASQUERADE rule on the IPTV interface with the counters
+// iptables keeps for it. A managed rule carries this program's comment.
+type NATRule struct {
+	Destination string `json:"destination"`
+	Managed     bool   `json:"managed"`
+	Packets     uint64 `json:"packets"`
+	Bytes       uint64 `json:"bytes"`
+}
+
+// Owner names who put the rule there.
+func (rule NATRule) Owner() string {
+	if rule.Managed {
+		return "managed"
+	}
+
+	return "unmanaged"
+}
+
+func (rule NATRule) String() string {
+	return fmt.Sprintf("%s %s: %d packets, %d bytes", rule.Owner(), rule.Destination, rule.Packets, rule.Bytes)
+}
+
+// ListNAT lists the MASQUERADE rules on value's IPTV interface with their counters.
+func ListNAT(value config.Config) ([]NATRule, error) {
+	table, err := openNATTable()
+	if err != nil {
+		return nil, err
+	}
+	rules, err := masqueradeRules(table, Target(value))
+	if err != nil {
+		return nil, err
+	}
+	result := make([]NATRule, 0, len(rules))
+	for _, rule := range rules {
+		result = append(result, rule.NATRule)
+	}
+
+	return result, nil
 }
 
 type masqueradeRule struct {
-	spec        []string
-	destination string
-	managed     bool
+	NATRule
+
+	spec []string
 }
 
 // masqueradeRules lists the POSTROUTING MASQUERADE rules that leave through
-// target, as iptables -S prints them, so each can be deleted by its own spec.
+// target, as iptables -v -S prints them, so each can be deleted by its own spec.
 func masqueradeRules(table natTable, target string) ([]masqueradeRule, error) {
-	listed, err := table.List(natTableName, natChain)
+	listed, err := table.ListWithCounters(natTableName, natChain)
 	if err != nil {
 		return nil, fmt.Errorf("list NAT rules: %w", err)
 	}
@@ -258,18 +307,57 @@ func masqueradeRules(table natTable, target string) ([]masqueradeRule, error) {
 		if len(fields) < 2 || fields[0] != "-A" || fields[1] != natChain {
 			continue
 		}
-		spec := fields[2:]
+		spec, packets, bytes := splitCounters(fields[2:])
 		if !hasOption(spec, "-j", "MASQUERADE") || !hasOption(spec, "-o", target) {
 			continue
 		}
 		rules = append(rules, masqueradeRule{
-			spec:        spec,
-			destination: optionValue(spec, "-d"),
-			managed:     hasOption(spec, "--comment", natComment),
+			Destination: natDestination(spec), Managed: hasOption(spec, "--comment", natComment), Packets: packets, Bytes: bytes,
+			spec: spec,
 		})
 	}
 
 	return rules, nil
+}
+
+// iptables -v -S adds "-c <packets> <bytes>" to each rule, which -D refuses.
+func splitCounters(spec []string) ([]string, uint64, uint64) {
+	for index := 0; index+2 < len(spec); index++ {
+		if spec[index] != "-c" {
+			continue
+		}
+		packets, err := strconv.ParseUint(spec[index+1], 10, 64)
+		if err != nil {
+			break
+		}
+		bytes, err := strconv.ParseUint(spec[index+2], 10, 64)
+		if err != nil {
+			break
+		}
+
+		return slices.Concat(spec[:index], spec[index+3:]), packets, bytes
+	}
+
+	return spec, 0, 0
+}
+
+// iptables -S leaves out -d for a rule that matches every destination.
+func natDestination(spec []string) string {
+	destination := optionValue(spec, "-d")
+	if destination == "" {
+		destination = "0.0.0.0/0"
+	}
+
+	return canonicalPrefix(destination)
+}
+
+func canonicalPrefix(value string) string {
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil {
+		return value
+	}
+
+	return prefix.Masked().String()
 }
 
 func hasOption(spec []string, flag, value string) bool {

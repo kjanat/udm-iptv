@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"encoding/json"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,12 +37,15 @@ func TestReadableDiagnosticsIncludeProxySettings(t *testing.T) {
 
 func TestRenderSnapshotSeparatesUnreadableCountersFromZero(t *testing.T) {
 	t.Parallel()
-	idle, none := MulticastInfo{}, []string{}
+	idle, none := MulticastInfo{}, []network.NATRule{}
 	readable := RenderSnapshot(Snapshot{Multicast: &idle, NAT: &none})
 	for _, want := range []string{"Active NAT rules: 0", "Multicast routes: 0 forwarding (0 packets, 0 B), 0 unresolved"} {
 		if !strings.Contains(readable, want) {
 			t.Fatalf("readable snapshot missing %q: %s", want, readable)
 		}
+	}
+	if strings.Contains(readable, "NAT rules on the IPTV interface") || strings.Contains(readable, "NAT evidence") {
+		t.Fatalf("empty NAT sections rendered: %s", readable)
 	}
 	unreadable := RenderSnapshot(Snapshot{})
 	for _, want := range []string{"Active NAT rules: unavailable", "Multicast routes: unavailable"} {
@@ -57,7 +61,7 @@ func TestSnapshotJSONKeepsUnreadableCountersNull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"multicast":null`, `"natRules":null`} {
+	for _, want := range []string{`"multicast":null`, `"natRules":null`, `"natEvidence":null`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("missing %s: %s", want, data)
 		}
@@ -81,7 +85,7 @@ func TestSnapshotRendersEveryForwardedRouteAndTheLease(t *testing.T) {
 		Group: netip.MustParseAddr("224.0.250.64"), Source: netip.MustParseAddr("195.121.94.212"), Input: "iptv", Outputs: []string{"br0"}, Packets: 182931, Bytes: 76894939,
 	}}}
 	memberships := []Membership{{Bridge: "br0", Port: "switch0.1", Group: "224.0.250.64"}}
-	rules := []string{"-A POSTROUTING -o iptv -d 213.75.0.0/16 -m comment --comment udm-iptv -j MASQUERADE"}
+	rules := []network.NATRule{{Destination: "213.75.0.0/16", Managed: true, Packets: 187, Bytes: 27452}}
 	lease := service.LeaseState{Received: time.Date(2026, 9, 17, 18, 53, 0, 0, time.UTC), Lease: network.Lease{
 		Action: "bound", Interface: "iptv", Address: "10.207.71.227", Mask: "20", Routers: []string{"10.207.64.1"},
 		StaticRoutes: []string{"213.75.112.0/21", "10.207.64.1"}, Options: map[string]string{"dns": "195.121.1.34", "lease": "3600"},
@@ -96,7 +100,8 @@ func TestSnapshotRendersEveryForwardedRouteAndTheLease(t *testing.T) {
 		"Routes: 10.207.64.0/20, 213.75.112.0/21 via 10.207.64.1",
 		"Multicast routes: 1 forwarding (182931 packets, 76.9 MB), 4 unresolved",
 		"  224.0.250.64 from 195.121.94.212: iptv -> br0, 182931 packets, 76.9 MB",
-		"  -A POSTROUTING -o iptv -d 213.75.0.0/16 -m comment --comment udm-iptv -j MASQUERADE",
+		"Active NAT rules: 1",
+		"NAT rules on the IPTV interface:\n  managed 213.75.0.0/16: 187 packets, 27.5 kB",
 		"Bridge memberships: 1",
 		"  br0 switch0.1 224.0.250.64",
 		"DHCP lease: bound at 2026-09-17T18:53:00Z, address 10.207.71.227/20, routers 10.207.64.1, static routes 213.75.112.0/21 10.207.64.1",
@@ -114,6 +119,57 @@ func TestSnapshotRendersEveryForwardedRouteAndTheLease(t *testing.T) {
 	marker := RenderEvent(Event{Type: "marker", Time: lease.Received, Message: "TV switched on"})
 	if marker != "\n>>> 2026-09-17T18:53:00Z TV switched on\n\n" {
 		t.Fatalf("marker = %q", marker)
+	}
+}
+
+// A NAT rule on the IPTV interface only matches traffic a route sends
+// there, and a rule ahead of the managed one takes the traffic first, so
+// zero counters need the routes and the other rules to be read.
+func TestNATEvidenceSeparatesRoutedFromUnreachableDestinations(t *testing.T) {
+	t.Parallel()
+	destinations := []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"}
+	routes := []string{"10.207.64.0/20", "213.75.112.0/21 via 10.207.64.1"}
+	rules := []network.NATRule{
+		{Destination: "213.75.0.0/16", Packets: 187, Bytes: 27452},
+		{Destination: "213.75.0.0/16", Managed: true},
+		{Destination: "217.166.0.0/16", Managed: true},
+		{Destination: "195.121.0.0/16", Managed: true},
+	}
+	evidence := natEvidence(destinations, routes, rules)
+	want := []NATEvidence{
+		{Destination: "213.75.0.0/16", Routes: []string{"213.75.112.0/21 via 10.207.64.1"}, UnmanagedRules: 1, UnmanagedPackets: 187, UnmanagedBytes: 27452},
+		{Destination: "217.166.0.0/16", Routes: []string{}},
+		{Destination: "195.121.0.0/16", Routes: []string{}},
+	}
+	for index := range want {
+		if evidence[index].Destination != want[index].Destination || !slices.Equal(evidence[index].Routes, want[index].Routes) ||
+			evidence[index].UnmanagedRules != want[index].UnmanagedRules || evidence[index].UnmanagedPackets != want[index].UnmanagedPackets {
+			t.Fatalf("evidence[%d] = %+v, want %+v", index, evidence[index], want[index])
+		}
+	}
+	output := RenderSnapshot(Snapshot{Network: networkStatus{Target: "iptv", Routes: routes}, NAT: &rules, NATEvidence: &evidence})
+	for _, line := range []string{
+		"Active NAT rules: 3 managed, 1 unmanaged",
+		"  unmanaged 213.75.0.0/16: 187 packets, 27.5 kB",
+		"  213.75.0.0/16: routed (213.75.112.0/21 via 10.207.64.1), 0 packets, 0 B; unmanaged rules for it: 1, 187 packets, 27.5 kB",
+		"  217.166.0.0/16: no route via iptv, 0 packets, 0 B",
+	} {
+		if !strings.Contains(output, line) {
+			t.Fatalf("missing %q in:\n%s", line, output)
+		}
+	}
+}
+
+func TestNATEvidenceCountsBroadRoutesAndTheUnrestrictedDestination(t *testing.T) {
+	t.Parallel()
+	broad := natEvidence([]string{"213.75.0.0/16"}, []string{"default via 10.207.64.1"}, nil)
+	if !slices.Equal(broad[0].Routes, []string{"default via 10.207.64.1"}) {
+		t.Fatalf("default route not counted as reaching the destination: %+v", broad)
+	}
+	routes := []string{"10.207.64.0/20", "213.75.112.0/21 via 10.207.64.1"}
+	unrestricted := natEvidence([]string{"0.0.0.0/0"}, routes, []network.NATRule{{Destination: "0.0.0.0/0", Managed: true, Packets: 3}})
+	if unrestricted[0].Packets != 3 || len(unrestricted[0].Routes) != 2 {
+		t.Fatalf("unrestricted destination = %+v", unrestricted)
 	}
 }
 

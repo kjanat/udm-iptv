@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"sort"
@@ -11,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/go-iptables/iptables"
 	systemd "github.com/coreos/go-systemd/v22/dbus"
 	"github.com/vishvananda/netlink"
 
@@ -36,7 +36,8 @@ type Snapshot struct {
 	Multicast   *MulticastInfo      `json:"multicast"`
 	Memberships *[]Membership       `json:"memberships"`
 	Lease       *service.LeaseState `json:"lease"`
-	NAT         *[]string           `json:"natRules"`
+	NAT         *[]network.NATRule  `json:"natRules"`
+	NATEvidence *[]NATEvidence      `json:"natEvidence"`
 	Downstream  []downstreamStatus  `json:"downstream"`
 	Switches    string              `json:"switches"`
 	NativeProxy string              `json:"nativeProxy"`
@@ -91,6 +92,19 @@ type MulticastInfo struct {
 	Entries    []mroute.Route `json:"entries"`
 }
 
+// NATEvidence is what the router shows for one configured NAT destination:
+// the routes on the IPTV interface that can carry traffic to it, and the
+// traffic the rules for it matched, managed and unmanaged apart.
+type NATEvidence struct {
+	Destination      string   `json:"destination"`
+	Routes           []string `json:"routes"`
+	Packets          uint64   `json:"packets"`
+	Bytes            uint64   `json:"bytes"`
+	UnmanagedRules   int      `json:"unmanagedRules"`
+	UnmanagedPackets uint64   `json:"unmanagedPackets"`
+	UnmanagedBytes   uint64   `json:"unmanagedBytes"`
+}
+
 // Membership is one group a bridge port has joined, from the bridge MDB.
 type Membership struct {
 	Bridge string `json:"bridge"`
@@ -100,6 +114,9 @@ type Membership struct {
 
 // mdbTimeout bounds the bridge MDB query.
 const mdbTimeout = 5 * time.Second
+
+// defaultRouteText is how a route without a destination is listed.
+const defaultRouteText = "default"
 
 // Snapshot returns a snapshot of the current state of the system.
 func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -118,8 +135,10 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	if usage, err := multicastUsage(); err == nil {
 		result.Multicast = &usage
 	}
-	if rules, err := managedNATRules(); err == nil {
+	if rules, err := network.ListNAT(value); err == nil {
 		result.NAT = &rules
+		evidence := natEvidence(value.WAN.NATDestinations, result.Network.Routes, rules)
+		result.NATEvidence = &evidence
 	}
 	if memberships, err := bridgeMemberships(ctx); err == nil {
 		result.Memberships = &memberships
@@ -244,12 +263,82 @@ func multicastRouteCount(usage *MulticastInfo) string {
 	return strconv.Itoa(usage.Routes)
 }
 
-func natRuleCount(rules *[]string) string {
+func natRuleCount(rules *[]network.NATRule) string {
 	if rules == nil {
 		return counterUnavailable
 	}
+	managed, unmanaged := 0, 0
+	for _, rule := range *rules {
+		if rule.Managed {
+			managed++
+		} else {
+			unmanaged++
+		}
+	}
+	if unmanaged == 0 {
+		return strconv.Itoa(managed)
+	}
 
-	return strconv.Itoa(len(*rules))
+	return fmt.Sprintf("%d managed, %d unmanaged", managed, unmanaged)
+}
+
+func natEvidence(destinations, routes []string, rules []network.NATRule) []NATEvidence {
+	evidence := make([]NATEvidence, 0, len(destinations))
+	for _, destination := range destinations {
+		entry := NATEvidence{Destination: destination, Routes: []string{}}
+		if prefix, err := netip.ParsePrefix(destination); err == nil {
+			entry.Routes = overlappingRoutes(prefix, routes)
+		}
+		for _, rule := range rules {
+			if !samePrefix(rule.Destination, destination) {
+				continue
+			}
+			if rule.Managed {
+				entry.Packets += rule.Packets
+				entry.Bytes += rule.Bytes
+
+				continue
+			}
+			entry.UnmanagedRules++
+			entry.UnmanagedPackets += rule.Packets
+			entry.UnmanagedBytes += rule.Bytes
+		}
+		evidence = append(evidence, entry)
+	}
+
+	return evidence
+}
+
+// overlappingRoutes keeps the routes that can carry traffic to prefix, in
+// the form inspectLink lists them: the destination first, "default" for a
+// default route.
+func overlappingRoutes(prefix netip.Prefix, routes []string) []string {
+	matches := []string{}
+	for _, route := range routes {
+		destination, _, _ := strings.Cut(route, " ")
+		if destination == defaultRouteText {
+			destination = "0.0.0.0/0"
+		}
+		parsed, err := netip.ParsePrefix(destination)
+		if err == nil && parsed.Overlaps(prefix) {
+			matches = append(matches, route)
+		}
+	}
+
+	return matches
+}
+
+func samePrefix(left, right string) bool {
+	first, err := netip.ParsePrefix(left)
+	if err != nil {
+		return left == right
+	}
+	second, err := netip.ParsePrefix(right)
+	if err != nil {
+		return false
+	}
+
+	return first.Masked() == second.Masked()
 }
 
 func summarizeConfig(value config.Config) configSummary {
@@ -328,25 +417,6 @@ func parseMemberships(data []byte) ([]Membership, error) {
 	return memberships, nil
 }
 
-func managedNATRules() ([]string, error) {
-	table, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
-	if err != nil {
-		return nil, fmt.Errorf("open iptables: %w", err)
-	}
-	rules, err := table.ListWithCounters("nat", "POSTROUTING")
-	if err != nil {
-		return nil, fmt.Errorf("list nat POSTROUTING: %w", err)
-	}
-	managed := []string{}
-	for _, rule := range rules {
-		if strings.Contains(rule, "udm-iptv") {
-			managed = append(managed, rule)
-		}
-	}
-
-	return managed, nil
-}
-
 func inspectLink(target string) networkStatus {
 	result := networkStatus{Target: target}
 	link, err := netlink.LinkByName(target)
@@ -365,11 +435,11 @@ func inspectLink(target string) networkStatus {
 		return result
 	}
 	for _, route := range routes {
-		destination := "default"
+		destination := defaultRouteText
 		if route.Dst != nil {
 			destination = route.Dst.String()
 		}
-		if destination == "default" || destination == "0.0.0.0/0" {
+		if destination == defaultRouteText || destination == "0.0.0.0/0" {
 			result.DefaultRoute = true
 		}
 		if route.Gw != nil {
@@ -409,7 +479,8 @@ Multicast routes: %s
 		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, value.Config.QuickLeave, value.Config.Debug,
 		value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount, strings.Join(value.Network.Addresses, ", "),
 		strings.Join(value.Network.Routes, ", "), value.Network.Target, presence(value.Network.DefaultRoute), multicastSummary(value.Multicast)) +
-		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderMemberships(value.Memberships) + renderLease(value.Lease) + renderDownstream(value)
+		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderNATEvidence(value.NATEvidence, value.Network.Target) +
+		renderMemberships(value.Memberships) + renderLease(value.Lease) + renderDownstream(value)
 }
 
 func presence(observed bool) string {
@@ -434,13 +505,35 @@ func renderSourceRanges(summary configSummary) string {
 	return ranges + " (applied as igmpproxy altnet)"
 }
 
-func renderNAT(rules *[]string) string {
-	if rules == nil {
+func renderNAT(rules *[]network.NATRule) string {
+	if rules == nil || len(*rules) == 0 {
 		return ""
 	}
 	var output strings.Builder
+	output.WriteString("NAT rules on the IPTV interface:\n")
 	for _, rule := range *rules {
-		fmt.Fprintf(&output, "  %s\n", rule)
+		fmt.Fprintf(&output, "  %s %s: %d packets, %s\n", rule.Owner(), rule.Destination, rule.Packets, formatBytes(rule.Bytes))
+	}
+
+	return output.String()
+}
+
+func renderNATEvidence(evidence *[]NATEvidence, target string) string {
+	if evidence == nil || len(*evidence) == 0 {
+		return ""
+	}
+	var output strings.Builder
+	output.WriteString("NAT evidence per destination:\n")
+	for _, entry := range *evidence {
+		reach := "no route via " + target
+		if len(entry.Routes) > 0 {
+			reach = "routed (" + strings.Join(entry.Routes, ", ") + ")"
+		}
+		fmt.Fprintf(&output, "  %s: %s, %d packets, %s", entry.Destination, reach, entry.Packets, formatBytes(entry.Bytes))
+		if entry.UnmanagedRules > 0 {
+			fmt.Fprintf(&output, "; unmanaged rules for it: %d, %d packets, %s", entry.UnmanagedRules, entry.UnmanagedPackets, formatBytes(entry.UnmanagedBytes))
+		}
+		output.WriteByte('\n')
 	}
 
 	return output.String()
