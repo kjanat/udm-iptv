@@ -203,3 +203,34 @@ func TestParseBridgeMemberships(t *testing.T) {
 		t.Fatal("garbage accepted")
 	}
 }
+
+func TestIPv6SectionNamesTheAddressesAndTheKnobs(t *testing.T) {
+	text := renderIPv6(networkStatus{
+		Target:      "iptv",
+		AddressesV6: []string{"2001:db8::2/64"},
+		IPv6Knobs: map[string]string{
+			"iptv/accept_ra": "2", "iptv/forwarding": "1", "br0/forwarding": "1",
+		},
+	})
+	for _, want := range []string{
+		"IPv6 addresses on iptv: 2001:db8::2/64\n",
+		"IPv6 multicast knobs: br0/forwarding=1, iptv/accept_ra=2, iptv/forwarding=1\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status is missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestIPv6SectionIsEmptyWithoutIPv6(t *testing.T) {
+	if text := renderIPv6(networkStatus{Target: "iptv"}); text != "" {
+		t.Errorf("an IPv4-only console prints an IPv6 section: %q", text)
+	}
+}
+
+func TestIPv6KnobsShowWhenTheLaneHasNoAddressYet(t *testing.T) {
+	text := renderIPv6(networkStatus{Target: "iptv", IPv6Knobs: map[string]string{"iptv/accept_ra": "1"}})
+	if !strings.Contains(text, "iptv/accept_ra=1") {
+		t.Errorf("the knob that explains a missing address is not reported: %q", text)
+	}
+}
