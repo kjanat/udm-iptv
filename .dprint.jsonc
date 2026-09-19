@@ -2,7 +2,18 @@
 	"$schema": "https://dprint.dev/schemas/v0.json",
 	"useTabs": true,
 	"json": {},
-	"markdown": { "emphasisKind": "asterisks", "lineWidth": 100, "textWrap": "maintain" },
+	"markdown": {
+		"emphasisKind": "asterisks",
+		"lineWidth": 100,
+		"textWrap": "maintain",
+		"codeBlock.useTabs": false,
+		"overrides": [
+			{
+				"files": ["**/README.md"],
+				"textWrap": "never"
+			}
+		]
+	},
 	"shfmt": {
 		"useTabs": true,
 		"binaryNextLine": true,
@@ -27,5 +38,6 @@
 		"npm:@dprint/markdown@0.24.0",
 		"npm:@dprint/ruff@0.8.7",
 		"npm:dprint-plugin-yaml@0.6.0",
+		"npm:dprint-plugin-graphql@0.2.3",
 	],
 }

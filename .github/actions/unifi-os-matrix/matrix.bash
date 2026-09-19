@@ -1,70 +1,83 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Required:
+# SKU             one console, named as the catalog's platform in lower case
+#                 (udmpro, udmprose, udr7, uxmax, ...), or all
+# UNIFI_OS_IMAGE  container repository the image tags are built under
+#                 (ghcr.io/kjanat/unifi-os)
+# Optional:
+# CHANNELS        catalog channels to draw from (default: release beta-public)
+# CUTOFF          ignore firmware published after this RFC 3339 instant
+# PINNED          builds the catalog does not index, paired with the newest
+#                 release for their console (default: pinned.json beside this
+#                 script, skipped when absent or empty)
 : "${SKU:?SKU is required}"
 : "${UNIFI_OS_IMAGE:?UNIFI_OS_IMAGE is required}"
 
-case ${SKU} in
-	all | udm | udmbeast | udmpro | udmpromax | udmse) ;;
-	*)
-		echo "error: unknown sku ${SKU}" >&2
-		exit 1
-		;;
-esac
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
+# release is required. Every other channel contributes what it has, so a
+# channel Ubiquiti has published nothing on for these consoles adds no jobs.
+channels=${CHANNELS:-release beta-public}
 cutoff=${CUTOFF:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
-response=$(curl -fsSL --retry 3 --retry-max-time 45 \
-	--connect-timeout 10 --max-time 30 \
-	--get https://fw-update.ui.com/api/firmware \
-	--data-urlencode 'filter=eq~~product~~unifi-dream' \
-	--data-urlencode 'filter=eq~~channel~~release' \
-	--data-urlencode 'sort=-created' \
-	--data-urlencode 'limit=1000')
 
-matrix=$(jq -cer \
-	--arg cutoff "${cutoff}" \
-	--arg wanted "${SKU}" \
-	--arg image "${UNIFI_OS_IMAGE}" '
-		($cutoff | fromdateiso8601) as $cutoff_epoch |
-		._embedded.firmware as $firmware |
-		[
-			{"model": "udm", "platform": "UDM"},
-			{"model": "udmbeast", "platform": "UDMEA4C"},
-			{"model": "udmpro", "platform": "UDMPRO"},
-			{"model": "udmpromax", "platform": "UDMPROMAX"},
-			{"model": "udmse", "platform": "UDMPROSE"}
-		] |
-		[
-			.[] |
-			select($wanted == "all" or .model == $wanted) |
-			. as $device |
-			[
-				$firmware[] |
-				select(.platform == $device.platform) |
-				select((.created | fromdateiso8601) < $cutoff_epoch) |
-				. + {version_number: (.version | ltrimstr("v") | split("+")[0])}
-			] |
-			group_by(.version_number) |
-			map(max_by(.created)) |
-			sort_by(.created) |
-			if length < 2 then
-				error("fewer than two releases before " + $cutoff + " for " + $device.model)
-			else
-				(.[-2:] | map({
-					board: $device.platform,
-					version: .version_number,
-					url: ._links.data.href,
-					sha256: .sha256_checksum
-				})) as $pair |
-				{
-					model: $device.model,
-					firmwares: $pair,
-					from_image: ($image + ":" + $device.model + "-" + $pair[0].version),
-					to_image: ($image + ":" + $device.model + "-" + $pair[1].version)
-				}
-			end
-		]
-	' <<<"${response}")
+fetch() {
+	curl -fsSL --retry 3 --retry-max-time 45 \
+		--connect-timeout 10 --max-time 30 \
+		--get https://fw-update.ui.com/api/firmware \
+		--data-urlencode 'filter=eq~~product~~unifi-dream' \
+		--data-urlencode "filter=eq~~channel~~$1" \
+		--data-urlencode 'sort=-created' \
+		--data-urlencode 'limit=1000'
+}
 
-echo "Firmware cutoff: ${cutoff}" >&2
+select_pairs() {
+	jq -cer \
+		--arg cutoff "${cutoff}" \
+		--arg wanted "${SKU}" \
+		--arg image "${UNIFI_OS_IMAGE}" \
+		--arg channel "$1" \
+		--argjson required "$2" \
+		--from-file "${here}/pairs.jq"
+}
+
+pairs=()
+for channel in ${channels}; do
+	required=false
+	if [[ ${channel} == release ]]; then
+		required=true
+	fi
+	response=$(fetch "${channel}")
+	selected=$(select_pairs "${channel}" "${required}" <<<"${response}")
+	count=$(jq -er 'length' <<<"${selected}")
+	noun=pairs
+	if ((count == 1)); then
+		noun=pair
+	fi
+	printf 'Firmware channel %s:\t%s %s\n' "${channel}" "${count}" "${noun}" >&2
+	pairs+=("${selected}")
+done
+
+pinned=${PINNED:-${here}/pinned.json}
+if [[ -s ${pinned} ]] && [[ $(jq -er 'length' "${pinned}") -gt 0 ]]; then
+	release=$(fetch release)
+	selected=$(jq -cer \
+		--arg cutoff "${cutoff}" \
+		--arg wanted "${SKU}" \
+		--arg image "${UNIFI_OS_IMAGE}" \
+		--slurpfile loaded "${pinned}" \
+		'$loaded[0] as $pinned | '"$(cat "${here}/pinned.jq")" <<<"${release}")
+	count=$(jq -er 'length' <<<"${selected}")
+	noun=pairs
+	if ((count == 1)); then
+		noun=pair
+	fi
+	printf 'Pinned builds:\t\t%s %s\n' "${count}" "${noun}" >&2
+	pairs+=("${selected}")
+fi
+
+matrix=$(jq -ces 'add' <<<"${pairs[*]}")
+
+printf 'Firmware cutoff:\t\t%s\n' "${cutoff}" >&2
 printf '%s\n' "${matrix}"
