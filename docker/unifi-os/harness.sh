@@ -37,11 +37,11 @@ fi
 
 # A dummy interface discards everything it transmits, so a DHCP request on one
 # reaches no server. Each WAN candidate is a veth pair instead, and its peer
-# carries the answering end.
+# carries the answering end. The package enumerates br* and eth0*.
 for iface in br0 eth0 eth1 eth2 eth3 eth4 eth8 eth9 eth18 eth19; do
-	ip link add "${iface}" type veth peer name "${iface}-peer" 2>/dev/null || true
+	ip link add "${iface}" type veth peer name "peer-${iface}" 2>/dev/null || true
 	ip link set "${iface}" up 2>/dev/null || true
-	ip link set "${iface}-peer" up 2>/dev/null || true
+	ip link set "peer-${iface}" up 2>/dev/null || true
 done
 ip address replace 192.0.2.1/24 dev br0
 
@@ -54,7 +54,7 @@ serve_dhcp() {
 	if [ -z "${vlan}" ] || [ "${parent}" = "${vlan_link}" ]; then
 		return 0
 	fi
-	ip link add link "${parent}-peer" name iptv-peer type vlan id "${vlan}"
+	ip link add link "peer-${parent}" name iptv-peer type vlan id "${vlan}"
 	ip link set iptv-peer up
 	ip address replace 198.51.100.1/24 dev iptv-peer
 	dnsmasq --port=0 --bind-interfaces --interface=iptv-peer \
@@ -94,7 +94,11 @@ for enabled in /etc/systemd/system/multi-user.target.wants/*; do
 	if [ -e "${firmware_link}" ] || [ -L "${firmware_link}" ]; then
 		continue
 	fi
-	target=$(readlink -f "${enabled}")
+	# Some readlink builds fail on a dangling link instead of printing its target.
+	if ! target=$(readlink -f "${enabled}"); then
+		echo "harness: cannot resolve ${enabled}" >&2
+		continue
+	fi
 	if [ -e "${enabled}" ]; then
 		case ${target} in
 			/etc/systemd/system/* | */systemd/system/udm-iptv.service) ;;
@@ -106,6 +110,7 @@ done
 
 # systemd logs to the journal by default, which dies with the container, so a
 # boot failure leaves nothing behind for docker logs to show.
+echo "harness: starting systemd for ${test_target}" >&2
 if [ -x /lib/systemd/systemd ]; then
 	exec /lib/systemd/systemd --system --log-target=console --unit="${test_target}"
 fi

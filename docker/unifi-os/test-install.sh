@@ -123,7 +123,9 @@ dump() {
 	fi
 	dumped_containers["${name}"]=1
 	group_begin "Diagnostics: ${label}"
-	status=$(docker inspect -f '{{.State.Status}}' "${name}" 2>/dev/null) || status=gone
+	status=$(docker inspect -f \
+		'{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{printf "%q" .State.Error}}' \
+		"${name}" 2>/dev/null) || status=gone
 	echo "container status=${status}" >&2
 	docker logs "${name}" >&2 || true
 	docker exec "${name}" systemctl is-system-running >&2 || true
@@ -314,7 +316,8 @@ boot() {
 	local data_volume=${5:-${vol_data}}
 	local etc_volume=${6:-${vol_etc_overlay}}
 	docker rm -f "${name}" >/dev/null 2>&1 || true
-	docker run -d --name "${name}" --platform linux/arm64 --privileged --cgroupns=host \
+	# Docker connects /dev/console to the container's output only with a terminal.
+	docker run -d -t --name "${name}" --platform linux/arm64 --privileged --cgroupns=host \
 		--network "${network}" \
 		--stop-signal SIGRTMIN+3 \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:rw \
@@ -410,12 +413,12 @@ assert_service_runtime_boundary() {
 	local observed_main_pid
 	local observed_restarts
 	local restarts
+	local improxy_path
 	while ((n < 180)); do
 		journal=$(service_journal "${name}")
+		improxy_path=$(docker exec "${name}" sh -c 'command -v improxy' 2>/dev/null) || improxy_path=
 		if docker exec "${name}" systemctl is-enabled --quiet udm-iptv 2>/dev/null \
-			&& docker exec "${name}" test "$(docker exec "${name}" sh -c \
-				'command -v improxy')" = \
-				/usr/sbin/improxy; then
+			&& [[ ${improxy_path} == /usr/sbin/improxy ]]; then
 			active_state=$(docker exec "${name}" systemctl show \
 				--property ActiveState --value udm-iptv)
 			job=$(docker exec "${name}" systemctl show \
@@ -475,11 +478,18 @@ assert_restored() {
 	local deadline=$((180 + lock_seconds))
 	local n=0
 	local restore_journal
+	local restore_result
+	local restore_state
 	while ((n < deadline)); do
 		restore_journal=$(docker exec "${name}" \
 			journalctl -b -u udm-iptv-restore.service --no-pager)
-		if grep -Fq "Finished Reinstall udm-iptv after a firmware update." \
-			<<<"${restore_journal}"; then
+		# systemd's own messages follow --log-target.
+		restore_state=$(docker exec "${name}" systemctl show \
+			--property ActiveState --property Result --property ExecMainCode \
+			udm-iptv-restore.service)
+		if grep -Fqx 'ActiveState=inactive' <<<"${restore_state}" \
+			&& grep -Fqx 'Result=success' <<<"${restore_state}" \
+			&& grep -Fqx 'ExecMainCode=1' <<<"${restore_state}"; then
 			break
 		fi
 		if docker exec "${name}" systemctl is-failed --quiet \
@@ -497,8 +507,9 @@ assert_restored() {
 		return 1
 	fi
 	wait_pkg "${name}"
-	if [[ $(docker exec "${name}" systemctl show --property Result --value \
-		udm-iptv-restore.service) != success ]]; then
+	restore_result=$(docker exec "${name}" systemctl show --property Result --value \
+		udm-iptv-restore.service)
+	if [[ ${restore_result} != success ]]; then
 		report_error "restore service did not finish successfully in ${name}"
 		dump "${name}"
 		return 1
@@ -600,11 +611,16 @@ docker volume create "${vol_etc_overlay}" >/dev/null
 group_begin "Install on ${from_image}"
 boot "${from_name}" "${from_image}"
 wait_systemd "${from_name}"
-docker exec \
+install_output=$(docker exec \
 	-e DEBIAN_FRONTEND=noninteractive \
 	-e UDM_IPTV_PACKAGE=/tmp/udm-iptv-old.deb \
 	"${from_name}" \
-	sh /tmp/install.sh
+	sh /tmp/install.sh 2>&1)
+echo "${install_output}"
+if grep -Fq 'Illegal number' <<<"${install_output}"; then
+	report_error "debconf misread an interface name in ${from_name}"
+	exit 1
+fi
 assert_version "${from_name}" "${old_version}"
 assert_bash_completion "${from_name}"
 docker exec "${from_name}" test -e /data/udm-iptv/udm-iptv.deb
@@ -707,7 +723,8 @@ group_end
 group_begin "Restore across extracted rootfs swap to ${to_image}"
 boot "${to_name}" "${to_image}" none "${restore_lock_seconds}"
 wait_systemd "${to_name}"
-if [[ $(docker inspect -f '{{.HostConfig.NetworkMode}}' "${to_name}") != none ]]; then
+to_network=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "${to_name}")
+if [[ ${to_network} != none ]]; then
 	report_error "restore container still has Docker networking"
 	exit 1
 fi

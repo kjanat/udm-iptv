@@ -28,7 +28,11 @@ follow_journal() {
 		fi
 		running=$(docker inspect --format '{{.State.Running}}' "${name}" 2>/dev/null || echo false)
 		if [[ ${running} != true ]]; then
-			echo "${name} stopped before its journal was available, console output follows" >&2
+			echo "${name} stopped before its journal was available" >&2
+			docker inspect --format \
+				'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{printf "%q" .State.Error}}' \
+				"${name}" >&2 || true
+			echo "console output follows" >&2
 			docker logs "${name}" 2>&1 || true
 			return
 		fi
