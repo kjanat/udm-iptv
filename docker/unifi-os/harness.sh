@@ -104,11 +104,13 @@ for enabled in /etc/systemd/system/multi-user.target.wants/*; do
 	ln -sf "${target}" "/run/systemd/system/${test_target}.wants/${name}"
 done
 
+# systemd logs to the journal by default, which dies with the container, so a
+# boot failure leaves nothing behind for docker logs to show.
 if [ -x /lib/systemd/systemd ]; then
-	exec /lib/systemd/systemd --system --unit="${test_target}"
+	exec /lib/systemd/systemd --system --log-target=console --unit="${test_target}"
 fi
 if [ -x /sbin/init ]; then
-	exec /sbin/init --unit="${test_target}"
+	exec /sbin/init --log-target=console --unit="${test_target}"
 fi
 
 echo "error: no systemd in this image" >&2
