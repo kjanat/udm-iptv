@@ -279,9 +279,10 @@ assert_v5_upgrade_reports_success() {
 	local output
 	local status=0
 
-	docker cp "${v5_deb}" "${name}:/tmp/udm-iptv-v5.deb"
+	# /tmp is a tmpfs, and docker cp writes under it rather than into it.
+	docker exec -i "${name}" sh -c 'cat >/root/udm-iptv-v5.deb' <"${v5_deb}"
 	output=$(docker exec -e DEBIAN_FRONTEND=noninteractive "${name}" \
-		udm-iptv upgrade --package /tmp/udm-iptv-v5.deb 2>&1) || status=$?
+		udm-iptv upgrade --package /root/udm-iptv-v5.deb 2>&1) || status=$?
 	echo "${output}"
 	if ((status != 0)) \
 		|| grep -Fq 'the service is not healthy' <<<"${output}" \
