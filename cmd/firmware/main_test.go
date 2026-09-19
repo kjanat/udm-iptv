@@ -11,6 +11,14 @@ import (
 	"github.com/kjanat/udm-iptv/internal/firmware"
 )
 
+func TestUnknownTrackFailsBeforeDiscovery(t *testing.T) {
+	root := command()
+	root.SetArgs([]string{"catalog", "--track", "unknown"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "unknown firmware track") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestCommandDefaultsAreIndependent(t *testing.T) {
 	t.Setenv("MODEL", "udmpro")
 	root := command()

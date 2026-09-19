@@ -12,13 +12,15 @@ import (
 var (
 	errStopNotDone    = errors.New("stop finished with status")
 	errRestartNotDone = errors.New("start finished with status")
+	statusDone        = "done"
 )
 
 // NoSuchUnit reports whether err is systemd's "unit not found" D-Bus error.
 func NoSuchUnit(err error) bool {
 	var dbusError *dbus.Error
-
-	return errors.As(err, &dbusError) && dbusError.Name == "org.freedesktop.systemd1.NoSuchUnit"
+	var value dbus.Error
+	const name = "org.freedesktop.systemd1.NoSuchUnit"
+	return errors.As(err, &dbusError) && dbusError.Name == name || errors.As(err, &value) && value.Name == name
 }
 
 // Stop stops unit and waits for systemd to report the job finished.
@@ -29,7 +31,7 @@ func Stop(ctx context.Context, connection *systemd.Conn, unit string) error {
 	}
 	select {
 	case status := <-result:
-		if status != "done" {
+		if status != statusDone {
 			return fmt.Errorf("%w %s", errStopNotDone, status)
 		}
 
@@ -47,7 +49,7 @@ func Restart(ctx context.Context, connection *systemd.Conn, unit string) error {
 	}
 	select {
 	case status := <-result:
-		if status != "done" {
+		if status != statusDone {
 			return fmt.Errorf("%w %s", errRestartNotDone, status)
 		}
 

@@ -79,6 +79,18 @@ func (application *Application) reportingSaved(operation string, bypass func(*co
 	}
 }
 
+func (application *Application) reportingUnless(operation string, bypass func(*cobra.Command) bool, run cobraRun) cobraRun {
+	reported := application.reporting(operation, run)
+
+	return func(command *cobra.Command, args []string) error {
+		if bypass(command) {
+			return run(command, args)
+		}
+
+		return reported(command, args)
+	}
+}
+
 // reportingHook wraps the DHCP hook, whose argument names the event handled.
 func (application *Application) reportingHook(run cobraRun) cobraRun {
 	return func(command *cobra.Command, args []string) error {

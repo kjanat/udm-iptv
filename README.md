@@ -40,10 +40,32 @@ Missing system proxies use preserved binaries and libraries offline.
 udm-iptv configure
 udm-iptv status
 udm-iptv diagnose
+udm-iptv start
+udm-iptv stop
 udm-iptv restart
 udm-iptv upgrade
 udm-iptv uninstall
 ```
+
+`stop --for 30m` starts IPTV again after thirty minutes.
+
+`status` shows when a pause ends.
+
+`start` resumes early; running services remain uninterrupted.
+
+`restart`, `stop` and uninstall cancel scheduled starts.
+
+Pauses end at reboot; automatic startup still applies.
+
+Failed scheduling attempts recovery and reports the outcome.
+
+`upgrade --dry-run` shows what would be installed.
+
+Preview builds automatically follow prereleases.
+
+Stable builds follow stable releases unless `--prerelease` is supplied.
+
+Downgrades require `--force`.
 
 See `udm-iptv <command> --help` for options.
 

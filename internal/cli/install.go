@@ -256,6 +256,9 @@ func (application *Application) restartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use: "restart", Short: "Restart the IPTV service", Args: cobra.NoArgs,
 		RunE: application.reporting("restart", func(command *cobra.Command, _ []string) error {
+			if err := requireRoot(); err != nil {
+				return err
+			}
 			return application.restart(command.Context(), true)
 		}),
 	}
@@ -267,7 +270,8 @@ func (application *Application) restart(ctx context.Context, verify bool) error 
 		return fmt.Errorf("connect to systemd: %w", err)
 	}
 	defer connection.Close()
-	if err := service.Restart(ctx, connection, "udm-iptv.service"); err != nil {
+	lifecycle := service.Lifecycle{Connection: connection, Unit: service.Unit}
+	if err := lifecycle.Restart(ctx); err != nil {
 		return fmt.Errorf("restart udm-iptv.service: %w", err)
 	}
 	if verify {

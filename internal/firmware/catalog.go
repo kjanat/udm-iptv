@@ -26,6 +26,13 @@ const (
 	releasesInPair = 2
 	// catalogResponseLimit bounds the firmware catalog HTTP response body.
 	catalogResponseLimit = 16 << 20
+	// channelRelease and channelBeta are Ubiquiti's names for the channels that
+	// carry console firmware.
+	channelRelease = "release"
+	channelBeta    = "beta-public"
+	// trackRelease and trackBeta are the names --track accepts.
+	trackRelease = "release"
+	trackBeta    = "beta"
 )
 
 var (
@@ -35,7 +42,7 @@ var (
 	errInvalidReleaseMetadata = errors.New("invalid firmware metadata")
 	errUnorderedReleases      = errors.New("firmware releases must be distinct and ascending")
 	errCatalogStatus          = errors.New("firmware catalog")
-	errStablePairRequired     = errors.New("two stable releases required")
+	errCatalogPairRequired    = errors.New("two firmware releases required on the selected track")
 	errPublishedPairRequired  = errors.New("two published firmware versions required")
 )
 
@@ -70,6 +77,7 @@ type Matrix struct {
 
 type catalogRelease struct {
 	Platform string    `json:"platform"`
+	Channel  string    `json:"channel"`
 	Version  string    `json:"version"`
 	Created  time.Time `json:"created"`
 	SHA256   string    `json:"sha256_checksum"`
@@ -80,12 +88,69 @@ type catalogRelease struct {
 	} `json:"_links"`
 }
 
-func stable(version string) bool {
-	return strings.Count(version, ".") == 2 && semver.IsValid("v"+version) &&
-		semver.Prerelease("v"+version) == "" && semver.Build("v"+version) == ""
+// Track is the set of firmware channels a matrix draws from, and whether a
+// prerelease version counts as a candidate. The zero value selects releases.
+type Track struct {
+	Channels   []string
+	Prerelease bool
+}
+
+// ReleaseTrack is the channel every console is offered.
+func ReleaseTrack() Track { return Track{Channels: []string{channelRelease}} }
+
+// BetaTrack adds the channel carrying beta and release-candidate builds.
+func BetaTrack() Track {
+	return Track{Channels: []string{channelRelease, channelBeta}, Prerelease: true}
+}
+
+// TrackNamed returns the track name selects, and whether that name exists.
+func TrackNamed(name string) (Track, bool) {
+	switch name {
+	case "", trackRelease:
+		return ReleaseTrack(), true
+	case trackBeta:
+		return BetaTrack(), true
+	}
+
+	return Track{}, false
+}
+
+func (track Track) carries(channel string) bool {
+	if track.Channels == nil {
+		return channel == channelRelease
+	}
+	return slices.Contains(track.Channels, channel)
+}
+
+// accepts reports whether version is a candidate on this track. Build metadata
+// never is, since two builds of one version are the same firmware.
+func (track Track) accepts(version string) bool {
+	core, _, _ := strings.Cut(version, "-")
+	if strings.Count(core, ".") != 2 || !semver.IsValid("v"+version) || semver.Build("v"+version) != "" {
+		return false
+	}
+	if semver.Prerelease("v"+version) == "" {
+		return true
+	}
+
+	return track.Prerelease
 }
 
 func compare(a, b string) int { return semver.Compare("v"+a, "v"+b) }
+
+func (track Track) versionTag(model, version string) string {
+	if track.Prerelease {
+		return model + "-beta-" + version
+	}
+	return model + "-" + version
+}
+
+func (track Track) latestAlias() string {
+	if track.Prerelease {
+		return trackBeta
+	}
+	return "latest"
+}
 
 func boardFor(model string) (string, error) {
 	for _, item := range models {
@@ -111,8 +176,15 @@ func ValidateImage(image string) error {
 	return nil
 }
 
-// ValidatePair reports whether releases is a distinct, ascending pair for model.
+// ValidatePair reports whether releases is a distinct, ascending release pair
+// for model.
 func ValidatePair(model string, releases []Release) error {
+	return ReleaseTrack().ValidatePair(model, releases)
+}
+
+// ValidatePair reports whether releases is a distinct, ascending pair for model
+// on this track.
+func (track Track) ValidatePair(model string, releases []Release) error {
 	board, err := boardFor(model)
 	if err != nil {
 		return err
@@ -122,7 +194,7 @@ func ValidatePair(model string, releases []Release) error {
 	}
 	for _, release := range releases {
 		checksum, err := hex.DecodeString(release.SHA256)
-		if release.Board != board || !stable(release.Version) || !downloadURL.MatchString(release.URL) || err != nil || len(checksum) != 32 {
+		if release.Board != board || !track.accepts(release.Version) || !downloadURL.MatchString(release.URL) || err != nil || len(checksum) != 32 {
 			return fmt.Errorf("%w for %s", errInvalidReleaseMetadata, model)
 		}
 	}
@@ -133,15 +205,16 @@ func ValidatePair(model string, releases []Release) error {
 	return nil
 }
 
-// Discover fetches the latest stable firmware pairs from endpoint.
-func Discover(ctx context.Context, client *http.Client, endpoint, image, model string, cutoff time.Time) (Matrix, error) {
+// Discover fetches the latest firmware pairs on track from endpoint.
+func Discover(ctx context.Context, client *http.Client, endpoint, image, model string, cutoff time.Time, track Track) (Matrix, error) {
 	address, err := url.Parse(endpoint)
 	if err != nil {
 		return Matrix{}, fmt.Errorf("parse firmware catalog endpoint %s: %w", endpoint, err)
 	}
 	query := address.Query()
 	query.Add("filter", "eq~~product~~unifi-dream")
-	query.Add("filter", "eq~~channel~~release")
+	// The channel is filtered here rather than in the query, which takes one
+	// equality per field.
 	query.Set("sort", "-created")
 	query.Set("limit", "1000")
 	address.RawQuery = query.Encode()
@@ -153,7 +226,7 @@ func Discover(ctx context.Context, client *http.Client, endpoint, image, model s
 	if err != nil {
 		return Matrix{}, fmt.Errorf("fetch firmware catalog: %w", err)
 	}
-	matrix, result := discoverFromResponse(response, image, model, cutoff)
+	matrix, result := discoverFromResponse(response, image, model, cutoff, track)
 	if closeErr := response.Body.Close(); closeErr != nil {
 		result = errors.Join(result, fmt.Errorf("close firmware catalog response: %w", closeErr))
 	}
@@ -161,17 +234,22 @@ func Discover(ctx context.Context, client *http.Client, endpoint, image, model s
 	return matrix, result
 }
 
-func discoverFromResponse(response *http.Response, image, model string, cutoff time.Time) (Matrix, error) {
+func discoverFromResponse(response *http.Response, image, model string, cutoff time.Time, track Track) (Matrix, error) {
 	if response.StatusCode != http.StatusOK {
 		return Matrix{}, fmt.Errorf("%w: HTTP %d", errCatalogStatus, response.StatusCode)
 	}
 
-	return SelectCatalog(io.LimitReader(response.Body, catalogResponseLimit), image, model, cutoff)
+	return track.SelectCatalog(io.LimitReader(response.Body, catalogResponseLimit), image, model, cutoff)
 }
 
 // SelectCatalog picks the latest two stable, non-prerelease firmware versions
 // per model from a catalog API response.
 func SelectCatalog(reader io.Reader, image, model string, cutoff time.Time) (Matrix, error) {
+	return ReleaseTrack().SelectCatalog(reader, image, model, cutoff)
+}
+
+// SelectCatalog picks the latest two firmware versions on this track per model.
+func (track Track) SelectCatalog(reader io.Reader, image, model string, cutoff time.Time) (Matrix, error) {
 	err := validateCatalogSelectors(image, model)
 	if err != nil {
 		return Matrix{}, err
@@ -185,7 +263,7 @@ func SelectCatalog(reader io.Reader, image, model string, cutoff time.Time) (Mat
 		if model != "all" && model != device.Name {
 			continue
 		}
-		pair, err := catalogPair(device.Name, device.Board, image, newestPerVersion(entries, device.Board, cutoff))
+		pair, err := track.catalogPair(device.Name, device.Board, image, newestPerVersion(entries, device.Board, cutoff, track))
 		if err != nil {
 			return Matrix{}, err
 		}
@@ -222,11 +300,11 @@ func decodeCatalog(reader io.Reader) ([]catalogRelease, error) {
 	return catalog.Embedded.Firmware, nil
 }
 
-func newestPerVersion(entries []catalogRelease, board string, cutoff time.Time) map[string]catalogRelease {
+func newestPerVersion(entries []catalogRelease, board string, cutoff time.Time, track Track) map[string]catalogRelease {
 	latest := make(map[string]catalogRelease)
 	for _, entry := range entries {
 		version, _, _ := strings.Cut(strings.TrimPrefix(entry.Version, "v"), "+")
-		if entry.Platform != board || entry.Created.After(cutoff) || !stable(version) {
+		if entry.Platform != board || entry.Created.After(cutoff) || !track.accepts(version) || !track.carries(entry.Channel) {
 			continue
 		}
 		previous, exists := latest[version]
@@ -238,51 +316,71 @@ func newestPerVersion(entries []catalogRelease, board string, cutoff time.Time) 
 	return latest
 }
 
-func catalogPair(name, board, image string, latest map[string]catalogRelease) (Pair, error) {
+func (track Track) catalogPair(name, board, image string, latest map[string]catalogRelease) (Pair, error) {
 	versions := make([]string, 0, len(latest))
 	for version := range latest {
 		versions = append(versions, version)
 	}
 	slices.SortFunc(versions, compare)
 	if len(versions) < releasesInPair {
-		return Pair{}, fmt.Errorf("%w for %s", errStablePairRequired, name)
+		return Pair{}, fmt.Errorf("%w for %s", errCatalogPairRequired, name)
 	}
 	pair := Pair{Model: name}
 	for _, version := range versions[len(versions)-2:] {
 		entry := latest[version]
 		pair.Firmwares = append(pair.Firmwares, Release{board, version, entry.Links.Data.Href, entry.SHA256})
 	}
-	err := ValidatePair(name, pair.Firmwares)
+	err := track.ValidatePair(name, pair.Firmwares)
 	if err != nil {
 		return Pair{}, err
 	}
-	pair.From, pair.To = image+":"+name+"-"+versions[len(versions)-2], image+":"+name+"-"+versions[len(versions)-1]
+	pair.From, pair.To = image+":"+track.versionTag(name, versions[len(versions)-2]), image+":"+track.versionTag(name, versions[len(versions)-1])
 
 	return pair, nil
 }
 
 // Published selects the latest two published firmware tags per model.
 func Published(tags, image string) (Matrix, error) {
+	return ReleaseTrack().Published(tags, image)
+}
+
+// Published selects version tags accepted by this track.
+func (track Track) Published(tags, image string) (Matrix, error) {
 	err := ValidateImage(image)
 	if err != nil {
 		return Matrix{}, err
 	}
 	matrix := Matrix{}
 	for _, device := range models {
-		versions := make([]string, 0)
-		for tag := range strings.FieldsSeq(tags) {
-			version, found := strings.CutPrefix(tag, device.Name+"-")
-			if found && stable(version) {
-				versions = append(versions, version)
-			}
+		selected := track.publishedVersions(tags, device.Name)
+		versions := make([]string, 0, len(selected))
+		for version := range selected {
+			versions = append(versions, version)
 		}
 		slices.SortFunc(versions, compare)
-		versions = slices.Compact(versions)
 		if len(versions) < releasesInPair {
 			return Matrix{}, fmt.Errorf("%w for %s", errPublishedPairRequired, device.Name)
 		}
-		matrix.Include = append(matrix.Include, Pair{Model: device.Name, From: image + ":" + device.Name + "-" + versions[len(versions)-2], To: image + ":" + device.Name + "-" + versions[len(versions)-1]})
+		matrix.Include = append(matrix.Include, Pair{Model: device.Name, From: image + ":" + selected[versions[len(versions)-2]], To: image + ":" + selected[versions[len(versions)-1]]})
 	}
 
 	return matrix, nil
+}
+
+func (track Track) publishedVersions(tags, model string) map[string]string {
+	selected := make(map[string]string)
+	for tag := range strings.FieldsSeq(tags) {
+		version, found := strings.CutPrefix(tag, model+"-")
+		if !found {
+			continue
+		}
+		beta := false
+		if track.Prerelease {
+			version, beta = strings.CutPrefix(version, "beta-")
+		}
+		if track.accepts(version) && (selected[version] == "" || beta) {
+			selected[version] = tag
+		}
+	}
+	return selected
 }

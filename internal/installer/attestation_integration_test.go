@@ -14,7 +14,7 @@ import (
 
 func publishedAsset(t *testing.T) (upgradeCandidate, string) {
 	t.Helper()
-	candidate, err := resolveUpgrade(t.Context(), UpgradeOptions{Repository: "kjanat/udm-iptv"})
+	candidate, err := resolveUpgrade(t.Context(), UpgradeOptions{Repository: "kjanat/udm-iptv"}, stableChannel)
 	if err != nil {
 		t.Skipf("resolve latest release: %v", err)
 	}

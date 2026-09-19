@@ -68,14 +68,16 @@ type configSummary struct {
 }
 
 type serviceStatus struct {
-	Package     string `json:"package,omitempty"`
-	LoadState   string `json:"loadState"`
-	ActiveState string `json:"activeState"`
-	SubState    string `json:"subState"`
-	UnitFile    string `json:"unitFileState"`
-	Restarts    uint64 `json:"restarts"`
-	Proxy       string `json:"proxy,omitempty"`
-	ProxyPID    int    `json:"proxyPID,omitempty"`
+	ResumeAt    *time.Time `json:"resumeAt,omitempty"`
+	ResumeError string     `json:"resumeError,omitempty"`
+	Package     string     `json:"package,omitempty"`
+	LoadState   string     `json:"loadState"`
+	ActiveState string     `json:"activeState"`
+	SubState    string     `json:"subState"`
+	UnitFile    string     `json:"unitFileState"`
+	Restarts    uint64     `json:"restarts"`
+	Proxy       string     `json:"proxy,omitempty"`
+	ProxyPID    int        `json:"proxyPID,omitempty"`
 }
 
 type networkStatus struct {
@@ -400,6 +402,12 @@ func inspectService(ctx context.Context) serviceStatus {
 		return status
 	}
 	defer connection.Close()
+	lifecycle := service.Lifecycle{Connection: connection, Unit: service.Unit}
+	if resumeAt, err := lifecycle.ResumeAt(ctx); err != nil {
+		status.ResumeError = err.Error()
+	} else if !resumeAt.IsZero() {
+		status.ResumeAt = &resumeAt
+	}
 	properties, err := connection.GetAllPropertiesContext(ctx, "udm-iptv.service")
 	if err != nil {
 		return status
@@ -515,7 +523,7 @@ NAT destinations: %s
 Active NAT rules: %s
 Proxy source ranges: %s
 LAN interfaces: %s
-Service: %s/%s (%s, restarts: %d)
+Service: %s/%s (%s, restarts: %d)%s
 Proxy: %s (PID %d)
 IGMP version: %d, MLD: %s, quickleave enabled: %t, proxy debug logging: %t
 IPTV interface: %s (%s, %d IPv4 addresses)
@@ -526,12 +534,26 @@ Multicast routes: %s
 `, value.Version, renderInstallation(value.Version, value.Service.Package), value.Config.Profile, value.Config.WANInterface, value.Config.VLAN, value.Config.IPTVInterface, value.Config.DHCP,
 		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, fallbackText(value.Config.DHCPRoutes),
 		strings.Join(value.Config.NATDestinations, ", "), natRuleCount(value.NAT), renderSourceRanges(value.Config), strings.Join(value.Config.LANInterfaces, ", "),
-		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts,
+		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts, renderResume(value.Service),
 		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug,
 		value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount, strings.Join(value.Network.Addresses, ", "),
 		strings.Join(value.Network.Routes, ", "), value.Network.Target, presence(value.Network.DefaultRoute), multicastSummary(value.Multicast)) +
 		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderNATEvidence(value.NATEvidence, value.Network.Target) +
 		renderIPv6(value.Network) + renderMemberships(value.Memberships) + renderLease(value.Lease) + renderDownstream(value)
+}
+
+func renderResume(status serviceStatus) string {
+	if status.ResumeError != "" {
+		return "\nScheduled start: unavailable (" + status.ResumeError + ")"
+	}
+	if status.ResumeAt == nil {
+		return ""
+	}
+	label := "Scheduled start: "
+	if status.ActiveState == "inactive" {
+		label = "Paused until: "
+	}
+	return "\n" + label + status.ResumeAt.UTC().Format(time.RFC3339)
 }
 
 // renderInstallation says who installed the executable and whether dpkg's

@@ -13,6 +13,30 @@ import (
 	"github.com/kjanat/udm-iptv/internal/service"
 )
 
+func TestSnapshotShowsScheduledResume(t *testing.T) {
+	t.Parallel()
+	deadline := time.Date(2026, 9, 19, 20, 30, 0, 0, time.UTC)
+	value := Snapshot{Service: serviceStatus{ActiveState: "inactive", ResumeAt: &deadline}}
+	if got := RenderSnapshot(value); !strings.Contains(got, "Paused until: "+deadline.UTC().Format(time.RFC3339)) {
+		t.Fatalf("missing pause: %s", got)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"resumeAt":"2026-09-19T20:30:00Z"`) {
+		t.Fatalf("JSON lost deadline: %s", data)
+	}
+	value.Service.ResumeAt = nil
+	if strings.Contains(RenderSnapshot(value), "Paused until") {
+		t.Fatal("ordinary stop shown as paused")
+	}
+	value.Service.ResumeError = "permission denied"
+	if !strings.Contains(RenderSnapshot(value), "Scheduled start: unavailable") {
+		t.Fatal("unreadable timer shown as canceled")
+	}
+}
+
 func TestReadableDiagnosticsIncludeProxySettings(t *testing.T) {
 	t.Parallel()
 	for _, proxy := range []string{"improxy", "igmpproxy"} {
