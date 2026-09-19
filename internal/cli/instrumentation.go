@@ -8,6 +8,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/device"
+	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
@@ -17,9 +18,20 @@ const (
 	commandInstall      = "install"
 )
 
-func setTelemetryMetadata(ctx context.Context, reporter *telemetry.Reporter, value config.Config) {
+func setTelemetryMetadata(ctx context.Context, reporter *telemetry.Reporter, value config.Config, version string) {
 	hw := device.Inspect(ctx)
 	reporter.SetMetadata(hw.Board, hw.Firmware, hw.Discovery, hw.SysID, value.Proxy.Program, value.Profile)
+	record, err := installer.QueryPackage(ctx)
+	if err != nil {
+		return
+	}
+	packageVersion := ""
+	if record.Owned() {
+		packageVersion = record.ReleaseVersion()
+	}
+	if reporter.SetInstallation(packageVersion) {
+		reporter.Warn(ctx, fmt.Sprintf("dpkg records udm-iptv %s while %s runs; udm-iptv upgrade reinstalls the package", packageVersion, version))
+	}
 }
 
 // cobraRun is a Cobra RunE handler.
@@ -39,7 +51,7 @@ func (application *Application) reporting(operation string, run cobraRun) cobraR
 			return run(command, args)
 		}
 		defer reporter.Close()
-		setTelemetryMetadata(command.Context(), reporter, value)
+		setTelemetryMetadata(command.Context(), reporter, value, application.Version)
 		application.monitor = reporter
 		defer func() { application.monitor = nil }()
 
@@ -114,7 +126,7 @@ func (application *Application) reportRun(ctx context.Context, operation string,
 		return run(ctx)
 	}
 	defer reporter.Close()
-	setTelemetryMetadata(ctx, reporter, value)
+	setTelemetryMetadata(ctx, reporter, value, application.Version)
 	if err := reporter.Run(ctx, operation, run); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
 	}

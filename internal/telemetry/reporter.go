@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -249,6 +250,53 @@ func (r *Reporter) SetMetadata(model, firmware, discovery, sysid, proxy, profile
 	if _, ok := config.ProfileByID(profile); ok {
 		r.metadata["profile"] = profile
 	}
+}
+
+// The installation tag says who installed the executable that reports.
+const (
+	installationStandalone = "standalone"
+	installationPackage    = "package"
+	installationStale      = "package-stale"
+)
+
+var packageVersionPattern = regexp.MustCompile(`^[0-9][0-9A-Za-z.+~-]{0,63}$`)
+
+// SetInstallation tags every report with the installation kind and, on a
+// dpkg-tracked installation, the version dpkg holds. It reports whether that
+// version trails the executable, which the tag then says as well.
+func (r *Reporter) SetInstallation(packageVersion string) bool {
+	if r.metadata == nil {
+		r.metadata = make(map[string]string)
+	}
+	delete(r.metadata, "package_version")
+	switch {
+	case packageVersion == "":
+		r.metadata["installation"] = installationStandalone
+
+		return false
+	case !packageVersionPattern.MatchString(packageVersion):
+		r.metadata["installation"] = installationPackage
+
+		return false
+	case "udm-iptv@"+packageVersion == r.release:
+		r.metadata["installation"] = installationPackage
+		r.metadata["package_version"] = packageVersion
+
+		return false
+	default:
+		r.metadata["installation"] = installationStale
+		r.metadata["package_version"] = packageVersion
+
+		return true
+	}
+}
+
+// Warn records message as a warning log.
+func (r *Reporter) Warn(ctx context.Context, message string) {
+	if r == nil || r.client == nil || !r.settings.Logs {
+		return
+	}
+	sentry.NewLogger(sentry.SetHubOnContext(ctx, r.hub)).Warn().Emit(message)
 }
 
 func (r *Reporter) instruments(operation string) bool {
