@@ -76,8 +76,8 @@
 - [x] F11 `.lock` in the state directory serialises install, upgrade, configure and removal; never held across apt
 - [x] F12 firmware harness shadows `compopt` and asserts completions; cold named-profile and legacy-backup package installs added (CI only, ARM64)
 - [x] R01 attestation identity bound to `release.yml` at the candidate's own tag; token only over https
-- [ ] R02 lease application acknowledgement beyond address presence
-- [ ] R03 commit boundary for a failed reconfiguration (saved versus applied)
+- [x] R02 the hook records whether it applied the lease; the daemon waits for this run's applied record on its interface and fails on a recorded failure instead of an address
+- [x] R03 a configuration the service will not start with is moved to `config.json.rejected`, the previous file is restored and the service restarted on it; the report still says what was attempted and that it did not apply
 - [ ] Named profile on a saved configuration still reseeds WAN/LAN like the wizard does; decide whether saved hardware choices should survive a profile switch on the CLI
 
 ## Done earlier

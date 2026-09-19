@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
 func TestConfigureSetAppliesFlagsAfterLoading(t *testing.T) {
@@ -87,6 +90,38 @@ func TestConfigureGetReportsAnUnconfiguredConsole(t *testing.T) {
 	}
 	if output.Len() != 0 {
 		t.Fatalf("printed a configuration that does not exist: %q", output.String())
+	}
+}
+
+// A configuration the service will not start with goes back to what ran
+// before, and the rejected file stays beside it for inspection.
+func TestRollbackConfigurationRestoresThePreviousFile(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.json")
+	previous := []byte(`{"profile":"kpn"}` + "\n")
+	attempted := []byte(`{"profile":"custom"}` + "\n")
+	if err := atomicfile.Write(path, attempted, filemode.PrivateFile); err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := rollbackConfiguration(path, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected != path+rejectedSuffix {
+		t.Fatalf("rejected copy at %s", rejected)
+	}
+	restored, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(restored, previous) {
+		t.Fatalf("restored %q, %v", restored, err)
+	}
+	kept, err := os.ReadFile(rejected)
+	if err != nil || !bytes.Equal(kept, attempted) {
+		t.Fatalf("rejected copy %q, %v", kept, err)
+	}
+	info, err := os.Stat(rejected)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("rejected copy mode %v, %v", info.Mode(), err)
 	}
 }
 
