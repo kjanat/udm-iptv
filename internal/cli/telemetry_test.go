@@ -20,7 +20,7 @@ func TestHelpCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "telemetry") || strings.Contains(out.String(), "Sentry") {
+	if !strings.Contains(out.String(), "telemetry") || strings.Contains(out.String(), "Sentry") {
 		t.Fatal("unexpected root help text")
 	}
 	out.Reset()

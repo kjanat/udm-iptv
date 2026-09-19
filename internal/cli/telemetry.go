@@ -36,7 +36,7 @@ func (application *Application) reportSavedConfiguration(command *cobra.Command)
 }
 
 func (application *Application) telemetryCommand() *cobra.Command {
-	command := &cobra.Command{Use: flagTelemetry, Hidden: true, Short: "Manage reporting identity and provide IPTV feedback"}
+	command := &cobra.Command{Use: flagTelemetry, Short: "Manage reporting and send feedback"}
 	command.AddCommand(&cobra.Command{
 		Use: "reset-id", Short: "Reset local reporting identity; previously sent reports remain", Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -50,7 +50,7 @@ func (application *Application) telemetryCommand() *cobra.Command {
 	})
 	var provider string
 	feedback := &cobra.Command{
-		Use: "feedback working|problems|not-using", Short: "Report your experience explicitly (requires preset research)", Args: cobra.ExactArgs(1),
+		Use: "feedback working|problems|not-using", Short: "Report whether IPTV works for you (needs presets reporting on)", Args: cobra.ExactArgs(1),
 		ValidArgs: []string{"working", "problems", "not-using"},
 		RunE: func(command *cobra.Command, args []string) error {
 			value, err := config.Load(application.ConfigPath)

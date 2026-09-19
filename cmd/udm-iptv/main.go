@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/kjanat/udm-iptv/internal/cli"
+	"github.com/kjanat/udm-iptv/internal/ui"
 )
 
 var version = "dev"
@@ -26,11 +27,12 @@ func main() {
 	}
 	err := cli.Execute(version)
 	if err != nil {
+		stderr := ui.Styled(os.Stderr)
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(os.Stderr, "Cancelled.")
+			_, _ = fmt.Fprintln(stderr, "Cancelled.")
 			os.Exit(sigintExitCode)
 		}
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintln(stderr, ui.ErrorText(fmt.Sprintf("error: %v", err)))
 		if errors.Is(err, cli.ErrNotConfigured) {
 			os.Exit(notConfiguredExitCode)
 		}

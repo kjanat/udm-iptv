@@ -280,7 +280,7 @@ func (application *Application) configureCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:     commandConfigure,
 		Aliases: []string{"reconfigure"},
-		Short:   "Configure IPTV in the form",
+		Short:   "Configure IPTV interactively",
 		Long:    "Flags answer questions in advance; fully answered pages are skipped.",
 		Args:    cobra.NoArgs,
 		RunE: application.reportingSaved(commandConfigure, reportingTurnedOff, func(command *cobra.Command, _ []string) error {
