@@ -10,7 +10,7 @@
 
 set -e
 
-UDM_IPTV_VERSION="${UDM_IPTV_VERSION:-4.3.1}"
+UDM_IPTV_VERSION="${UDM_IPTV_VERSION:-4.3.2}"
 UDM_IPTV_REPOSITORY="${UDM_IPTV_REPOSITORY:-kjanat/udm-iptv}"
 UDM_IPTV_STATE_DIR="${UDM_IPTV_STATE_DIR:-/data/udm-iptv}"
 UDM_IPTV_RUN="${UDM_IPTV_RUN:-}"
@@ -80,6 +80,7 @@ plausible_debs() {
 		esac
 		case "${name}" in
 			*dbgsym* | *.udeb | *-src.deb | *_src.deb) continue ;;
+			*) ;;
 		esac
 		printf '%s\n' "${name}"
 	done | sort -u
@@ -101,6 +102,40 @@ release_deb_package() {
 		return 1
 	fi
 	printf '%s\n' "${debs}"
+}
+
+# The Go package ships this file, and it supervises the proxy from its own
+# process instead of being the proxy.
+UDM_IPTV_GO_MARKER="${UDM_IPTV_GO_MARKER:-/usr/share/udm-iptv/go-package}"
+
+# service_process reads a process's arguments, one per line, and names the
+# argument that identifies a healthy udm-iptv service.
+service_process() {
+	while IFS= read -r process_argument; do
+		case "${process_argument}" in
+			improxy | */improxy | igmpproxy | */igmpproxy)
+				printf '%s\n' "${process_argument}"
+				return 0
+				;;
+			udm-iptv | */udm-iptv)
+				if [ -e "${UDM_IPTV_GO_MARKER}" ]; then
+					printf '%s\n' "${process_argument}"
+					return 0
+				fi
+				;;
+			*) ;;
+		esac
+	done
+	echo unknown
+}
+
+proxy_process() {
+	process_pid=$1
+	if [ ! -r "/proc/${process_pid}/cmdline" ]; then
+		echo unknown
+		return
+	fi
+	tr '\000' '\n' <"/proc/${process_pid}/cmdline" | service_process
 }
 
 if [ "${UDM_IPTV_SOURCE_ONLY:-}" = 1 ]; then
@@ -135,27 +170,6 @@ service_failure() {
 		systemctl status udm-iptv.service --no-pager >&2 || true
 	fi
 	exit 1
-}
-
-proxy_process() {
-	process_pid=$1
-	if [ ! -r "/proc/${process_pid}/cmdline" ]; then
-		echo unknown
-		return
-	fi
-	process_arguments=$(tr '\000' '\n' <"/proc/${process_pid}/cmdline")
-	while IFS= read -r process_argument; do
-		case "${process_argument}" in
-			improxy | */improxy | igmpproxy | */igmpproxy)
-				echo "${process_argument}"
-				return 0
-				;;
-			*) ;;
-		esac
-	done <<EOF
-${process_arguments}
-EOF
-	echo unknown
 }
 
 verify_service() {
@@ -338,7 +352,7 @@ else
 			echo "error: Could not resolve release v${UDM_IPTV_VERSION} of ${UDM_IPTV_REPOSITORY}."
 			exit 1
 		}
-		deb_name=$(release_deb_package "v${UDM_IPTV_VERSION}" "${release_json}") || exit 1
+		deb_name=$(release_deb_package "v${UDM_IPTV_VERSION}" "${release_json}")
 		UDM_IPTV_PACKAGE="https://github.com/${UDM_IPTV_REPOSITORY}/releases/download/v${UDM_IPTV_VERSION}/${deb_name}"
 	fi
 

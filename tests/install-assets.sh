@@ -52,13 +52,27 @@ dbgsym='{
   ]
 }'
 
-assert_eq "$(printf '%s\n' "${v4_release}" | plausible_debs)" "udm-iptv_4.3.1_all.deb" "v4 deb"
-assert_eq "$(printf '%s\n' "${v5_release}" | plausible_debs)" "udm-iptv-arm64.deb" "v5 deb"
-assert_eq "$(release_deb_package v4.3.1 "${v4_release}")" "udm-iptv_4.3.1_all.deb" "pick v4"
-assert_eq "$(release_deb_package v5.0.0-preview.1 "${v5_release}")" "udm-iptv-arm64.deb" "pick v5"
-assert_eq "$(printf '%s\n' "${dbgsym}" | plausible_debs)" "udm-iptv_4.3.1_all.deb" "drop dbgsym"
+got=$(printf '%s\n' "${v4_release}" | plausible_debs)
+assert_eq "${got}" "udm-iptv_4.3.1_all.deb" "v4 deb"
 
-if release_deb_package v9.0.0 "${two_debs}" >/dev/null 2>&1; then
+got=$(printf '%s\n' "${v5_release}" | plausible_debs)
+assert_eq "${got}" "udm-iptv-arm64.deb" "v5 deb"
+
+got=$(release_deb_package v4.3.1 "${v4_release}")
+assert_eq "${got}" "udm-iptv_4.3.1_all.deb" "pick v4"
+
+got=$(release_deb_package v5.0.0-preview.1 "${v5_release}")
+assert_eq "${got}" "udm-iptv-arm64.deb" "pick v5"
+
+got=$(printf '%s\n' "${dbgsym}" | plausible_debs)
+assert_eq "${got}" "udm-iptv_4.3.1_all.deb" "drop dbgsym"
+
+# Two candidates are ambiguous, and the installer must refuse rather than guess.
+set +e
+release_deb_package v9.0.0 "${two_debs}" >/dev/null 2>&1
+status=$?
+set -e
+if [ "${status}" -eq 0 ]; then
 	echo "FAIL two debs must fail closed" >&2
 	exit 1
 fi
@@ -69,9 +83,39 @@ releases='[
 ]'
 
 UDM_IPTV_PRERELEASE=true
-assert_eq "$(printf '%s\n' "${releases}" | pick_latest_tag)" "v5.0.0-preview.1" "latest including pre"
+got=$(printf '%s\n' "${releases}" | pick_latest_tag)
+assert_eq "${got}" "v5.0.0-preview.1" "latest including pre"
 
 UDM_IPTV_PRERELEASE=false
-assert_eq "$(printf '%s\n' "${releases}" | pick_latest_tag)" "v4.3.1" "latest stable"
+got=$(printf '%s\n' "${releases}" | pick_latest_tag)
+assert_eq "${got}" "v4.3.1" "latest stable"
+
+# v4 runs the proxy as the service; v5 runs a supervisor that owns it.
+marker_dir=$(mktemp -d)
+marker="${marker_dir}/go-package"
+UDM_IPTV_GO_MARKER="${marker}"
+
+got=$(printf '%s\n' /usr/bin/igmpproxy -n /run/udm-iptv/proxy.conf | service_process)
+assert_eq "${got}" "/usr/bin/igmpproxy" "igmpproxy as the service"
+
+got=$(printf '%s\n' /usr/bin/improxy -c /run/udm-iptv/proxy.conf | service_process)
+assert_eq "${got}" "/usr/bin/improxy" "improxy as the service"
+
+daemon_arguments() {
+	printf '%s\n' /data/udm-iptv/bin/udm-iptv daemon --config /data/udm-iptv/config.json
+}
+
+got=$(daemon_arguments | service_process)
+assert_eq "${got}" "unknown" "supervisor without the marker"
+
+: >"${marker}"
+got=$(daemon_arguments | service_process)
+assert_eq "${got}" "/data/udm-iptv/bin/udm-iptv" "supervisor with the marker"
+
+got=$(printf '%s\n' /usr/sbin/sshd -D | service_process)
+assert_eq "${got}" "unknown" "an unrelated process"
+
+rm -f "${marker}"
+rmdir "${marker_dir}"
 
 echo OK
