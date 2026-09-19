@@ -2,7 +2,8 @@
 # console. Early Access is announced on community.ui.com and never indexed by
 # the firmware API, so those builds can only be named by hand.
 #
-# Input is the release-channel catalog response; $pinned is pinned.json.
+# Input is the release-channel catalog response; $loaded is pinned.json.
+$loaded[0] as $pinned |
 ($cutoff | fromdateiso8601) as $cutoff_epoch |
 [
 	._embedded.firmware[] |

@@ -345,8 +345,10 @@ diagnostics_snapshot() {
 	diagnostics_refresh_device_addresses
 
 	diagnostics_section "Package and System"
-	package=$(diagnostics_bounded_external dpkg-query -W -f='${binary:Package} ${Version} (${db:Status-Status})' udm-iptv 2>/dev/null) \
-		|| package=unavailable
+	# shellcheck disable=SC2016
+	package=$(
+		diagnostics_bounded_external dpkg-query -W -f='${binary:Package} ${Version} (${db:Status-Status})' udm-iptv 2>/dev/null
+	) || package=unavailable
 	diagnostics_value "Package and System" Package "${package}"
 	model=$(diagnostics_model)
 	firmware=$(diagnostics_firmware)
@@ -551,7 +553,6 @@ diagnostics_remaining_seconds() {
 # timeout.  `command` prevents these wrappers from recursively calling
 # themselves when timeout resolves the real executable through PATH.
 diagnostics_mark_collector_timeout() {
-	DIAGNOSTICS_COLLECTOR_TIMED_OUT=true
 	[ -z "${DIAGNOSTICS_TIMEOUT_MARKER:-}" ] \
 		|| printf 'timeout\n' >"${DIAGNOSTICS_TIMEOUT_MARKER}"
 }
@@ -561,7 +562,7 @@ diagnostics_bounded_external() {
 		command "$@"
 		return
 	fi
-	remaining=$(diagnostics_remaining_seconds) || {
+	diagnostics_remaining_seconds >/dev/null || {
 		diagnostics_mark_collector_timeout
 		printf 'collector skipped: capture deadline reached\n' >&2
 		return 124
@@ -576,8 +577,8 @@ diagnostics_bounded_external() {
 		return 124
 	fi
 	status=0
-	command timeout -s KILL "$(awk -v ms="${remaining_ms}" 'BEGIN { printf "%.3fs", ms / 1000 }')" "$@" \
-		|| status=$?
+	collector_budget=$(awk -v ms="${remaining_ms}" 'BEGIN { printf "%.3fs", ms / 1000 }')
+	command timeout -s KILL "${collector_budget}" "$@" || status=$?
 	if [ "${status}" -eq 137 ] || [ "${status}" -eq 124 ]; then
 		diagnostics_mark_collector_timeout
 		return 124
@@ -590,7 +591,7 @@ ip() { diagnostics_bounded_external ip "$@"; }
 iptables() { diagnostics_bounded_external iptables "$@"; }
 journalctl() { diagnostics_bounded_external journalctl "$@"; }
 uname() { diagnostics_bounded_external uname "$@"; }
-hostname() { diagnostics_bounded_external hostname "$@"; }
+hostname() { diagnostics_bounded_external hostname; }
 
 diagnostics_worker() {
 	seconds=$1
@@ -697,10 +698,8 @@ diagnostics_worker() {
 			;;
 		*) ;;
 	esac
-	end_monotonic=${DIAGNOSTICS_CAPTURE_DEADLINE}
 	[ "${journal_cursor}" != - ] || journal_cursor=
 	completed=false
-	DIAGNOSTICS_COLLECTOR_TIMED_OUT=false
 
 	finalize_capture() {
 		if [ "${completed}" != true ]; then
@@ -776,7 +775,8 @@ diagnostics_worker() {
 		if [ "${wait_ms}" -gt "${collection_ms}" ]; then
 			wait_ms=${collection_ms}
 		fi
-		sleep "$(awk -v ms="${wait_ms}" 'BEGIN { printf "%.3f", ms / 1000 }')"
+		wait_seconds=$(awk -v ms="${wait_ms}" 'BEGIN { printf "%.3f", ms / 1000 }')
+		sleep "${wait_seconds}"
 		[ "${wait_ms}" -lt "${collection_ms}" ] || break
 	done
 

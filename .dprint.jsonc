@@ -13,15 +13,16 @@
 		"binaryNextLine": true,
 		"switchCaseIndent": true,
 		"associations": [
+			".github/**/*.*sh",
 			"completions/udm-iptv",
 			"debian/config",
-			"debian/postinst",
-			"debian/postrm",
+			"debian/post*",
+			"docker/**/*.*sh",
 			"udm-iptv",
 			"udm-iptv-diag",
 			"udm-iptv-diagnostics",
 			"udm-iptv-restore",
-			"udm-iptvd"
+			"udm-iptvd",
 		]
 	},
 	"ruff": {},

@@ -60,14 +60,16 @@ for channel in ${channels}; do
 done
 
 pinned=${PINNED:-${here}/pinned.json}
-if [[ -s ${pinned} ]] && [[ $(jq -er 'length' "${pinned}") -gt 0 ]]; then
+pinned_count=0
+if [[ -s ${pinned} ]]; then pinned_count=$(jq -er 'length' "${pinned}"); fi
+if ((pinned_count > 0)); then
 	release=$(fetch release)
 	selected=$(jq -cer \
 		--arg cutoff "${cutoff}" \
 		--arg wanted "${SKU}" \
 		--arg image "${UNIFI_OS_IMAGE}" \
 		--slurpfile loaded "${pinned}" \
-		'$loaded[0] as $pinned | '"$(cat "${here}/pinned.jq")" <<<"${release}")
+		--from-file "${here}/pinned.jq" <<<"${release}")
 	count=$(jq -er 'length' <<<"${selected}")
 	noun=pairs
 	if ((count == 1)); then

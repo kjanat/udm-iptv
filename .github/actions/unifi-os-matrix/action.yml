@@ -27,5 +27,5 @@ runs:
         UNIFI_OS_IMAGE: ${{ inputs.image }}
       run: |
         matrix=$("${GITHUB_ACTION_PATH}/matrix.bash")
-        jq . <<<"${matrix}"
+        jq --color-output . <<<"${matrix}"
         echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
