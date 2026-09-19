@@ -58,7 +58,7 @@ jobs:
 
   test-install:
     needs: [build-deb, catalog]
-    name: ${{ format('{0} ({1}) test install', matrix.model, matrix.version) }}
+    name: ${{ format('{0} ({1} to {2}) {3} test install', matrix.model, matrix.firmwares[0].version, matrix.firmwares[1].version, matrix.channel) }}
     runs-on: ubuntu-24.04-arm
     permissions: { contents: read, packages: write }
     defaults: { run: { working-directory: docker/unifi-os } }

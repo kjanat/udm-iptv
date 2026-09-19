@@ -35,18 +35,40 @@ if unifi_os=$(command -v unifi-os); then
 	mv "${unifi_os}" /usr/sbin/unifi-os.real
 fi
 
+# A dummy interface discards everything it transmits, so a DHCP request on one
+# reaches no server. Each WAN candidate is a veth pair instead, and its peer
+# carries the answering end.
 for iface in br0 eth0 eth1 eth2 eth3 eth4 eth8 eth9 eth18 eth19; do
-	ip link add "${iface}" type dummy 2>/dev/null || true
+	ip link add "${iface}" type veth peer name "${iface}-peer" 2>/dev/null || true
 	ip link set "${iface}" up 2>/dev/null || true
+	ip link set "${iface}-peer" up 2>/dev/null || true
 done
 ip address replace 192.0.2.1/24 dev br0
 
-# The default profile creates its VLAN interface during service startup. Give
-# both sides test-net addresses so the real proxy validates and runs.
+# The profile picks its WAN port and VLAN through debconf, so both are only
+# known once the daemon has created the VLAN interface.
+serve_dhcp() {
+	vlan_link=$1
+	parent=${vlan_link#*@}
+	vlan=$(ip -details link show "${vlan_link%@*}" | sed -n 's/.*vlan protocol [^ ]* id \([0-9]\{1,\}\).*/\1/p')
+	if [ -z "${vlan}" ] || [ "${parent}" = "${vlan_link}" ]; then
+		return 0
+	fi
+	ip link add link "${parent}-peer" name iptv-peer type vlan id "${vlan}"
+	ip link set iptv-peer up
+	ip address replace 198.51.100.1/24 dev iptv-peer
+	dnsmasq --port=0 --bind-interfaces --interface=iptv-peer \
+		--dhcp-range=198.51.100.100,198.51.100.150,255.255.255.0,2h \
+		--dhcp-option=3,198.51.100.1 \
+		--pid-file=/run/udm-iptv-test/dnsmasq.pid
+	touch /run/udm-iptv-test/dhcp-served
+}
+
 (
 	while true; do
-		if ip link show iptv >/dev/null 2>&1; then
-			ip address replace 198.51.100.2/24 dev iptv 2>/dev/null || true
+		link=$(ip -oneline link show iptv 2>/dev/null | sed -n 's/^[0-9]\{1,\}: \([^:]*\):.*/\1/p')
+		if [ -n "${link}" ] && [ ! -e /run/udm-iptv-test/dhcp-served ]; then
+			serve_dhcp "${link}"
 		fi
 		sleep 1
 	done
