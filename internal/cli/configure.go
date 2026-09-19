@@ -179,18 +179,13 @@ func formatSetting(value any) string {
 }
 
 // apply folds the flags the user actually set into value, profile first
-// because it replaces the whole configuration. A provider profile carries
-// placeholder interfaces and is seeded with the detected ones; custom and
-// legacy relabel the configuration and keep its interfaces.
+// because it replaces the whole configuration.
 func (f *configureFlags) apply(command *cobra.Command, value *config.Config) error {
 	flags := command.Flags()
 	if flags.Changed("profile") {
 		selected, err := config.FromProfile(f.profile, *value)
 		if err != nil {
 			return fmt.Errorf("apply --profile: %w", err)
-		}
-		if !config.KeepsSettings(f.profile) {
-			selected = f.seed(selected)
 		}
 		*value = selected
 	}

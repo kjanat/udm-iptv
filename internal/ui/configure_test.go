@@ -90,8 +90,9 @@ func TestConfigureProfileSwitch(t *testing.T) {
 			t.Fatal(result.err)
 		}
 		assertEqual(t, "profile", result.value.Profile, "tweak")
-		assertEqual(t, "WAN interface", result.value.WAN.Interface, "example9")
+		assertEqual(t, "WAN interface", result.value.WAN.Interface, "eth8")
 		assertEqual(t, "telemetry enabled", result.value.Telemetry.Enabled, true)
+		assertEqual(t, "NAT destination", result.value.WAN.NATDestinations[0], "0.0.0.0/0")
 		result.value.WAN.NATDestinations[0] = "changed"
 		assertEqual(t, "profile NAT destination", result.selected.WAN.NATDestinations[0], "0.0.0.0/0")
 	})

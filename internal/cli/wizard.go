@@ -57,9 +57,6 @@ func (application *Application) configureFreshForm(ctx context.Context, value *c
 
 func (application *Application) runConfigureForm(ctx context.Context, value *config.Config, discover ui.Discover, answered ui.Answered) error {
 	catalog := config.DefaultCatalog()
-	for i := range catalog.Profiles {
-		catalog.Profiles[i].Config = device.WithInterfaces(catalog.Profiles[i].Config)
-	}
 
 	session := application.wizardSession("").Observe(func(event ui.Event, question string) {
 		application.monitor.WizardEvent(ctx, string(event), question)
