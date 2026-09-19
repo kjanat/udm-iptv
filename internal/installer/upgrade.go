@@ -83,14 +83,20 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 	if err != nil {
 		return err
 	}
-	if !options.Force && application.Version == candidate.version {
-		return writef(application.Out, "udm-iptv %s is already installed. Use --force to reinstall.\n", candidate.version)
-	}
-	owned, err := application.packageCommands().installed(ctx)
+	record, err := application.packageCommands().record(ctx)
 	if err != nil {
 		return err
 	}
-	if owned {
+	plan := planUpgrade(application.Version, candidate.version, record, options.Force)
+	if plan.note != "" {
+		if err := writef(application.Out, "%s\n", plan.note); err != nil {
+			return err
+		}
+	}
+	if !plan.proceed {
+		return nil
+	}
+	if plan.viaPackage {
 		err = application.applyPackageRelease(ctx, candidate)
 	} else {
 		err = application.applyStandaloneRelease(ctx, candidate)
@@ -100,6 +106,37 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 	}
 
 	return writef(application.Out, "Upgraded udm-iptv to %s.\n", candidate.version)
+}
+
+// upgradePlan is the decision an upgrade takes before touching anything.
+type upgradePlan struct {
+	proceed    bool
+	viaPackage bool
+	note       string
+}
+
+// planUpgrade compares the candidate with what runs and, on a dpkg-tracked
+// installation, with what dpkg recorded. An executable swapped in behind
+// dpkg's back leaves the record behind, and the package path repairs it
+// without being forced.
+func planUpgrade(running, candidate string, record PackageRecord, force bool) upgradePlan {
+	if !record.Owned() {
+		if !force && running == candidate {
+			return upgradePlan{note: "udm-iptv " + candidate + " is already installed. Use --force to reinstall."}
+		}
+
+		return upgradePlan{proceed: true}
+	}
+	recorded := record.ReleaseVersion()
+	if !force && running == candidate && recorded == candidate {
+		return upgradePlan{note: "udm-iptv " + candidate + " is already installed. Use --force to reinstall."}
+	}
+	plan := upgradePlan{proceed: true, viaPackage: true}
+	if recorded != running {
+		plan.note = "dpkg recorded udm-iptv " + recorded + " while " + running + " is running; the package is reinstalled to bring the two in line."
+	}
+
+	return plan
 }
 
 // applyStandaloneRelease replaces the executable this program installed.
@@ -151,7 +188,7 @@ func packageAssetName() string {
 }
 
 func (application *Upgrader) packageCommands() packageCommands {
-	if application.packages.installed == nil {
+	if application.packages.record == nil {
 		return systemPackageCommands()
 	}
 

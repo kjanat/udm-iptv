@@ -68,12 +68,20 @@ func TestCancelledUninstallDoesNothing(t *testing.T) {
 // A console without dpkg, or with no package entry, owns nothing to delegate.
 func TestPackageInstalledWithoutDpkg(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	owned, err := packageInstalled(t.Context())
+	record, err := QueryPackage(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owned {
-		t.Fatal("a console without dpkg reported a package")
+	if record.Owned() || record != (PackageRecord{}) {
+		t.Fatalf("a console without dpkg reported a package: %+v", record)
+	}
+}
+
+func TestPackageRecordSpellsTheReleaseVersion(t *testing.T) {
+	t.Parallel()
+	record := PackageRecord{Status: "installed", Version: "5.0.0~preview.2"}
+	if got := record.ReleaseVersion(); got != "5.0.0-preview.2" {
+		t.Fatalf("release version = %q", got)
 	}
 }
 
@@ -98,7 +106,7 @@ func TestDelegateRemovalSkipsAnUnownedInstallation(t *testing.T) {
 	t.Parallel()
 	var out, errOut bytes.Buffer
 	commands := packageCommands{
-		installed: func(context.Context) (bool, error) { return false, nil },
+		record: func(context.Context) (PackageRecord, error) { return PackageRecord{}, nil },
 		remove: func(context.Context, string, io.Writer, io.Writer) error {
 			t.Fatal("called the package manager for an installation dpkg does not track")
 
@@ -123,7 +131,9 @@ func TestDelegateRemovalReportsAptFailure(t *testing.T) {
 	t.Parallel()
 	var out, errOut bytes.Buffer
 	commands := packageCommands{
-		installed: func(context.Context) (bool, error) { return true, nil },
+		record: func(context.Context) (PackageRecord, error) {
+			return PackageRecord{Status: "installed", Version: "5.0.0"}, nil
+		},
 		remove: func(context.Context, string, io.Writer, io.Writer) error {
 			return errInjectedUninstallStep
 		},
@@ -144,7 +154,9 @@ func TestDelegateRemovalChoosesRemoveOrPurge(t *testing.T) {
 		var out, errOut bytes.Buffer
 		got := ""
 		commands := packageCommands{
-			installed: func(context.Context) (bool, error) { return true, nil },
+			record: func(context.Context) (PackageRecord, error) {
+				return PackageRecord{Status: "installed", Version: "5.0.0"}, nil
+			},
 			remove: func(_ context.Context, action string, _, _ io.Writer) error {
 				got = action
 

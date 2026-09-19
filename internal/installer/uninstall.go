@@ -156,33 +156,53 @@ const packageName = "udm-iptv"
 
 // packageCommands are the external programs a delegated removal or upgrade runs.
 type packageCommands struct {
-	installed func(context.Context) (bool, error)
-	remove    func(ctx context.Context, action string, out, errOut io.Writer) error
-	install   func(ctx context.Context, packagePath string, out, errOut io.Writer) error
+	record  func(context.Context) (PackageRecord, error)
+	remove  func(ctx context.Context, action string, out, errOut io.Writer) error
+	install func(ctx context.Context, packagePath string, out, errOut io.Writer) error
 }
 
 func systemPackageCommands() packageCommands {
-	return packageCommands{installed: packageInstalled, remove: aptRemove, install: aptInstall}
+	return packageCommands{record: QueryPackage, remove: aptRemove, install: aptInstall}
 }
 
-// packageInstalled reports whether dpkg tracks this installation. The marker
+// PackageRecord is what dpkg holds for the udm-iptv package: its status word
+// and the version it last unpacked. A zero record means dpkg knows nothing.
+type PackageRecord struct {
+	Status  string
+	Version string
+}
+
+// Owned reports whether dpkg still needs to take the package apart.
+func (record PackageRecord) Owned() bool {
+	return packageOwned(record.Status)
+}
+
+// ReleaseVersion is the recorded version as releases spell it. nfpm writes
+// a prerelease separator as ~ so that dpkg sorts it before the release.
+func (record PackageRecord) ReleaseVersion() string {
+	return strings.ReplaceAll(record.Version, "~", "-")
+}
+
+// QueryPackage asks dpkg what it holds for this installation. The marker
 // file alone cannot answer that, because a firmware update or a partial
 // removal can leave one behind without a package to match.
-func packageInstalled(ctx context.Context) (bool, error) {
-	query := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${db:Status-Status}", packageName)
-	status, err := query.Output()
+func QueryPackage(ctx context.Context) (PackageRecord, error) {
+	query := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${db:Status-Status}\t${Version}", packageName)
+	output, err := query.Output()
 	if err == nil {
-		return packageOwned(strings.TrimSpace(string(status))), nil
+		status, version, _ := strings.Cut(strings.TrimSpace(string(output)), "\t")
+
+		return PackageRecord{Status: status, Version: version}, nil
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return false, nil // dpkg-query reports an unknown package with exit code 1.
+		return PackageRecord{}, nil // dpkg-query reports an unknown package with exit code 1.
 	}
 	if errors.Is(err, exec.ErrNotFound) {
-		return false, nil // A console without dpkg cannot own this installation.
+		return PackageRecord{}, nil // A console without dpkg cannot own this installation.
 	}
 
-	return false, fmt.Errorf("inspect the %s package: %w", packageName, err)
+	return PackageRecord{}, fmt.Errorf("inspect the %s package: %w", packageName, err)
 }
 
 // packageOwned reports whether a dpkg status word still needs dpkg to take
@@ -227,8 +247,8 @@ func DelegateRemoval(ctx context.Context, keepConfig bool, out, errOut io.Writer
 }
 
 func delegateRemoval(ctx context.Context, keepConfig bool, out, errOut io.Writer, commands packageCommands) (bool, error) {
-	owned, err := commands.installed(ctx)
-	if err != nil || !owned {
+	record, err := commands.record(ctx)
+	if err != nil || !record.Owned() {
 		return false, err
 	}
 	action := "purge"
