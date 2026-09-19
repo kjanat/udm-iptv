@@ -109,7 +109,7 @@ sed -i '/^Version:/s/$/~firmwaretest/' /run/previous-package/DEBIAN/control
 dpkg-deb -Zxz --root-owner-group -b /run/previous-package /run/previous.deb`)
 	h.aptInstall(name, "/run/previous.deb")
 	h.healthy(name)
-	h.assertNetwork(name, "eth8", "198.51.100.2/24", kpnDestinations)
+	h.assertNetwork(name, "iptv", "198.51.100.2/24", kpnDestinations)
 	// The bumped package carries the current executable, so dpkg's record
 	// and the running version disagree the way an in-place swap leaves them.
 	h.assertStaleRecord(name)
@@ -122,7 +122,7 @@ func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
 	version := strings.TrimSpace(h.inside(name, binary, "version"))
 	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
 	h.assertPackageRecord(name, version)
-	h.assertNetwork(name, "eth8", "198.51.100.2/24", kpnDestinations)
+	h.assertNetwork(name, "iptv", "198.51.100.2/24", kpnDestinations)
 	config := h.readConfig(name)
 	h.completes(name)
 	h.capture(name)
@@ -282,7 +282,7 @@ func (h *firmwareHarness) bootReplacement(name, image, version string, config []
 		h.t.Fatalf("version changed: %s -> %s", version, got)
 	}
 	h.inside(name, "test", "-x", "/usr/local/bin/udm-iptv")
-	h.assertNetwork(name, "eth8", "198.51.100.2/24", kpnDestinations)
+	h.assertNetwork(name, "iptv", "198.51.100.2/24", kpnDestinations)
 	// Confirm the running process uses the saved runtime, not a substitute.
 	state := h.status(name)
 	executable := strings.TrimSpace(h.inside(name, "readlink", fmt.Sprintf("/proc/%d/exe", state.Service.ProxyPID)))
@@ -329,7 +329,7 @@ func TestFirmwareLifecycle(t *testing.T) {
 	h.reboot(first)
 	h.healthy(first)
 	h.assertConfig(first, originalConfig)
-	h.assertNetwork(first, "eth8", "198.51.100.2/24", kpnDestinations)
+	h.assertNetwork(first, "iptv", "198.51.100.2/24", kpnDestinations)
 	h.assertPackageRecord(first, version)
 
 	t.Log("Swap firmware rootfs offline; erase the firmware proxy")
@@ -340,7 +340,7 @@ func TestFirmwareLifecycle(t *testing.T) {
 	h.reboot(second)
 	h.healthy(second)
 	h.assertConfig(second, originalConfig)
-	h.assertNetwork(second, "eth8", "198.51.100.2/24", kpnDestinations)
+	h.assertNetwork(second, "iptv", "198.51.100.2/24", kpnDestinations)
 
 	t.Log("Remove while keeping configuration; reboot must stay removed")
 	h.removeKeepingConfig(second)
