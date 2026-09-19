@@ -55,11 +55,10 @@ func EnsureLink(value config.Config) (netlink.Link, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find WAN interface %s: %w", value.WAN.Interface, err)
 	}
+	if err := netlink.LinkSetUp(parent); err != nil {
+		return nil, fmt.Errorf("bring up WAN interface %s: %w", value.WAN.Interface, err)
+	}
 	if value.WAN.VLAN == 0 {
-		if err := netlink.LinkSetUp(parent); err != nil {
-			return nil, fmt.Errorf("bring up WAN interface %s: %w", value.WAN.Interface, err)
-		}
-
 		return parent, nil
 	}
 
@@ -73,7 +72,6 @@ func ensureVLAN(value config.Config, parent netlink.Link) (netlink.Link, error) 
 	attributes := netlink.NewLinkAttrs()
 	attributes.Name = value.WAN.VLANInterface
 	attributes.ParentIndex = parent.Attrs().Index
-	attributes.Alias = linkAlias
 	vlan := &netlink.Vlan{LinkAttrs: attributes, VlanId: value.WAN.VLAN}
 	if err := netlink.LinkAdd(vlan); err != nil {
 		return nil, fmt.Errorf("create VLAN interface: %w", err)
@@ -85,6 +83,30 @@ func ensureVLAN(value config.Config, parent netlink.Link) (netlink.Link, error) 
 	}
 
 	return vlan, nil
+}
+
+// RemoveLink deletes the VLAN sub-interface when this program created it.
+func RemoveLink(value config.Config) error {
+	if value.WAN.VLAN == 0 {
+		return nil
+	}
+	name := value.WAN.VLANInterface
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		if _, ok := errors.AsType[netlink.LinkNotFoundError](err); ok {
+			return nil
+		}
+
+		return fmt.Errorf("inspect VLAN interface %s: %w", name, err)
+	}
+	if !owned(link) {
+		return nil
+	}
+	if err := netlink.LinkDel(link); err != nil {
+		return fmt.Errorf("remove VLAN interface %s: %w", name, err)
+	}
+
+	return nil
 }
 
 func removeManagedVLAN(value config.Config, parentIndex int) error {
@@ -125,7 +147,11 @@ func owned(link netlink.Link) bool {
 	return link.Attrs().Alias == linkAlias
 }
 
+// The kernel ignores IFLA_IFALIAS in the request that creates a link.
 func startVLAN(vlan netlink.Link, address string) error {
+	if err := netlink.LinkSetAlias(vlan, linkAlias); err != nil {
+		return fmt.Errorf("mark VLAN interface %s: %w", vlan.Attrs().Name, err)
+	}
 	if err := applyMAC(vlan, address); err != nil {
 		return err
 	}

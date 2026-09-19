@@ -82,6 +82,7 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	if err != nil {
 		return fmt.Errorf("prepare the IPTV interface: %w", err)
 	}
+	defer func() { result = errors.Join(result, network.RemoveLink(value)) }()
 	defer func() {
 		removed, _ := network.RemoveNAT(value)
 		application.logRemovedNAT(context.WithoutCancel(ctx), removed)
