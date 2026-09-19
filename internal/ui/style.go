@@ -26,6 +26,16 @@ func Styled(out io.Writer) io.Writer {
 	return colorprofile.NewWriter(out, os.Environ())
 }
 
+// Terminal returns the stream behind a styled writer, for a program that
+// drives the terminal itself.
+func Terminal(out io.Writer) io.Writer {
+	if styled, ok := out.(*colorprofile.Writer); ok {
+		return styled.Forward
+	}
+
+	return out
+}
+
 var (
 	labelledLine = regexp.MustCompile(`^([A-Za-z][^:\n]*): (.*)$`)
 	helpCommand  = regexp.MustCompile(`^(  )([a-z][a-z0-9-]*)( {2,}.*)$`)

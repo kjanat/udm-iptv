@@ -22,7 +22,7 @@ func (application *Application) wizardSession(header string) *ui.Session {
 	if input == nil {
 		input = strings.NewReader("")
 	}
-	output := application.Err
+	output := ui.Terminal(application.Err)
 	if output == nil {
 		output = io.Discard
 	}
