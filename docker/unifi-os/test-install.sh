@@ -29,6 +29,7 @@ vol_etc_overlay="${id}-etc-overlay"
 from_name="${id}-from"
 to_name="${id}-to"
 v5_name="${id}-v5"
+v5_deb="${work}/udm-iptv-v5.deb"
 vol_v5_data="${id}-v5-data"
 vol_v5_etc_overlay="${id}-v5-etc-overlay"
 group_open=0
@@ -252,6 +253,23 @@ assert_firmware_overlay_contract() {
 	echo "firmware overlay preserves custom systemd units in ${image}"
 }
 
+# The firmware images resolve no names, so the release is fetched on the
+# runner and handed to the console as a file.
+fetch_v5_package() {
+	local repository=${GITHUB_REPOSITORY:-kjanat/udm-iptv}
+	local url
+
+	url=$(curl -fsSL "https://api.github.com/repos/${repository}/releases?per_page=30" \
+		| jq -r 'map(select(.draft | not) | select(.prerelease)) | first
+			| .assets[] | select(.name | endswith(".deb")) | .browser_download_url')
+	if [[ -z ${url} || ${url} == null ]]; then
+		report_error "no prerelease .deb published on ${repository}"
+		return 1
+	fi
+	echo "v5 package ${url}" >&2
+	curl -fsSL -o "${v5_deb}" "${url}"
+}
+
 # The Go package runs a supervisor that owns the proxy, so the unit's main
 # process is udm-iptv. An installer that only recognises the proxy there
 # reports a failed install over an upgrade that worked.
@@ -261,10 +279,9 @@ assert_v5_upgrade_reports_success() {
 	local output
 	local status=0
 
-	# boot() points UDM_IPTV_PACKAGE at the local package, and --prerelease
-	# does not clear it the way --latest and --version do.
-	output=$(docker exec -e DEBIAN_FRONTEND=noninteractive -e UDM_IPTV_PACKAGE= "${name}" \
-		udm-iptv upgrade --prerelease 2>&1) || status=$?
+	docker cp "${v5_deb}" "${name}:/tmp/udm-iptv-v5.deb"
+	output=$(docker exec -e DEBIAN_FRONTEND=noninteractive "${name}" \
+		udm-iptv upgrade --package /tmp/udm-iptv-v5.deb 2>&1) || status=$?
 	echo "${output}"
 	if ((status != 0)) \
 		|| grep -Fq 'the service is not healthy' <<<"${output}" \
@@ -746,6 +763,7 @@ echo "purged package stayed removed after reboot"
 group_end
 
 group_begin "Upgrade to the current v5 prerelease"
+fetch_v5_package
 docker volume create "${vol_v5_data}" >/dev/null
 docker volume create "${vol_v5_etc_overlay}" >/dev/null
 boot "${v5_name}" "${from_image}" bridge "" "${vol_v5_data}" "${vol_v5_etc_overlay}"
