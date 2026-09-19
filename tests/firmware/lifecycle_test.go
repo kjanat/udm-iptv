@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -418,6 +419,80 @@ echo 'udm-iptv udm-iptv/profile select kpn' | debconf-set-selections`)
 	h.inside(name, "test", "!", "-e", "/data/udm-iptv/udm-iptv.conf")
 }
 
+// A DHCP profile on a real image: the VLAN is created, the lease is
+// obtained from the provider-side server, its RFC3442 route is installed,
+// the lease is recorded, and the NAT evidence tells the routed destination
+// from the two that no route reaches. All of it must come back after a
+// reboot without anyone touching the service.
+func TestFirmwareDHCPLease(t *testing.T) {
+	from, _ := firmwareImages(t)
+	h := newFirmwareHarness(t)
+	h.requirePersistenceContract(from)
+	name := h.id + "-dhcp"
+	h.bootWith(name, from, "none", false, true)
+	h.inside(name, "dpkg-deb", "-x", "/package.deb", "/run/package")
+	h.inside(name, "/run/package"+binary, "configure", "set", "--profile", "kpn",
+		"--wan-interface", "eth8", "--lan-interface", "br0", "--telemetry=false")
+	h.aptInstall(name, "/package.deb")
+	h.healthy(name)
+	h.assertLease(name)
+	h.reboot(name)
+	h.healthy(name)
+	h.assertLease(name)
+	h.inside(name, "systemctl", "stop", "udm-iptv.service")
+	h.inside(name, "sh", "-ec", `if ip link show iptv >/dev/null 2>&1; then exit 1; fi`)
+	h.inside(name, "sh", "-ec", `if iptables -t nat -S POSTROUTING | grep -q 'comment udm-iptv'; then exit 1; fi`)
+}
+
+const (
+	leaseNetwork = "10.207.64.0/20"
+	leaseRoute   = "213.75.112.0/21 via 10.207.64.1"
+)
+
+func (h *firmwareHarness) assertLease(name string) {
+	h.t.Helper()
+	state := h.status(name)
+	if state.Network.Target != "iptv" {
+		h.t.Fatalf("IPTV interface %q, want the VLAN interface", state.Network.Target)
+	}
+	pool := netip.MustParsePrefix(leaseNetwork)
+	if !slices.ContainsFunc(state.Network.Addresses, func(address string) bool {
+		prefix, err := netip.ParsePrefix(address)
+
+		return err == nil && pool.Contains(prefix.Addr())
+	}) {
+		h.t.Fatalf("no lease address from %s on iptv: %v", leaseNetwork, state.Network.Addresses)
+	}
+	if !slices.Contains(state.Network.Routes, leaseRoute) {
+		h.t.Fatalf("RFC3442 route missing: %v", state.Network.Routes)
+	}
+	if slices.ContainsFunc(state.Network.Routes, func(route string) bool { return strings.HasPrefix(route, "default") }) {
+		h.t.Fatalf("a default route was installed on iptv: %v", state.Network.Routes)
+	}
+	h.assertLeaseRecord(state)
+	h.assertNATRules(state, kpnDestinations)
+	h.assertNATChain(name, "iptv", kpnDestinations)
+	for _, entry := range *state.NATEvidence {
+		routed := entry.Destination == "213.75.0.0/16"
+		if routed != (len(entry.Routes) > 0) {
+			h.t.Fatalf("NAT evidence for %s lists routes %v", entry.Destination, entry.Routes)
+		}
+	}
+}
+
+func (h *firmwareHarness) assertLeaseRecord(state routerStatus) {
+	h.t.Helper()
+	if state.Lease == nil {
+		h.t.Fatal("no lease recorded")
+	}
+	if action := state.Lease.Lease.Action; action != "bound" && action != "renew" {
+		h.t.Fatalf("lease action %q", action)
+	}
+	if !slices.Contains(state.Lease.Lease.StaticRoutes, "213.75.112.0/21") {
+		h.t.Fatalf("lease record lacks the RFC3442 route: %v", state.Lease.Lease.StaticRoutes)
+	}
+}
+
 func (h *firmwareHarness) docker(args ...string) string {
 	h.t.Helper()
 	output, err := h.tryDocker(args...)
@@ -473,10 +548,18 @@ func (h *firmwareHarness) inside(name string, args ...string) string {
 
 func (h *firmwareHarness) boot(name, image, network string, eraseProxy bool) {
 	h.t.Helper()
+	h.bootWith(name, image, network, eraseProxy, false)
+}
+
+func (h *firmwareHarness) bootWith(name, image, network string, eraseProxy, dhcp bool) {
+	h.t.Helper()
 	h.containers = append(h.containers, name)
-	erase := "0"
+	erase, serve := "0", "0"
 	if eraseProxy {
 		erase = "1"
+	}
+	if dhcp {
+		serve = "1"
 	}
 	h.docker("run", "-d", "--name", name, "--platform", "linux/arm64", "--privileged", "--cgroupns=host",
 		"--network", network, "--stop-signal", "SIGRTMIN+3",
@@ -486,7 +569,7 @@ func (h *firmwareHarness) boot(name, image, network string, eraseProxy bool) {
 		"-v", h.packagePath+":/package.deb:ro",
 		"-v", filepath.Join(h.root, "tests/firmware/boot.sh")+":/harness.sh:ro",
 		"-v", filepath.Join(h.root, "tests/firmware/udm-iptv-test.target")+":/usr/local/lib/systemd/system/udm-iptv-test.target:ro",
-		"-e", "DEBIAN_FRONTEND=noninteractive", "-e", "UDM_IPTV_TEST_ERASE_PROXY="+erase,
+		"-e", "DEBIAN_FRONTEND=noninteractive", "-e", "UDM_IPTV_TEST_ERASE_PROXY="+erase, "-e", "UDM_IPTV_TEST_DHCP="+serve,
 		image, "/bin/sh", "/harness.sh")
 	h.waitBoot(name)
 }
@@ -522,7 +605,14 @@ type routerStatus struct {
 	Network struct {
 		Target    string   `json:"target"`
 		Addresses []string `json:"addresses"`
+		Routes    []string `json:"routes"`
 	} `json:"network"`
+	Lease *struct {
+		Lease struct {
+			Action       string   `json:"action"`
+			StaticRoutes []string `json:"staticRoutes"`
+		} `json:"lease"`
+	} `json:"lease"`
 	NATRules *[]struct {
 		Destination string `json:"destination"`
 		Managed     bool   `json:"managed"`
