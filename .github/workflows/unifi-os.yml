@@ -1,114 +1,68 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
 ---
 name: UniFi OS
 on:
-  pull_request:
-  push: { branches: [master] }
   schedule: [{ cron: "17 3 * * *" }]
   workflow_dispatch:
     inputs:
-      sku:
-        description: Firmware sku to build and publish
-        required: true
-        default: udmpro
+      model:
+        description: Models to refresh.
         type: choice
-        options: [udm, udmpro, udmse, udmpromax, udmbeast, all]
-
-concurrency:
-  group: unifi-os-${{ github.event.pull_request.number || github.ref }}-${{ github.workflow }}
-  cancel-in-progress: ${{ contains(fromJSON('["workflow_dispatch", "pull_request"]'), github.event_name) }}
-
-permissions: { contents: read, packages: read }
-
-env:
-  SKU: ${{ case(github.event_name == 'workflow_dispatch', inputs.sku, 'all') }}
-  UNIFI_OS_IMAGE: "ghcr.io/${{ github.repository_owner }}/unifi-os"
-  UNIFI_OS_LATEST_MODEL: udmpro
-  PR_CREATED_AT: "${{ github.event.pull_request.created_at }}"
+        default: all
+        options: [all, udm, udmpro, udmse, udmpromax, udmbeast]
+concurrency: { group: unifi-os-publish, cancel-in-progress: false }
+permissions: { contents: read }
 jobs:
-  build-deb:
-    runs-on: ubuntu-latest
-    defaults: { run: { working-directory: udm-iptv } }
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { path: udm-iptv }
-      - run: sudo apt-get update && sudo apt-get install -y devscripts debhelper build-essential
-      - run: debuild -uc -us --lintian-opts --profile debian
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with: { name: build-artifacts, if-no-files-found: error, path: "*.deb" }
+  build:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    uses: $/.github/workflows/build.yml
 
   catalog:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    outputs: { matrix: "${{ steps.matrix.outputs.matrix }}" }
-    timeout-minutes: 1
+    outputs: { matrix: "${{ steps.catalog.outputs.matrix }}" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - id: matrix
-        uses: $/.github/actions/unifi-os-matrix
-        with:
-          cutoff: "${{ env.PR_CREATED_AT }}"
-          sku: "${{ env.SKU }}"
-          image: "${{ env.UNIFI_OS_IMAGE }}"
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache-dependency-path: go.sum }
+      - name: Discover stable firmware
+        id: catalog
+        env:
+          MODEL: ${{ inputs.model || 'all' }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/unifi-os
+        run: go run ./cmd/firmware catalog --model "${MODEL}" --output "${GITHUB_OUTPUT}"
 
-  test-install:
-    needs: [build-deb, catalog]
+  images:
+    name: Refresh firmware (${{ matrix.model }})
+    needs: [build, catalog]
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     permissions: { contents: read, packages: write }
-    defaults: { run: { working-directory: docker/unifi-os } }
-    strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.catalog.outputs.matrix) }}" } }
+    strategy: { fail-fast: false, matrix: "${{ fromJSON(needs.catalog.outputs.matrix) }}" }
     env:
-      MODEL: "${{ matrix.model }}"
-      FROM_IMAGE: "${{ matrix.from_image }}"
-      TO_IMAGE: "${{ matrix.to_image }}"
-      UNIFI_OS_FIRMWARES: "${{ toJSON(matrix.firmwares) }}"
-    timeout-minutes: 30
+      MODEL: ${{ matrix.model }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/unifi-os
+      FIRMWARES: ${{ toJSON(matrix.firmwares) }}
+      SRC: ${{ matrix.from }}
+      DST: ${{ matrix.to }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with: { name: build-artifacts, path: docker/unifi-os }
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ github.token }}" }
+        with: { persist-credentials: false }
       - parallel:
-          - name: Pull previous firmware image
-            continue-on-error: true
-            run: docker pull "${FROM_IMAGE}"
-          - name: Pull target firmware image
-            continue-on-error: true
-            run: docker pull "${TO_IMAGE}"
-      - id: firmware-images
-        uses: $/.github/actions/unifi-os-image-cache
-        with:
-          image: "${{ env.UNIFI_OS_IMAGE }}"
-          model: "${{ matrix.model }}"
-          firmwares: "${{ toJSON(matrix.firmwares) }}"
-      - id: firmware-cache
-        if: steps.firmware-images.outputs.cache-needed == 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ runner.temp }}/unifi-os/firmware
-          key: unifi-os-firmware-${{ runner.os }}-${{ runner.arch }}-${{ matrix.model }}-${{ join(matrix.firmwares.*.sha256, '-') }}
-      - if: steps.firmware-images.outputs.cache-needed == 'true'
-        run: sudo apt-get update && sudo apt-get install -y squashfs-tools
-      - if: steps.firmware-images.outputs.cache-needed == 'true'
-        run: ./build.sh "${MODEL}"
-        env: { UNIFI_OS_CACHE: "${{ runner.temp }}/unifi-os" }
-      - if: steps.firmware-images.outputs.cache-needed == 'true' && steps.firmware-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ runner.temp }}/unifi-os/firmware
-          key: ${{ steps.firmware-cache.outputs.cache-primary-key }}
-      - id: container-logs
-        name: Follow integration container logs
-        uses: ./.github/actions/unifi-os-container-logs
-        with: { model: "${{ matrix.model }}" }
-        background: true
-      - run: ./test-install.sh "${MODEL}" udm-iptv_*.deb
-      - name: Stop following integration container logs
-        cancel: container-logs
-      - if: github.event_name != 'pull_request'
-        uses: $/.github/actions/unifi-os-publish
-        with:
-          image: "${{ env.UNIFI_OS_IMAGE }}"
-          model: "${{ matrix.model }}"
-          firmwares: "${{ toJSON(matrix.firmwares) }}"
-          latest: "${{ matrix.model == env.UNIFI_OS_LATEST_MODEL }}"
+          - name: Setup Go
+            uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+            with: { go-version-file: go.mod, cache-dependency-path: go.sum }
+          - name: Download test package
+            uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+            with: { name: "${{ needs.build.outputs.artifact }}", path: dist }
+          - name: Install extraction tools
+            run: sudo apt-get update && sudo apt-get install -y squashfs-tools
+      - name: Build missing firmware images
+        env: { CACHE: "${{ runner.temp }}/unifi-os" }
+        run: go run ./cmd/firmware build
+      - name: Test installation, reboot and offline recovery
+        run: go test -tags firmware -v -count=1 -timeout=20m ./tests/firmware
+      - name: Publish and verify image aliases
+        env: { GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}" }
+        run: go run ./cmd/firmware publish

@@ -1,0 +1,168 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+---
+name: CI
+on:
+  pull_request:
+  workflow_call:
+    inputs: { release: { description: "Validate tagged release instead of snapshot.", type: boolean, default: false } }
+    outputs: { artifact: { description: "Validated binaries and Debian package.", value: "${{ jobs.build.outputs.artifact }}" } }
+concurrency: { group: "ci-${{ github.event.pull_request.number || github.ref }}", queue: single }
+permissions: { contents: &r read }
+jobs:
+  build:
+    uses: $/.github/workflows/build.yml
+    with: { release: "${{ inputs.release == true }}" }
+
+  test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - &Checkout
+        name: Checkout Sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - &Go
+        name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache-dependency-path: go.sum }
+      - name: Test Go
+        run: go test -race ./...
+
+  actionlint:
+    name: Lint GitHub Actions workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps: [*Checkout, { uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 }] # v1.17
+
+  integration:
+    name: Integration (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { package: network, test: TestKernelLeaseRenewal, privileged: true }
+          - { package: service, test: "TestProxy(StateFailureReapsProcess|StateAndStop)", privileged: false }
+          - { package: service, test: "TestSystemd(Lifecycle|PauseFailureRestoresService)", privileged: true }
+    steps:
+      - *Checkout
+      - parallel:
+          - *Go
+          - name: Prepare env
+            env: { T: "${{ matrix.test }}", F: "${{ runner.temp }}/integration.test", P: "./internal/${{ matrix.package }}" }
+            run: '{ echo "FILE=${F}"; echo "TEST=${T}"; echo "PKG=${P}"; } >> "${GITHUB_ENV}"'
+      - name: Compile integration tests
+        run: go test -c -tags integration -o "${FILE}" "${PKG}"
+      - name: Run integration tests
+        if: ${{ !matrix.privileged }}
+        run: '"${FILE}" -test.run "^${TEST}$" -test.v'
+      - name: Run privileged integration tests
+        if: ${{ matrix.privileged }}
+        run: sudo "${FILE}" -test.run "^${TEST}$" -test.v
+
+  fmt:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - *Checkout
+      - parallel:
+          - *Go
+          - name: Install golangci-lint
+            uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+            with: { version-file: &TV .tool-versions, install-only: true }
+          - uses: tombi-toml/setup-tombi@ea139001852855a7f1cf30a9b60c71ebb6446a99 # v1.5.5
+      - name: Check formatting
+        uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3
+
+  lint:
+    name: Lint and vulnerabilities
+    runs-on: ubuntu-latest
+    permissions: { contents: *r, pull-requests: *r }
+    timeout-minutes: 5
+    steps:
+      - *Checkout
+      - *Go
+      - parallel:
+          - name: Vet Go
+            run: go vet -tags firmware ./...
+          - name: Lint Go
+            uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+            with:
+              version-file: *TV
+              args: --build-tags firmware
+              only-new-issues: "${{ github.repository_owner != github.event.pull_request.head.repo.owner.login }}"
+          - name: Check Go vulnerabilities
+            run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+          - name: Lint shell scripts
+            run: shellcheck tests/firmware/boot.sh packaging/deb/{config,preinstall,postinstall,preremove,postremove}
+          - name: Check Debian script syntax
+            working-directory: packaging/deb
+            run: for script in config preinstall postinstall preremove postremove; do sh -n "${script}"; done
+
+  package:
+    name: Validate package
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - &dlArtefacts
+        name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with: { name: "${{ needs.build.outputs.artifact }}", path: dist }
+      - parallel:
+          - name: Verify checksums
+            working-directory: dist
+            run: sha256sum --check SHA256SUMS
+          - name: Validate Debian package
+            env: { package: dist/udm-iptv-arm64.deb }
+            run: |
+              test -f "${package}"
+              package_name=$(dpkg-deb --field "${package}" Package)
+              architecture=$(dpkg-deb --field "${package}" Architecture)
+              dependencies=$(dpkg-deb --field "${package}" Depends)
+              test "${package_name}" = udm-iptv
+              test "${architecture}" = arm64
+              grep -Eq '(^|, )improxy(, |$)'  <<<"${dependencies}"
+              grep -Eq '(^|, )iptables(, |$)' <<<"${dependencies}"
+              control=$(mktemp -d)
+              dpkg-deb --control "${package}" "${control}"
+              test -x "${control}/config"
+              test -x "${control}/preinst"
+              test -x "${control}/postinst"
+              test -x "${control}/prerm"
+              test -x "${control}/postrm"
+              test -f "${control}/templates"
+              grep -Fq "configure set --profile \"\${profile}\"" "${control}/postinst"
+              dpkg-deb --contents "${package}" | grep -E '/data/udm-iptv/bin/udm-iptv$'
+              dpkg-deb --contents "${package}" | grep -E '/usr/share/doc/udm-iptv/copyright$'
+
+  catalog:
+    name: Resolve published firmware
+    runs-on: ubuntu-latest
+    permissions: { contents: *r, packages: *r }
+    outputs: { matrix: "${{ steps.catalog.outputs.matrix }}" }
+    timeout-minutes: 1
+    steps:
+      - *Checkout
+      - *Go
+      - name: Select firmware pairs
+        id: catalog
+        env: { GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}", IMAGE: "ghcr.io/${{ github.repository_owner }}/unifi-os" }
+        run: go run ./cmd/firmware published --output "${GITHUB_OUTPUT}"
+
+  firmware:
+    name: fw cycle (${{ matrix.model }})
+    needs: [build, catalog]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    strategy: { fail-fast: false, matrix: "${{ fromJSON(needs.catalog.outputs.matrix) }}" }
+    env: { SRC: "${{ matrix.from }}", DST: "${{ matrix.to }}" }
+    steps:
+      - *Checkout
+      - *Go
+      - *dlArtefacts
+      - name: Test firmware installation, reboot and offline recovery
+        run: go test -tags firmware -v -count=1 -timeout=20m ./tests/firmware

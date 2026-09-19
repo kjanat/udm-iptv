@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+# --from-package keeps this out of apt, which is holding the dpkg lock that
+# called it. dpkg removes the files the package shipped.
+if [ "${1:-}" = remove ] && [ -x /data/udm-iptv/bin/udm-iptv ]; then
+	/data/udm-iptv/bin/udm-iptv uninstall --keep-config --from-package
+fi

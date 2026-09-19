@@ -1,416 +1,112 @@
-# IPTV on UniFi OS
+# udm-iptv
 
-This document describes how to set up IPTV on UniFi routing devices based on
-UniFi OS, such as the UniFi Dream Machine (UDM) or the UniFi Dream Router (UDR).
-These instructions have been tested with the IPTV network from KPN
-(ISP in the Netherlands).
-However, the general approach should be applicable for other ISPs as well.
+Routed IPTV for UniFi OS, persistent across firmware updates.
 
-For getting IPTV to work on the legacy UniFi Security Gateway, please refer to
-the [following guide](https://github.com/basmeerman/unifi-usg-kpn).
+## Install
 
-## Contents
-
-1. [Tested Devices](#tested-devices)
-2. [Global Design](#global-design)
-3. [Prerequisites](#prerequisites)
-4. [Setting up Internet Connection](#setting-up-internet-connection)
-5. [Configuring Internal LAN](#configuring-internal-lan)
-6. [Configuring Helper Tool](#configuring-helper-tool)
-7. [Troubleshooting and Known Issues](#troubleshooting)
-
-## Tested Devices
-
-The installation and firmware-restoration lifecycle is exercised in CI using
-firmware images from Ubiquiti for these models:
-
-| Model       | Firmware platform |
-| ----------- | ----------------- |
-| UDM         | `UDM`             |
-| UDM Pro     | `UDMPRO`          |
-| UDM SE      | `UDMPROSE`        |
-| UDM Pro Max | `UDMPROMAX`       |
-| UDM Beast   | `UDMEA4C`         |
-
-For every pull request, the test installs the package on the previous firmware,
-persists it, transitions to the newest firmware that predates the pull request,
-and exercises the real restore unit. UDM Pro has additionally been verified on
-physical hardware across UniFi OS 5.1.26 to 5.1.31, including automatic package
-restoration and working live television. The other models have not yet been
-verified on physical hardware by this fork.
-
-## Global Design
-
-```text
-        Fiber
-          |
-    +----------+
-    | FTTH NTU |
-    +----------+
-          |
-      VLAN4 - IPTV
-      VLAN6 - Internet
-          |
-      +--------+
-      | Router |  - Ubiquiti UniFi device
-      +--------+
-          |
-         LAN
-          |
-      +--------+
-      | Switch |  - Ubiquiti UniFi Switch (Optional)
-      +--------+
-       |  |  |
-       |  |  +-----------------------------+
-       |  |                                |
-       |  +-----------------+              |
-       |                    |              |
-+--------------+       +---------+      +-----+
-| IPTV Decoder |       | WiFi AP |      | ... |
-+--------------+       +---------+      +-----+
-  - KPN IPTV
-  - Netflix
-```
-
-## Prerequisites
-
-Make sure you check the following prerequisites before trying the other steps:
-
-1. The kernel on your UniFi device must support multicast routing
-   in order to support IPTV. Please upgrade to the latest firmware.
-2. The switches in-between the IPTV decoder and the UniFi device should have IGMP
-   snooping enabled. They do not need to be from Ubiquiti necessarily.
-3. The FTTP NTU (or any other type of modem) of your ISP must be connected to
-   one of the WAN ports of your UniFi device.
-
-## Setting up Internet Connection
-
-The first step is to set up your internet connection to your ISP with the UniFi
-device acting as modem, instead of some intermediate device. These steps might
-differ per ISP, so please check the requirements for your ISP.
-
-Below, we describe the steps for KPN. Feel free to update this document with the
-steps necessary for your provider.
-
-### KPN
-
-If you are a customer of KPN, you can set up the WAN connection as follows:
-
-1. In your UniFi Dashboard, go to **Settings > Internet**.
-2. Select the WAN port that is connected to the FTTP NTU.
-3. Enable **VLAN ID** and set it to 6 for KPN.
-4. Set **IPv4 Connection** to *PPPoE*.
-5. For KPN, **Username** should be set to `internet`.
-6. For KPN, **Password** should be set to `internet`.
-
-## Configuring Internal LAN
-
-To operate correctly, the IPTV decoders on the internal LAN possibly require
-additional DHCP options. You can add these DHCP options as follows:
-
-1. In your UniFi Dashboard, go to **Settings > Networks**.
-2. Select the LAN network on which IPTV will be used.
-   We recommend creating a separate LAN network for IPTV traffic if possible in
-   order to reduce interference of other devices on the network.
-3. Enable **Advanced Configuration > IGMP Snooping**, so IPTV traffic is only
-   sent to devices that should receive it.
-
-## Configuring Helper Tool
-
-Next, we will use the udm-iptv package to get IPTV working on your LAN.
-This package uses [igmpproxy](https://github.com/pali/igmpproxy) to route
-multicast IPTV traffic between WAN and LAN.
-
-### Installation
-
-This fork is released from `kjanat/udm-iptv`; the installer, upgrade command
-and firmware restore fallback resolve to this repository by default.
-
-SSH into your machine and execute the commands below in UniFi OS (not in UbiOS).
+Install the latest release on the console:
 
 ```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/kjanat/udm-iptv/master/install.sh)"
+curl -fLO https://github.com/kjanat/udm-iptv/releases/latest/download/udm-iptv-arm64.deb
+sudo apt install ./udm-iptv-arm64.deb
 ```
 
-This script will install the `udm-iptv` package onto your device.
-The package also enables Bash completion for new SSH sessions. To enable it in
-the current session immediately, run:
-
-```sh
-. /etc/profile.d/udm-iptv-completion.sh
-```
-
-The installation process supports various pre-defined configuration profiles for
-popular IPTV providers. Below is a list of supported IPTV providers:
-
-|  Provider | Country | Supported                                                                                                           |
-| --------: | :-----: | ------------------------------------------------------------------------------------------------------------------- |
-|       KPN |   NL    | Yes                                                                                                                 |
-|    XS4ALL |   NL    | Yes                                                                                                                 |
-|     Tweak |   NL    | Yes                                                                                                                 |
-|    Solcon |   NL    | Yes                                                                                                                 |
-|   Telekom |   DE    | [Manual configuration necessary](https://github.com/fabianishere/udm-iptv/discussions/8)                            |
-| MagentaTV |   DE    | [Manual configuration necessary](https://github.com/fabianishere/udm-iptv/issues/2#issuecomment-1007413230)         |
-|  Swisscom |   CH    | Yes                                                                                                                 |
-|     Init7 |   CH    | Yes                                                                                                                 |
-|       MEO |   PT    | Yes                                                                                                                 |
-|        BT |   GB    | Yes                                                                                                                 |
-|   Vivo SP |   BR    | Yes - Tested with GPON TP-Link TX-6610                                                                              |
-|  Vivo GVT |   BR    | Yes - [Manual configuration necessary](https://github.com/fabianishere/udm-iptv/issues/167#issuecomment-1244797462) |
-|   Telenor |   NO    | Yes                                                                                                                 |
-|    PostTV |   LU    | [Manual configuration necessary](https://github.com/fabianishere/udm-iptv/discussions/86#discussioncomment-2345968) |
-
-If your ISP is not supported, you may select the *Custom* profile, which allows
-you manually configure the package to your needs.
-We appreciate if you share the configuration so others can also benefit.
-See the [profiles](profiles) directory for examples of existing configuration
-profiles.
+Installation verifies stable proxy readiness before reporting success.
 
 <details>
-<summary><h4>Installing a different build</h4></summary>
-
-The installer reads the following environment variables:
-
-| Variable                 | Description                                                                            |
-| ------------------------ | -------------------------------------------------------------------------------------- |
-| UDM_IPTV_VERSION         | Release to install (default `4.3.0`)                                                   |
-| UDM_IPTV_REPOSITORY      | Repository to install from (default `kjanat/udm-iptv`)                                 |
-| UDM_IPTV_PACKAGE         | Package to install, as a URL or a path on the device                                   |
-| UDM_IPTV_STATE_DIR       | Directory to save the answers, configuration and package in (default `/data/udm-iptv`) |
-| UDM_IPTV_PR              | Pull request whose build to install, as a number or `owner/repo#number`                |
-| UDM_IPTV_RUN             | Workflow run whose build to install, or `latest` for the newest successful one         |
-| UDM_IPTV_TOKEN           | Token with `actions:read`, required for `UDM_IPTV_PR` and `UDM_IPTV_RUN`               |
-| UDM_IPTV_TIMEOUT_SECONDS | Seconds to wait for a workflow run to finish (default `900`)                           |
-
-Artifacts are only downloadable with a token, including on public
-repositories. Releases are not, so `UDM_IPTV_VERSION` and `UDM_IPTV_REPOSITORY` need none.
-
-Copy a token to the device, keeping it out of the command line:
+<summary>Standalone binary</summary>
 
 ```sh
-gh auth token | ssh unifi 'cat > /tmp/.ghtok && chmod 600 /tmp/.ghtok'
+curl -fLO https://github.com/kjanat/udm-iptv/releases/latest/download/udm-iptv-linux-arm64
+curl -fLO https://github.com/kjanat/udm-iptv/releases/latest/download/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+chmod +x udm-iptv-linux-arm64
+sudo ./udm-iptv-linux-arm64 install
 ```
 
-Install the build of a pull request, waiting for the workflow if it is still
-running:
+`install --dry-run` previews without root, changes, telemetry or health checks.
 
-```sh
-ssh unifi 'UDM_IPTV_PR="kjanat/udm-iptv#123" UDM_IPTV_TOKEN=$(cat /tmp/.ghtok) \
-    sh -c "$(curl -fsSL https://raw.githubusercontent.com/kjanat/udm-iptv/master/install.sh)"'
-```
-
-Remove the token when you are done:
-
-```sh
-ssh unifi 'rm -f /tmp/.ghtok'
-```
+`--non-interactive` skips prompts. `apt install` performs real installation.
 
 </details>
 
-The package installs a service that is started during the
-boot process of your UniFi device and that will set up the applications
-necessary to route IPTV traffic. After installation, the service is automatically
-started.
+Configuration: `/data/udm-iptv/config.json`. Legacy settings migrate automatically.
 
-Your configuration is saved to `/data` so that it survives a firmware update.
-A firmware update removes the package itself, and the installation reinstalls
-itself on the next boot. See
-[Installation across Firmware Updates](#installation-across-firmware-updates)
-and fabianishere/udm-iptv#120.
+Missing system proxies use preserved binaries and libraries offline.
 
-If you experience any issues while setting up the service, please visit the
-[Troubleshooting](#troubleshooting) section.
-
-### Installation across Firmware Updates
-
-A firmware update replaces the read-only layer of the root overlay and discards
-the writable layer below `/usr`, which removes `udm-iptv` and its service unit.
-`/etc` and `/data` survive. Your answers and your configuration are copied to
-`/data/udm-iptv` after every successful configuration, and the installer leaves
-a copy of the package there as well.
-
-`udm-iptv-restore.service` is installed in `/etc/systemd/system` and survives as
-well. On the first boot after an update it finds the daemon gone, waits for
-UniFi OS to finish reinstalling its own packages, and installs the saved copy,
-which needs no network access. When there is no saved copy it falls back to
-downloading the installer. Nothing needs to be enabled and nothing needs to be
-run afterwards.
-
-The same restore runs on demand and does nothing while the service is running,
-so it is also safe to schedule from another always-on host:
-
-```sh
-ssh unifi /data/udm-iptv/udm-iptv-restore
-```
-
-`udm-iptv restore` is the same thing for as long as the package is installed,
-and `udm-iptv persist` refreshes the saved copy, which is only useful if you
-edit `/etc/udm-iptv.conf` by hand instead of using `udm-iptv configure`.
-
-The restore reads the following environment variables:
-
-| Variable                 | Description                                                                               |
-| ------------------------ | ----------------------------------------------------------------------------------------- |
-| UDM_IPTV_STATE_DIR       | Directory holding the saved answers, configuration and package (default `/data/udm-iptv`) |
-| UDM_IPTV_REPOSITORY      | Repository to fall back to when no package was saved (default `kjanat/udm-iptv`)          |
-| UDM_IPTV_BRANCH          | Branch or commit to take that installer from (default `HEAD`)                             |
-| UDM_IPTV_LOCK_TIMEOUT    | Seconds to wait for the package manager to free the dpkg lock (default `1800`)            |
-| UDM_IPTV_SYSTEMD_TIMEOUT | Seconds to retry service activation while systemd reloads (default `60`)                  |
-
-`udm-iptv-restore.service` runs `/data/udm-iptv/udm-iptv-restore` by its literal
-path, so a different `UDM_IPTV_STATE_DIR` needs the unit adjusted to match.
-
-### Configuration
-
-You can modify the configuration of the service interactively as follows:
+## Commands
 
 ```sh
 udm-iptv configure
-```
-
-See below for a reference of the available options to configure:
-
-| Option                            | Description                                                                                                                                                           |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| IPTV_WAN_INTERFACE                | Interface on which IPTV traffic enters the router                                                                                                                     |
-| IPTV_WAN_RANGES                   | IP ranges from which the IPTV traffic originates (separated by spaces)                                                                                                |
-| IPTV_WAN_VLAN                     | ID of VLAN which carries IPTV traffic (use 0 if no VLAN is used)                                                                                                      |
-| IPTV_WAN_DHCP                     | Boolean to indicate whether DHCP is enabled on the IPTV WAN (VLAN) interface                                                                                          |
-| IPTV_WAN_DHCP_OPTIONS             | [DHCP options](https://busybox.net/downloads/BusyBox.html#udhcpc) to send when requesting an IP address                                                               |
-| IPTV_WAN_STATIC_IP                | Static IP address to assign to the IPTV WAN (VLAN) interface (if DHCP is disabled)                                                                                    |
-| IPTV_WAN_MAC                      | Custom MAC address to assign to the IPTV WAN VLAN interface                                                                                                           |
-| IPTV_LAN_INTERFACES               | Interfaces on which IPTV should be made available                                                                                                                     |
-| IPTV_IGMPPROXY_DEBUG              | Enable debugging for igmpproxy                                                                                                                                        |
-| IPTV_IGMPPROXY_DISABLE_QUICKLEAVE | Boolean to disable the quickleave feature for the IGMP Proxy. Set this to true unless exactly one IPTV decoder is connected. Supported by both improxy and igmpproxy. |
-
-The configuration is written to `/etc/udm-iptv.conf` (within UniFi OS).
-
-### Upgrading
-
-Use the following command to upgrade `udm-iptv`:
-
-```sh
+udm-iptv status
+udm-iptv diagnose
+udm-iptv start
+udm-iptv stop
+udm-iptv restart
 udm-iptv upgrade
-```
-
-By default this resolves and installs the latest published release. The command
-also accepts an explicit release, package, pull request or workflow run:
-
-```sh
-udm-iptv upgrade --version 4.3.0
-udm-iptv upgrade --package /data/udm-iptv/udm-iptv.deb
-udm-iptv upgrade --pr kjanat/udm-iptv#123 --token-file /tmp/.ghtok
-udm-iptv upgrade --run latest --token-file /tmp/.ghtok
-```
-
-An upgrade stops before downloading when the selected release is already
-installed. Use `udm-iptv upgrade --force` to download and reinstall it anyway.
-
-Run `udm-iptv upgrade --help` for the complete option list. Firmware restoration
-always uses the saved package and never upgrades automatically; this keeps a
-firmware update separate from a package update.
-
-If that command does not exist, please re-run the installation script.
-
-### Removal
-
-To fully remove an `udm-iptv` installation from your UniFi device, run the follow command:
-
-```sh
 udm-iptv uninstall
 ```
 
-Or to remove the package but keep the configuration and answers, run:
+`stop --for 30m` starts IPTV again after thirty minutes.
+
+`status` shows when a pause ends.
+
+`start` resumes early; running services remain uninterrupted.
+
+`restart`, `stop` and uninstall cancel scheduled starts.
+
+Pauses end at reboot; automatic startup still applies.
+
+Failed scheduling attempts recovery and reports the outcome.
+
+`upgrade --dry-run` shows what would be installed.
+
+Preview builds automatically follow prereleases.
+
+Stable builds follow stable releases unless `--prerelease` is supplied.
+
+Downgrades require `--force`.
+
+See `udm-iptv <command> --help` for options.
+
+## Diagnostics
+
+Record diagnostics for 30 minutes:
 
 ```sh
-udm-iptv uninstall --keep-data
+udm-iptv diagnose --capture 30m --format both --follow
 ```
 
-## Troubleshooting
+`q` or Ctrl-C closes the viewer; capture continues.
 
-Below is a non-exhaustive list of issues that might occur while getting IPTV to
-run on your UniFi device, as well as troubleshooting steps. Please check these
-instructions before opening a discussion.
+Reports: `/data/udm-iptv/diagnostics`. Review before sharing; provider prefixes remain visible.
 
-1. **Check if your IPTV receiver is on the right VLAN**\
-   Your IPTV receiver might not be VLAN to which the IPTV traffic is forwarded.
-2. **Check if IPTV traffic is forwarded to the right VLAN**\
-   Make sure that you have configured `IPTV_LAN_INTERFACES` correctly to forward
-   to right interfaces (e.g., `br4` for VLAN 4).
-3. **If you have more than one IPTV decoder, disable the quickleave feature**
-   Quickleave can be enabled for improxy (the default IGMP proxy) and igmpproxy.
-   If you have multiple IPTV decoders, quickleave will stop a stream for all decoders when just one decoder changes to a different stream.
-4. **Check if your kernel supports multicast routing**\
-   If `MRT_INIT failed; Errno(92): Protocol not available` appears in
-   diagnostics, your kernel does not support multicast routing.
-5. **Check if your issue has been reported already**\
-   Use the GitHub search functionality to check if your issue has already been
-   reported before.
+See [telemetry details](docs/telemetry.md) for optional reliability reports.
 
-### Getting Help or Reporting an Issue
+## Providers
 
-If your issues persist, you may seek help on our [Discussions](https://github.com/kjanat/udm-iptv/discussions) page.
-Please keep [GitHub Issues](https://github.com/kjanat/udm-iptv/issues)
-only for bugs or feature requests related to the project (no configuration-related issues).
+[Provider profiles](docs/providers) supply editable defaults. [KPN specifications](docs/providers/kpn.md).
 
-When opening a discussion or reporting an issue, **please share the name of your
-ISP as well as the diagnostics reported by the diagnostic tool**:
+First setup suggests providers through ipify/PTR; confirm your selection.
+
+Saved settings remain unchanged until you accept the review.
+
+## Development
 
 ```sh
-udm-iptv diagnose
+go test -race ./...
+go vet ./...
+go run ./cmd/udm-iptv preview
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=true -o dist/udm-iptv-linux-arm64 ./cmd/udm-iptv
+goreleaser release --snapshot --clean --skip=publish
 ```
 
-The report includes the installed package and firmware versions, network state,
-NAT counters, multicast routes, relevant systemd unit state and restart
-counters, and logs from the current boot. A failed installation prints the same
-report automatically.
+`preview` uses example data without system changes or telemetry.
 
-The report is designed for public sharing. Addresses assigned to the device,
-private and link-local addresses, IPv6 addresses, multicast group addresses,
-MAC addresses and the router hostname are redacted. Packet payloads, serial
-numbers, credentials and exact DHCP option values are not collected. Public
-provider source addresses and route prefixes remain visible because those are
-needed to diagnose IPTV routing. Always review a report before posting it.
-
-For intermittent freezes or channel-switching failures, start a bounded capture
-before watching television:
-
-```sh
-udm-iptv diagnose --capture 2h
-```
-
-The command returns immediately. The capture continues after the SSH session is
-closed and stops automatically after the requested duration, with a maximum of
-24 hours. By default it writes two mode-`0600` files under `/tmp`: readable plain
-text for people and JSON Lines for structured analysis. JSON Lines is the
-canonical event stream and remains parseable when a capture is interrupted.
-Neither file contains an unsanitized copy of the collected data.
-
-Select an output format or amount of detail when needed:
-
-```sh
-udm-iptv diagnose --format json
-udm-iptv diagnose --capture 30m --format text
-udm-iptv diagnose --capture 15m --verbosity debug
-```
-
-`summary` records package, configuration and service health once per minute;
-`normal` adds routes, NAT, multicast state and bounded service logs with samples
-every 15 seconds; `debug` adds the generated proxy configuration, retains more
-sanitized log messages and samples every five seconds. Run
-`udm-iptv diagnose --help` for the complete option list.
-
-## Contributing
-
-Questions, suggestions and contributions are welcome and appreciated!
-You can contribute in various meaningful ways:
-
-- Report a bug through [GitHub issues](https://github.com/kjanat/udm-iptv/issues).
-- Contribute improvements to the documentation (e.g., configuration for other ISPs).
-- Help answer questions on our [Discussions](https://github.com/kjanat/udm-iptv/discussions) page.
+CI builds binaries; routers need no Go toolchain.
 
 ## License
 
-The code is released under the GPLv2 license. See [COPYING.txt](/COPYING.txt).
+GPL-2.0-or-later. See [COPYING.txt](COPYING.txt).
 
-<!-- markdownlint-disable-file line-length no-inline-html -->
+ <!-- markdownlint-disable-file line-length no-inline-html -->

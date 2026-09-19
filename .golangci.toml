@@ -1,0 +1,171 @@
+#:schema https://golangci-lint.run/jsonschema/golangci.jsonschema.json
+# https://golangci-lint.run/docs/welcome/install/local/
+# https://golangci-lint.run/docs/linters/
+# https://golangci-lint.run/docs/formatters/
+# https://golangci-lint.run/docs/plugins/module-plugins/
+
+version = "2"
+
+[run]  # tombi: format.rules.table-keys-order = "ascending"
+# Analyze tagged tests without executing privileged tests or sending telemetry.
+build-tags            = ["integration", "sentrylive", "firmware"]
+modules-download-mode = "mod"
+relative-path-mode    = "gomod"
+tests                 = true
+timeout               = "5m"
+
+[linters]
+default = "all"
+# tombi: format.rules.array-values-order = "ascending"
+enable  = [
+  "bidichk",
+  "bodyclose",
+  "contextcheck",
+  "copyloopvar",
+  "durationcheck",
+  "embeddedstructfieldcheck",
+  "err113",
+  "errcheck",
+  "errorlint",
+  "fatcontext",
+  "gocheckcompilerdirectives",
+  "gocritic",
+  "govet",
+  "makezero",
+  "mnd",
+  "musttag",
+  "nilerr",
+  "nilnesserr",
+  "nilnil",
+  "noctx",
+  "nolintlint",
+  "nonamedreturns",
+  "revive",
+  "staticcheck",
+  "unparam",
+  "wrapcheck"
+]
+# tombi: format.rules.array-values-order = "ascending"
+disable = [
+  "exhaustruct",
+  "exhaustruct_v5",
+  "funcorder",
+  "gochecknoglobals",
+  "gomodguard",
+  "inamedparam",
+  "ireturn",
+  "lll",
+  "nlreturn",
+  "noinlineerr",
+  "paralleltest",
+  "testpackage",
+  "tparallel",
+  "varnamelen",
+  "wsl",
+  "wsl_v5",
+]
+
+[linters.settings.depguard.rules.main]
+list-mode = "strict"
+# tombi: format.rules.array-values-order = "ascending"
+allow     = [
+  "$gostd",
+  "charm.land/",
+  "github.com/charmbracelet/",
+  "github.com/coreos/",
+  "github.com/getsentry/",
+  "github.com/godbus/",
+  "github.com/google/",
+  "github.com/kjanat/",
+  "github.com/klauspost/",
+  "github.com/moby/",
+  "github.com/opencontainers/",
+  "github.com/santhosh-tekuri/",
+  "github.com/sigstore/",
+  "github.com/spf13/",
+  "github.com/vishvananda/",
+  "golang.org/x/",
+]
+
+[linters.settings.forbidigo]
+forbid = [                                                                                                  # tombi: format.rules.array-values-order = "ascending"
+  { pattern = "^os\\.Create$", msg = "use atomicfile.Write/Copy so a crash never leaves a partial file" },
+  { pattern = "^os\\.WriteFile$", msg = "use atomicfile.Write so a crash never leaves a partial file" },
+]
+
+[linters.settings.goconst]
+ignore-tests = true
+
+[linters.settings.gosec]
+# udm-iptv is a local CLI/daemon administered by its own operator: file
+# paths come from --config/--output/--text flags or discovered system state
+# (interface names, its own temp/cache dirs), and subprocess arguments come
+# from validated config or literal binary names — never from untrusted
+# network input, so these taint-analysis codes are structurally noisy here.
+excludes = ["G204", "G304", "G702"]
+
+[linters.settings.mnd]
+ignored-numbers = ["2", "100"]
+
+[linters.settings.staticcheck]
+checks = ["all"]
+
+[linters.settings.nolintlint]  # tombi: format.rules.table-keys-order = "ascending"
+allow-unused        = false
+require-explanation = true
+require-specific    = true
+
+[linters.settings.tagliatelle.case]
+use-field-name = false
+ignored-fields = ["Schema", "Group"]
+
+[linters.settings.tagliatelle.case.extended-rules.json]
+case                 = "goCamel"
+extra-initialisms    = true
+initialism-overrides = { MAC = true, PID = true }
+
+[[linters.settings.tagliatelle.case.overrides]]
+pkg            = "internal/telemetry"
+use-field-name = false
+
+[linters.settings.tagliatelle.case.overrides.extended-rules.json]
+case = "snake"
+
+[[linters.settings.tagliatelle.case.overrides]]
+pkg            = "internal/firmware"
+use-field-name = false
+ignored-fields = ["SHA256", "Links", "Embedded"]
+
+[[linters.settings.tagliatelle.case.overrides]]
+pkg            = "internal/installer"
+use-field-name = false
+ignored-fields = ["BundleURL"]
+
+[linters.exclusions]  # tombi: format.rules.table-keys-order = "ascending"
+generated   = "strict"
+warn-unused = true
+
+# The firmware pipeline downloads and unpacks multi-gigabyte images into a
+# per-build directory that buildImage deletes on every exit path. Nothing
+# there outlives the build, so atomic replacement buys no durability, and
+# buffering a whole image to pass it through atomicfile.Write is not viable.
+[[linters.exclusions.rules]]
+linters = ["forbidigo"]
+path    = "internal/firmware/images\\.go"
+text    = "os\\.Create"
+
+[formatters]  # tombi: format.rules.table-keys-order = "ascending"
+enable = ["gci", "goimports"]
+
+[formatters.settings.gci]  # tombi: format.rules.table-keys-order = "ascending"
+custom-order = true
+sections     = ["standard", "default", "localmodule"]
+
+[formatters.settings.goimports]
+local-prefixes = ["github.com/kjanat/udm-iptv"]
+
+[issues]  # tombi: format.rules.table-keys-order = "ascending"
+fix                   = false
+# Report the full backlog, including repeated findings.
+max-issues-per-linter = 0
+max-same-issues       = 0

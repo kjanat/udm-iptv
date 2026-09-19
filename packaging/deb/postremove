@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = purge ]; then
+	rm -rf -- /data/udm-iptv
+	if [ -e /usr/share/debconf/confmodule ]; then
+		# shellcheck source=/dev/null
+		. /usr/share/debconf/confmodule
+		db_purge
+	fi
+fi
