@@ -32,3 +32,13 @@ func fallbackText(value string) string {
 
 	return value
 }
+
+// mldText names the MLD version the proxy runs, or says IPv6 multicast is
+// left alone.
+func mldText(version int) string {
+	if version == 0 {
+		return "disabled"
+	}
+
+	return fmt.Sprintf("v%d", version)
+}

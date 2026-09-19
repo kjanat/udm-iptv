@@ -93,6 +93,10 @@ igmpproxy is the older one.`},
 
 Version 3 is current and works with almost every box.
 Pick version 2 only if your provider or box needs it.`},
+	"mld": {"IPv6 multicast", `MLD is the IPv6 version of IGMP.
+
+Leave this off unless your provider sends IPTV over IPv6.
+Almost every provider uses IPv4 today.`},
 	"quickleave": {"Quickleave", `With quickleave the router stops a stream the moment a TV box switches channel.
 That saves bandwidth.
 

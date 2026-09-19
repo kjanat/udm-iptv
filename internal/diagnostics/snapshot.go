@@ -59,6 +59,7 @@ type configSummary struct {
 	LANInterfaces     []string `json:"lanInterfaces"`
 	Proxy             string   `json:"proxy"`
 	IGMPVersion       int      `json:"igmpVersion"`
+	MLDVersion        int      `json:"mldVersion"`
 	QuickLeave        bool     `json:"quickLeave"`
 	Debug             bool     `json:"debug"`
 	ProxySourceRanges []string `json:"proxySourceRanges"`
@@ -80,6 +81,7 @@ type networkStatus struct {
 	LinkState    string   `json:"linkState"`
 	AddressCount int      `json:"addressCount"`
 	Addresses    []string `json:"addresses"`
+	AddressesV6  []string `json:"addressesV6,omitempty"`
 	Routes       []string `json:"routes"`
 	DefaultRoute bool     `json:"defaultRoute"`
 }
@@ -237,6 +239,17 @@ func renderMemberships(memberships *[]Membership) string {
 	return output.String()
 }
 
+// renderIPv6 reports the IPv6 addresses the IPTV interface carries. The
+// lease and NAT paths are IPv4 only, so this is evidence rather than state
+// udm-iptv put there.
+func renderIPv6(network networkStatus) string {
+	if len(network.AddressesV6) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("IPv6 addresses on %s: %s\n", network.Target, strings.Join(network.AddressesV6, ", "))
+}
+
 func renderLease(lease *service.LeaseState) string {
 	if lease == nil {
 		return "DHCP lease: none recorded\n"
@@ -352,7 +365,7 @@ func summarizeConfig(value config.Config) configSummary {
 		Profile: value.Profile, WANInterface: value.WAN.Interface, VLAN: value.WAN.VLAN, IPTVInterface: value.WAN.VLANInterface,
 		CustomMAC: value.WAN.VLANMAC != "", DHCP: value.WAN.DHCP, DHCPOptions: len(value.WAN.DHCPOptions) > 0, StaticAddress: value.WAN.StaticAddress != "",
 		DHCPRoutes: string(value.WAN.DHCPRoutes), NATDestinations: value.WAN.NATDestinations,
-		LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion,
+		LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion, MLDVersion: value.Proxy.MLDVersion,
 		QuickLeave: value.Proxy.QuickLeave, Debug: value.Proxy.Debug, ProxySourceRanges: value.Proxy.SourceRanges,
 	}
 }
@@ -426,6 +439,19 @@ func parseMemberships(data []byte) ([]Membership, error) {
 	return memberships, nil
 }
 
+func linkAddresses(link netlink.Link, family int) []string {
+	addresses, err := netlink.AddrList(link, family)
+	if err != nil {
+		return nil
+	}
+	result := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		result = append(result, address.IPNet.String())
+	}
+
+	return result
+}
+
 func inspectLink(target string) networkStatus {
 	result := networkStatus{Target: target}
 	link, err := netlink.LinkByName(target)
@@ -433,12 +459,11 @@ func inspectLink(target string) networkStatus {
 		return result
 	}
 	result.LinkState = link.Attrs().OperState.String()
-	if addresses, err := netlink.AddrList(link, netlink.FAMILY_V4); err == nil {
-		result.AddressCount = len(addresses)
-		for _, address := range addresses {
-			result.Addresses = append(result.Addresses, address.IPNet.String())
-		}
-	}
+	result.Addresses = linkAddresses(link, netlink.FAMILY_V4)
+	result.AddressCount = len(result.Addresses)
+	// A provider that carries IPTV over IPv6 shows up here first, so the
+	// addresses are collected even though the lease path is IPv4 only.
+	result.AddressesV6 = linkAddresses(link, netlink.FAMILY_V6)
 	routes, err := netlink.RouteList(link, netlink.FAMILY_V4)
 	if err != nil {
 		return result
@@ -476,7 +501,7 @@ Proxy source ranges: %s
 LAN interfaces: %s
 Service: %s/%s (%s, restarts: %d)
 Proxy: %s (PID %d)
-IGMP version: %d, quickleave enabled: %t, proxy debug logging: %t
+IGMP version: %d, MLD: %s, quickleave enabled: %t, proxy debug logging: %t
 IPTV interface: %s (%s, %d IPv4 addresses)
 Addresses: %s
 Routes: %s
@@ -486,11 +511,11 @@ Multicast routes: %s
 		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, fallbackText(value.Config.DHCPRoutes),
 		strings.Join(value.Config.NATDestinations, ", "), natRuleCount(value.NAT), renderSourceRanges(value.Config), strings.Join(value.Config.LANInterfaces, ", "),
 		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts,
-		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, value.Config.QuickLeave, value.Config.Debug,
+		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug,
 		value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount, strings.Join(value.Network.Addresses, ", "),
 		strings.Join(value.Network.Routes, ", "), value.Network.Target, presence(value.Network.DefaultRoute), multicastSummary(value.Multicast)) +
 		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderNATEvidence(value.NATEvidence, value.Network.Target) +
-		renderMemberships(value.Memberships) + renderLease(value.Lease) + renderDownstream(value)
+		renderIPv6(value.Network) + renderMemberships(value.Memberships) + renderLease(value.Lease) + renderDownstream(value)
 }
 
 // renderInstallation says who installed the executable and whether dpkg's

@@ -92,7 +92,7 @@ type override struct {
 type configureFlags struct {
 	profile, wanInterface, iptvInterface string
 	vlanMAC, staticAddress, proxy        string
-	vlan, igmpVersion                    int
+	vlan, igmpVersion, mldVersion        int
 	dhcpOptions, natDestinations         []string
 	proxySources, lanInterfaces          []string
 	dhcpRoutes                           string
@@ -117,6 +117,7 @@ func (f *configureFlags) overrides(value *config.Config) []override {
 		{"lan-interface", "lan", func() { value.LAN.Interfaces = f.lanInterfaces }, func() any { return value.LAN.Interfaces }},
 		{"proxy", "proxy", func() { value.Proxy.Program = f.proxy }, func() any { return value.Proxy.Program }},
 		{"igmp-version", "igmp", func() { value.Proxy.IGMPVersion = f.igmpVersion }, func() any { return value.Proxy.IGMPVersion }},
+		{"mld-version", "mld", func() { value.Proxy.MLDVersion = f.mldVersion }, func() any { return value.Proxy.MLDVersion }},
 		{"quickleave", "quickleave", func() { value.Proxy.QuickLeave = f.quickLeave }, func() any { return value.Proxy.QuickLeave }},
 		{flagDebug, flagDebug, func() { value.Proxy.Debug = f.debug }, func() any { return value.Proxy.Debug }},
 		{"telemetry-errors", "", func() { value.Telemetry.Errors = f.telemetry.Errors }, func() any { return value.Telemetry.Errors }},
@@ -234,6 +235,7 @@ func (f *configureFlags) bind(command *cobra.Command) {
 	flags.StringSliceVar(&f.lanInterfaces, "lan-interface", nil, "downstream LAN interface; repeatable")
 	flags.StringVar(&f.proxy, "proxy", "", "multicast proxy: improxy or igmpproxy")
 	flags.IntVar(&f.igmpVersion, "igmp-version", 0, "IGMP version: 2 or 3")
+	flags.IntVar(&f.mldVersion, "mld-version", 0, "IPv6 multicast MLD version: 0 off, 1 or 2")
 	flags.BoolVar(&f.quickLeave, "quickleave", false, "enable quickleave")
 	flags.BoolVar(&f.debug, flagDebug, false, "enable verbose proxy logging")
 	flags.BoolVar(&f.telemetry.Enabled, flagTelemetry, false, "send diagnostic data")
@@ -253,6 +255,7 @@ func (f *configureFlags) bind(command *cobra.Command) {
 	_ = command.RegisterFlagCompletionFunc("profile", completeProfiles)
 	_ = command.RegisterFlagCompletionFunc("proxy", completeValues("improxy\trecommended on current UniFi OS", "igmpproxy\tlegacy proxy with a source allowlist"))
 	_ = command.RegisterFlagCompletionFunc("igmp-version", completeValues("3\trecommended for current receivers", "2\tlegacy receivers"))
+	_ = command.RegisterFlagCompletionFunc("mld-version", completeValues("0\tleave IPv6 multicast alone", "2\tMLDv2", "1\tMLDv1"))
 }
 
 func completeProfiles(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
