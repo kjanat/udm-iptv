@@ -161,7 +161,7 @@ func TestParseProfilesRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-// RFC 1112 section 4 forbids a host group address in the source field, so a
+// RFC 1112 section 6.2 forbids a host group address in the source field, so a
 // group can never match a sender and igmpproxy's altnet cannot use one.
 func TestNoProfileTreatsAMulticastGroupAsASource(t *testing.T) {
 	t.Parallel()

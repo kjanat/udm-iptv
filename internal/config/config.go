@@ -39,7 +39,7 @@ var (
 	errNoLANInterface      = errors.New("at least one LAN interface is required")
 	errProxyProgram        = errors.New("proxy must be improxy or igmpproxy")
 	errMissingProxySources = errors.New("igmpproxy requires at least one proxy source range")
-	// RFC 1112 section 4 forbids a host group address in the source field, so a
+	// RFC 1112 section 6.2 forbids a host group address in the source field, so a
 	// group range can never match a sender and igmpproxy's altnet cannot use one.
 	errGroupAsProxySource   = errors.New("a multicast group is a destination, not a proxy source range")
 	errIGMPVersion          = errors.New("IGMP version must be 2 or 3")
