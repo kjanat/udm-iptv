@@ -86,7 +86,7 @@ func TestSnapshotRendersEveryForwardedRouteAndTheLease(t *testing.T) {
 	}}}
 	memberships := []Membership{{Bridge: "br0", Port: "switch0.1", Group: "224.0.250.64"}}
 	rules := []network.NATRule{{Destination: "213.75.0.0/16", Managed: true, Packets: 187, Bytes: 27452}}
-	lease := service.LeaseState{Received: time.Date(2026, 9, 17, 18, 53, 0, 0, time.UTC), Lease: network.Lease{
+	lease := service.LeaseState{Received: time.Date(2026, 9, 17, 18, 53, 0, 0, time.UTC), Applied: true, Lease: network.Lease{
 		Action: "bound", Interface: "iptv", Address: "10.207.71.227", Mask: "20", Routers: []string{"10.207.64.1"},
 		StaticRoutes: []string{"213.75.112.0/21", "10.207.64.1"}, Options: map[string]string{"dns": "195.121.1.34", "lease": "3600"},
 	}}
@@ -104,7 +104,7 @@ func TestSnapshotRendersEveryForwardedRouteAndTheLease(t *testing.T) {
 		"NAT rules on the IPTV interface:\n  managed 213.75.0.0/16: 187 packets, 27.5 kB",
 		"Bridge memberships: 1",
 		"  br0 switch0.1 224.0.250.64",
-		"DHCP lease: bound at 2026-09-17T18:53:00Z, address 10.207.71.227/20, routers 10.207.64.1, static routes 213.75.112.0/21 10.207.64.1",
+		"DHCP lease: bound at 2026-09-17T18:53:00Z, address 10.207.71.227/20, routers 10.207.64.1, static routes 213.75.112.0/21 10.207.64.1, applied",
 		"  dns=195.121.1.34",
 		"  lease=3600",
 	} {

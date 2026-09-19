@@ -485,6 +485,9 @@ func (h *firmwareHarness) assertLeaseRecord(state routerStatus) {
 	if state.Lease == nil {
 		h.t.Fatal("no lease recorded")
 	}
+	if !state.Lease.Applied {
+		h.t.Fatalf("lease recorded as not applied: %s", state.Lease.Failure)
+	}
 	if action := state.Lease.Lease.Action; action != "bound" && action != "renew" {
 		h.t.Fatalf("lease action %q", action)
 	}
@@ -608,7 +611,9 @@ type routerStatus struct {
 		Routes    []string `json:"routes"`
 	} `json:"network"`
 	Lease *struct {
-		Lease struct {
+		Applied bool   `json:"applied"`
+		Failure string `json:"failure"`
+		Lease   struct {
 			Action       string   `json:"action"`
 			StaticRoutes []string `json:"staticRoutes"`
 		} `json:"lease"`

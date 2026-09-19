@@ -28,16 +28,6 @@ func TestProxyConfigurationKeepsNATOutOfImproxy(t *testing.T) {
 	}
 }
 
-func TestDHCPReadinessRequiresIPv4(t *testing.T) {
-	t.Parallel()
-	if hasIPv4Address([]net.Addr{&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)}}) {
-		t.Fatal("link-local IPv6 address satisfied DHCP readiness")
-	}
-	if !hasIPv4Address([]net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.2"), Mask: net.CIDRMask(24, 32)}}) {
-		t.Fatal("DHCP-assigned IPv4 address did not satisfy readiness")
-	}
-}
-
 func TestStaticAddressDeletionRecognition(t *testing.T) {
 	t.Parallel()
 	deleted := netlink.AddrUpdate{

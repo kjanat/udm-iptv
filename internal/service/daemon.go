@@ -57,7 +57,7 @@ var (
 	errProxyExited               = errors.New("multicast proxy exited unexpectedly")
 	errProcessExited             = errors.New("exited unexpectedly")
 	errAddressSubscriptionClosed = errors.New("address change subscription closed")
-	errDHCPLeaseTimeout          = errors.New("DHCP did not assign an address within 30 seconds")
+	errDHCPLeaseTimeout          = errors.New("the DHCP hook did not apply a lease within 30 seconds")
 )
 
 // RuntimeState is the running proxy's identity, read by `udm-iptv status`.
@@ -378,17 +378,24 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 	client.Env = append(os.Environ(), "UDM_IPTV_CONFIG="+application.ConfigPath)
 	client.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(client)
+	if err := RemoveLeaseState(); err != nil {
+		return nil, err
+	}
+	since := time.Now().UTC()
 	process, err := startProcess(client)
 	if err != nil {
 		return nil, fmt.Errorf("start DHCP client: %w", err)
 	}
-	if err := waitDHCPLease(ctx, process, network.Target(value)); err != nil {
+	if err := waitDHCPLease(ctx, process, network.Target(value), since); err != nil {
 		return nil, errors.Join(err, process.stop())
 	}
 	return process, nil
 }
 
-func waitDHCPLease(ctx context.Context, process *managedProcess, target string) error {
+// waitDHCPLease waits until the hook records that it applied a lease of
+// this run to target. An address on the interface is not enough: the hook
+// sets it before the routes, and a route it could not install is a failure.
+func waitDHCPLease(ctx context.Context, process *managedProcess, target string, since time.Time) error {
 	deadline := time.NewTimer(shutdownTimeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(shutdownPoll)
@@ -398,31 +405,23 @@ func waitDHCPLease(ctx context.Context, process *managedProcess, target string) 
 		case <-ctx.Done():
 			return fmt.Errorf("wait for the DHCP lease: %w", ctx.Err())
 		case <-process.done:
-			return unexpectedProcessExit("DHCP client before assigning an address", process.err)
+			return unexpectedProcessExit("DHCP client before applying a lease", process.err)
 		case <-deadline.C:
 			return errDHCPLeaseTimeout
 		case <-ticker.C:
-			link, err := net.InterfaceByName(target)
+			state, err := ReadLeaseState()
 			if err != nil {
 				continue
 			}
-			addresses, err := link.Addrs()
-			if err == nil && hasIPv4Address(addresses) {
+			ready, err := leaseReady(state, target, since)
+			if err != nil {
+				return err
+			}
+			if ready {
 				return nil
 			}
 		}
 	}
-}
-
-func hasIPv4Address(addresses []net.Addr) bool {
-	for _, address := range addresses {
-		raw, _, found := strings.Cut(address.String(), "/")
-		if found && net.ParseIP(raw).To4() != nil {
-			return true
-		}
-	}
-
-	return false
 }
 
 func configureGracefulStop(command *exec.Cmd) {

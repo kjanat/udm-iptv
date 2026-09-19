@@ -242,9 +242,13 @@ func renderLease(lease *service.LeaseState) string {
 		return "DHCP lease: none recorded\n"
 	}
 	var output strings.Builder
-	fmt.Fprintf(&output, "DHCP lease: %s at %s, address %s/%s, routers %s, static routes %s\n",
+	outcome := "applied"
+	if !lease.Applied {
+		outcome = "not applied: " + lease.Failure
+	}
+	fmt.Fprintf(&output, "DHCP lease: %s at %s, address %s/%s, routers %s, static routes %s, %s\n",
 		lease.Lease.Action, lease.Received.Format(time.RFC3339), lease.Lease.Address, lease.Lease.Mask,
-		strings.Join(lease.Lease.Routers, " "), strings.Join(lease.Lease.StaticRoutes, " "))
+		strings.Join(lease.Lease.Routers, " "), strings.Join(lease.Lease.StaticRoutes, " "), outcome)
 	keys := make([]string, 0, len(lease.Lease.Options))
 	for key := range lease.Lease.Options {
 		keys = append(keys, key)
