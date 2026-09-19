@@ -18,7 +18,9 @@
 - [x] Allowlist and scrubber removed; signed download URLs named without their query
 - [x] `docs/telemetry.md` and F1 help updated
 - [x] `tool govulncheck` out of `go.mod`; CI runs `go run …@latest`
-- [ ] New preview release so the two installations send all of this
+- [ ] New preview release so the two installations send all of this, ensure you ASAP modify the release notes with info ppls need2know!\
+      Prevent ppls from installing preview versions that are either intended for own testing only, or send ALL telemetry to sentry.\
+      The latter has not occured, and I'd like to keep it that way.
 
 ## Data gathering without ssh
 
@@ -85,16 +87,46 @@
 - [x] Tab completion on UniFi OS (`b180e28`)
 - [x] `postinstall` called `configure --non-interactive` after that flag was removed in `9f1ee3f`; it calls `configure set` now
 
+## NAT evidence (router check 2026-09-19, preview.1 on the UDM-Pro)
+
+Found with `iptables -t nat -L POSTROUTING -v -n -x`, `ip -4 route show dev iptv`, `ip mroute`:
+
+- Six MASQUERADE rules on `iptv`: three legacy ones without comment ahead of the three `udm-iptv` ones. Only legacy `213.75.0.0/16` has matched (187 packets in ~30 h); every `udm-iptv` rule shows 0, so the hourly observation has been sending zeros. `f4b5ef9` reconciles this on the next install/restart; needs the preview release to reach the router.
+- `217.166.0.0/16` and `195.121.0.0/16` can never match: the only route via `iptv` is the option-121 `213.75.112.0/21`; traffic to the other two leaves via `ppp0`. A NAT rule on `-o iptv` for a destination without a route via `iptv` is dead. NAT `0.0.0.0/0` + `no-default` is therefore exactly "NAT the lease-routed destinations".
+- `195.121.94.212` is the SAP announcer (group `224.0.250.64`, mroute iif `iptv` → `br0`, ~198k packets): a multicast source, never a unicast NAT target.
+- Snapshot keeps only rules containing `udm-iptv` (`managedNATRules`, `ListWithCounters`), so the shadowing is invisible in Sentry. Counters reset whenever rules are re-appended.
+
+Proposal, agreed in principle 2026-09-19, not started:
+
+- [ ] Snapshot keeps every MASQUERADE rule on the IPTV interface, marked managed/foreign, with counters
+- [ ] Per-destination evidence line derived from the route list (`routed via …, N packets` / `no route via iptv`), in `status`, `diagnose`, and as `natEvidence` in the observation
+- [ ] Counters read and logged before reconciliation deletes or re-appends rules
+- [ ] Preview release so the router runs the reconciliation
+
 ## Provider catalog (research index)
 
-- [ ] Init7 `/19` → `/24`, port 5000, IGMPv2
-- [ ] Solcon per access network, DHCP option 43
-- [ ] Freedom separated from the KPN alias
-- [ ] Tweak/Canal Digitaal historical variant
-- [ ] Vivo SP lease prefixes, vivogvt two VLAN paths
-- [ ] Swisscom option 60, Telenor IGMPv3, BT/MEO/POST/MagentaTV details
-- [ ] Six new providers: Proximus, Stipte, Glasnet, Online.nl, Orange FR, Movistar, TELUS
-- [ ] Evidence per field in the schema
+Operator pages fetched 2026-09-19. Init7 pages are JavaScript-rendered (WebFetch sees "Loading..."); open them in a browser. Proximus PDF extracted to text in the scratchpad (`pdftotext`), source URL in `.archive/udm-iptv-provider-sources.md`.
+
+- [ ] Init7 `/19` → `/24`, port 5000, IGMPv2 (page content still to read)
+- [ ] Solcon split: `solcon` VLAN 4 (Solcon Operator PON, KPN FTTH/Opticks, KT-Waalre, KPN xDSL) and a new profile for CAIW-EAS/Delta VLAN 188. General spec: IGMPv2 proxy, option 60 = `IPTV_RG`, options 15/42/43/121 returned, 43 must be relayed WAN → LAN
+- [ ] Freedom separated from the KPN alias: helpdesk says DHCP on VLAN 4, NAT on, IGMP snooping/proxy on VLAN 4, RTSP conntrack; TV is CANAL+ (Amino A710); no VCI or prefixes published → NAT `0.0.0.0/0`, sources empty
+- [ ] Stipte: AON internet VLAN 2 / TV VLAN 4, PON internet 970 / TV 168, both DHCP, IGMPv2, one fixed /32; bridging recommended, routed mode unsupported by them; page updated 2025-03-05
+- [ ] Online.nl: VDSL and KPN fibre VLAN 4, DFN VLAN 248, IPoE/DHCP, NAT on, IGMP proxy, option 121; no VCI or prefixes published
+- [ ] Glasnet: DELTA and ODF both TV VLAN 37 DHCP, IGMP proxy+snooping, policy route + forced NAT to `185.24.175.211/32` (Canal Digitaal/M7 platform), RTSP ALG 554; route needs the lease gateway, which `wan.staticRoutes` cannot express
+- [ ] Proximus: VLAN 20 is the shared residential WAN (needs the existing-WAN mode, not a second DHCP client); reachable `172.28.40.0/21`, `172.28.48.0/21`; groups `239.192.0.0/16`, `239.255.0.0/16`; options 6/42/43/67 relayed to the decoder; option 55 must request 1,3,6,12,15,42,43,51,54,67,121; IGMPv3 snooping preferred
+- [ ] Tweak/Canal Digitaal historical variant, Vivo SP lease prefixes, vivogvt two VLAN paths, Swisscom option 60, Telenor IGMPv3, BT/MEO/POST/MagentaTV: documentation only, no operator-published narrower ranges
+- [ ] Schema: `sourceRanges` description still says multicast groups belong there; `validateProxy` rejects them (`errGroupAsProxySource`). Allow an empty `sourceRanges` (= unknown; the wizard already forces igmpproxy users to fill it in). `natDestinations` stays required
+- [ ] `docs/providers/<id>.md` per touched provider with source URL and date, same pattern as `kpn.md`; `TestCatalogNavigation` counts 5 NL providers
+- [ ] Profiles cannot set the IGMP version (Init7, Stipte, Solcon say v2); document instead
+
+## Router dumps (`.archive/`, same router as `ssh router`)
+
+- `ssh router` has `RemoteCommand` in `~/.ssh/config`; run commands with `-o RemoteCommand=none -o RequestTTY=no`
+- `udapi-config.zip` = `/data/udapi-config`: `udapi-net-cfg.json` (config tree, top-level keys `interfaces`, `services`, `firewall/*`, `routes/static`, …) and `ubios-udapi-server.state`. `GET /interfaces` fields verified live: `identification.{id,type,mac}`, `vlan.{id,interface.id,egressQoSMap}`, `pppoe.{interface.id,username,password}` (secret), `addresses[].{cidr,origin,type,inUse}`, `status.{plugged,wanStatus,statistics.*}`. `iptv` is absent. `services.igmpProxy` is null, `wanFailover` names `ppp0` table 201
+- `ubios-udapi-server/udhcpc-{ip,action}.eth7.4` (2023-12-18, `bound`, `10.207.104.5`): UDAPI itself once ran udhcpc on a VLAN-4 subinterface, so a UDAPI-managed IPTV VLAN is representable
+- `udm-iptv.zip` = `/data/udm-iptv` on preview.1: `config.json` still carries `allowDefaultRoute: true`; `/run/udm-iptv/lease.json` does not exist on preview.1
+- `log.zip` = `/var/log` (daemon.log, messages, kern.log, ppp0.log, wan-diag-*); `ppp.zip` = `/etc/ppp` with secrets; neither read yet
+- `Per_issue.txt`, `Samenvatting_feiten.md`, `preview1.md`: v4-era notes; `Alles_gevonden…`, `Stand_van_zaken.md`: unrelated (Zed)
 
 ## Auto-discovery (todo.md implementation order)
 
