@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,22 +105,120 @@ func (h *firmwareHarness) installPreviousPackage(name, image string) {
 	h.inside(name, "sh", "-ec", `
 dpkg-deb -R /package.deb /run/previous-package
 sed -i '/^Version:/s/$/~firmwaretest/' /run/previous-package/DEBIAN/control
-dpkg-deb -Zxz --root-owner-group -b /run/previous-package /run/previous.deb
-apt-get install -y /run/previous.deb`)
+dpkg-deb -Zxz --root-owner-group -b /run/previous-package /run/previous.deb`)
+	h.aptInstall(name, "/run/previous.deb")
 	h.healthy(name)
+	h.assertNetwork(name, "eth8", "198.51.100.2/24", kpnDestinations)
+	// The bumped package carries the current executable, so dpkg's record
+	// and the running version disagree the way an in-place swap leaves them.
+	h.assertStaleRecord(name)
 }
 
 func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
 	h.t.Helper()
-	h.inside(name, "apt-get", "install", "-y", "/package.deb")
+	h.aptInstall(name, "/package.deb")
 	h.healthy(name)
 	version := strings.TrimSpace(h.inside(name, binary, "version"))
 	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
+	h.assertPackageRecord(name, version)
+	h.assertNetwork(name, "eth8", "198.51.100.2/24", kpnDestinations)
 	config := h.readConfig(name)
 	h.completes(name)
 	h.capture(name)
 
 	return version, config
+}
+
+// kpnDestinations are the NAT destinations of the kpn profile the lifecycle
+// configuration starts from.
+var kpnDestinations = []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/16"}
+
+// aptInstall installs a package and fails on anything debconf complains
+// about, which apt prints without failing.
+func (h *firmwareHarness) aptInstall(name, path string) {
+	h.t.Helper()
+	output := h.inside(name, "apt-get", "install", "-y", path)
+	if strings.Contains(output, "debconf:") {
+		h.t.Fatalf("debconf complained during apt-get install %s:\n%s", path, output)
+	}
+}
+
+// assertPackageRecord checks that dpkg's record, the running executable and
+// the status report all name the same version.
+func (h *firmwareHarness) assertPackageRecord(name, version string) {
+	h.t.Helper()
+	state := h.status(name)
+	if state.Version != version || state.Service.Package != version {
+		h.t.Fatalf("status reports version %q with package %q, want %q for both", state.Version, state.Service.Package, version)
+	}
+	if text := h.inside(name, binary, "status"); !strings.Contains(text, "Installation: package "+version+"\n") {
+		h.t.Fatalf("status does not name the package installation:\n%s", text)
+	}
+}
+
+// assertStaleRecord checks that a dpkg record that trails the executable is
+// named as such, in the JSON and in the text.
+func (h *firmwareHarness) assertStaleRecord(name string) {
+	h.t.Helper()
+	state := h.status(name)
+	if state.Service.Package == "" || state.Service.Package == state.Version {
+		h.t.Fatalf("stale record not reported: version %q, package %q", state.Version, state.Service.Package)
+	}
+	if text := h.inside(name, binary, "status"); !strings.Contains(text, "recorded by dpkg while "+state.Version+" runs") {
+		h.t.Fatalf("status does not flag the stale record:\n%s", text)
+	}
+}
+
+// assertNetwork checks the IPTV state the service is supposed to produce:
+// the address on the target interface and one managed NAT rule per
+// configured destination, with the evidence entries that go with them.
+// An empty target skips the interface check for a detected port.
+func (h *firmwareHarness) assertNetwork(name, target, address string, destinations []string) {
+	h.t.Helper()
+	state := h.status(name)
+	if target != "" && state.Network.Target != target {
+		h.t.Fatalf("IPTV interface %q, want %q", state.Network.Target, target)
+	}
+	if !slices.Contains(state.Network.Addresses, address) {
+		h.t.Fatalf("address %s missing on %s: %v", address, state.Network.Target, state.Network.Addresses)
+	}
+	h.assertNATRules(state, destinations)
+	h.assertNATChain(name, state.Network.Target, destinations)
+}
+
+func (h *firmwareHarness) assertNATRules(state routerStatus, destinations []string) {
+	h.t.Helper()
+	if state.NATRules == nil || state.NATEvidence == nil {
+		h.t.Fatal("NAT rules or evidence unreadable")
+	}
+	managed := map[string]bool{}
+	for _, rule := range *state.NATRules {
+		if !rule.Managed {
+			h.t.Fatalf("unmanaged NAT rule for %s on %s", rule.Destination, state.Network.Target)
+		}
+		managed[rule.Destination] = true
+	}
+	if len(managed) != len(destinations) {
+		h.t.Fatalf("NAT rules %v, want one per destination in %v", *state.NATRules, destinations)
+	}
+	for _, destination := range destinations {
+		if !managed[destination] {
+			h.t.Fatalf("no NAT rule for %s: %v", destination, *state.NATRules)
+		}
+	}
+	if len(*state.NATEvidence) != len(destinations) {
+		h.t.Fatalf("NAT evidence %v, want one entry per destination", *state.NATEvidence)
+	}
+}
+
+func (h *firmwareHarness) assertNATChain(name, target string, destinations []string) {
+	h.t.Helper()
+	chain := h.inside(name, "iptables", "-t", "nat", "-S", "POSTROUTING")
+	for _, destination := range destinations {
+		if !strings.Contains(chain, "-d "+destination+" -o "+target+" -m comment --comment udm-iptv -j MASQUERADE") {
+			h.t.Fatalf("iptables holds no udm-iptv rule for %s:\n%s", destination, chain)
+		}
+	}
 }
 
 // completes runs the installed completion function outside Readline. compopt
@@ -182,6 +281,7 @@ func (h *firmwareHarness) bootReplacement(name, image, version string, config []
 		h.t.Fatalf("version changed: %s -> %s", version, got)
 	}
 	h.inside(name, "test", "-x", "/usr/local/bin/udm-iptv")
+	h.assertNetwork(name, "eth8", "198.51.100.2/24", kpnDestinations)
 	// Confirm the running process uses the saved runtime, not a substitute.
 	state := h.status(name)
 	executable := strings.TrimSpace(h.inside(name, "readlink", fmt.Sprintf("/proc/%d/exe", state.Service.ProxyPID)))
@@ -228,6 +328,8 @@ func TestFirmwareLifecycle(t *testing.T) {
 	h.reboot(first)
 	h.healthy(first)
 	h.assertConfig(first, originalConfig)
+	h.assertNetwork(first, "eth8", "198.51.100.2/24", kpnDestinations)
+	h.assertPackageRecord(first, version)
 
 	t.Log("Swap firmware rootfs offline; erase the firmware proxy")
 	h.docker("stop", first)
@@ -237,6 +339,7 @@ func TestFirmwareLifecycle(t *testing.T) {
 	h.reboot(second)
 	h.healthy(second)
 	h.assertConfig(second, originalConfig)
+	h.assertNetwork(second, "eth8", "198.51.100.2/24", kpnDestinations)
 
 	t.Log("Remove while keeping configuration; reboot must stay removed")
 	h.removeKeepingConfig(second)
@@ -278,10 +381,12 @@ func TestFirmwareFreshPackageInstall(t *testing.T) {
 	h.boot(name, from, "none", false)
 	h.inside(name, "test", "!", "-e", "/data/udm-iptv")
 	h.inside(name, "sh", "-ec", `echo 'udm-iptv udm-iptv/profile select bt' | debconf-set-selections`)
-	h.inside(name, "apt-get", "install", "-y", "/package.deb")
+	h.aptInstall(name, "/package.deb")
 	h.assertPackageConfigured(name)
 	h.healthy(name)
 	h.assertSettings(name, map[string]string{"profile": "bt", "wan-vlan": "0", "dhcp": "false", "static-address": "10.20.30.1/24", "lan-interface": "br0"})
+	h.assertNetwork(name, "", "10.20.30.1/24", []string{"109.159.247.0/24"})
+	h.assertPackageRecord(name, strings.TrimSpace(h.inside(name, binary, "version")))
 }
 
 // A console that only holds the v4 package's configuration backup: postinst
@@ -305,10 +410,11 @@ IPTV_IGMPPROXY_IGMP_VERSION="3"
 EOF
 echo 'udm-iptv udm-iptv/profile select kpn' | debconf-set-selections`)
 	h.inside(name, "apt-get", "update")
-	h.inside(name, "apt-get", "install", "-y", "/package.deb")
+	h.aptInstall(name, "/package.deb")
 	h.assertPackageConfigured(name)
 	h.healthy(name)
 	h.assertSettings(name, map[string]string{"profile": "legacy", "wan-interface": "eth9", "wan-vlan": "0", "dhcp": "false", "static-address": "198.51.100.2/24"})
+	h.assertNetwork(name, "eth9", "198.51.100.2/24", []string{"198.51.100.0/24"})
 	h.inside(name, "test", "!", "-e", "/data/udm-iptv/udm-iptv.conf")
 }
 
@@ -402,7 +508,9 @@ func (h *firmwareHarness) waitBoot(name string) {
 }
 
 type routerStatus struct {
+	Version string `json:"version"`
 	Service struct {
+		Package       string `json:"package"`
 		LoadState     string `json:"loadState"`
 		ActiveState   string `json:"activeState"`
 		SubState      string `json:"subState"`
@@ -411,6 +519,18 @@ type routerStatus struct {
 		Restarts      uint64 `json:"restarts"`
 		ProxyPID      int    `json:"proxyPID"`
 	} `json:"service"`
+	Network struct {
+		Target    string   `json:"target"`
+		Addresses []string `json:"addresses"`
+	} `json:"network"`
+	NATRules *[]struct {
+		Destination string `json:"destination"`
+		Managed     bool   `json:"managed"`
+	} `json:"natRules"`
+	NATEvidence *[]struct {
+		Destination string   `json:"destination"`
+		Routes      []string `json:"routes"`
+	} `json:"natEvidence"`
 }
 
 func (h *firmwareHarness) status(name string) routerStatus {
