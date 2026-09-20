@@ -16,7 +16,11 @@ type entryPrompt struct {
 	candidates                      []huh.Option[string]
 	validate                        func(string) error
 	accept                          func(huh.Field, []string)
+	textValue                       *string
+	afterAccept                     tea.Cmd
 }
+
+type openEntryMsg struct{ entry *entryPrompt }
 
 type entryChoice struct {
 	label  string
@@ -47,6 +51,13 @@ func entryText(text string) bool {
 // the user wrote; the known interfaces matching the text follow. A typed
 // text that names a known interface exactly offers only that interface.
 func (entry *entryPrompt) choices(text string) []entryChoice {
+	if entry.textValue != nil {
+		label := "Use this address"
+		if strings.TrimSpace(text) == "" {
+			label = "Continue without an IPv4 address"
+		}
+		return []entryChoice{{label: label, values: []string{strings.TrimSpace(text)}, typed: true}}
+	}
 	needle := strings.ToLower(strings.TrimSpace(text))
 	var result []entryChoice
 	names := splitList(text)
@@ -65,6 +76,9 @@ func (entry *entryPrompt) choices(text string) []entryChoice {
 
 func (frame *Frame) openEntry(entry *entryPrompt) {
 	frame.entry, frame.entryText, frame.entryCursor, frame.entryErr = entry, "", 0, nil
+	if entry.textValue != nil {
+		frame.entryText = *entry.textValue
+	}
 	frame.observe(EventEntryOpen)
 }
 
@@ -120,8 +134,16 @@ func (frame *Frame) acceptEntry(choices []entryChoice) tea.Cmd {
 
 		return nil
 	}
-	frame.entry.accept(frame.wizard.Form.GetFocusedField(), choice.values)
+	if frame.entry.textValue != nil {
+		*frame.entry.textValue = choice.values[0]
+	} else {
+		frame.entry.accept(frame.wizard.Form.GetFocusedField(), choice.values)
+	}
+	afterAccept := frame.entry.afterAccept
 	frame.closeEntry()
+	if afterAccept != nil {
+		return afterAccept
+	}
 
 	return frame.forward(searchChangedMsg{})
 }
@@ -165,7 +187,11 @@ func (frame *Frame) entryPopup() string {
 	if frame.entryErr != nil {
 		rows = append(rows, entryErrorStyle.Render(frame.entryErr.Error()))
 	}
-	rows = append(rows, "", progressTextStyle.Render("↑/↓ choose  enter add  esc cancel"))
+	hint := "↑/↓ choose  enter add  esc cancel"
+	if frame.entry.textValue != nil {
+		hint = "enter save  esc cancel"
+	}
+	rows = append(rows, "", progressTextStyle.Render(hint))
 
 	return popupStyle.Width(width + popupPadding).Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 }

@@ -212,7 +212,7 @@ func TestTypedNetworksAppearTickedInTheList(t *testing.T) {
 	tm.Type("br4, br5")
 	shown(t, tm, "Use br4, br5")
 	press(tm, tea.KeyEnter)
-	shown(t, tm, "br5 (VLAN 5, entered manually)")
+	shown(t, tm, "br5 (VLAN 5, entered manually, addresses unavailable)")
 	press(tm, tea.KeyEnd, tea.KeyEnter)
 	shown(t, tm, "Add a network")
 	tm.Type("../bad")
@@ -224,7 +224,7 @@ func TestTypedNetworksAppearTickedInTheList(t *testing.T) {
 		t.Fatal("escape must only close the picker")
 	}
 	view := plain(final)
-	for _, want := range []string{"[x] br0", "[x] br4 (VLAN 4, entered manually)", "[x] br5 (VLAN 5, entered manually)", "[ ] Enter another interface manually…"} {
+	for _, want := range []string{"[x] br0", "[x] br4 (VLAN 4, entered manually, addresses unavailable)", "[x] br5 (VLAN 5, entered manually, addresses unavailable)", "[ ] Enter another interface manually…"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view lacks %q:\n%s", want, view)
 		}

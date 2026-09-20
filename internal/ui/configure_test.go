@@ -125,7 +125,7 @@ func TestConfigurationPagesFollowAnswers(t *testing.T) {
 			edit: func(value *config.Config) {
 				value.WAN.DHCP = false
 			},
-			want: []string{"wan-port", "vlan", "static-address", "vlan-interface", "lan", "nat", "mld", "telemetry"},
+			want: []string{"wan-port", "vlan", "vlan-interface", "lan", "nat", "mld", "telemetry"},
 		},
 		{
 			name: "untagged-static-igmpproxy",
@@ -135,7 +135,7 @@ func TestConfigurationPagesFollowAnswers(t *testing.T) {
 				value.WAN.StaticAddress = "10.20.30.1/24"
 				value.Proxy.Program = "igmpproxy"
 			},
-			want: []string{"wan-port", "vlan", "static-address", "lan", "nat", "mld", "proxy-sources", "telemetry"},
+			want: []string{"wan-port", "vlan", "lan", "nat", "mld", "proxy-sources", "telemetry"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

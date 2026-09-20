@@ -40,7 +40,19 @@ func (port Port) label() string {
 }
 
 func (port Port) lanLabel() string {
-	return annotate(port.Name, lanKind(port.Name), port.address())
+	if !isDownstreamName(port.Name) {
+		return port.label()
+	}
+	return annotate(port.Name, lanKind(port.Name), port.address(), port.Description)
+}
+
+func networkLabel(name string, ports []Port, origin string) string {
+	for _, port := range ports {
+		if port.Name == name {
+			return port.lanLabel()
+		}
+	}
+	return annotate(name, lanKind(name), origin, "addresses unavailable")
 }
 
 const (
@@ -130,7 +142,7 @@ func lanKind(name string) string {
 		}
 	}
 
-	return "LAN"
+	return "role unknown"
 }
 
 func isDownstreamName(name string) bool {
@@ -147,7 +159,7 @@ func lanGroups(current []string, ports []Port) ([]*page, *[]string) {
 	}
 	for _, name := range selected {
 		if !hasOption(options, name) {
-			options = append(options, huh.NewOption(annotate(name, lanKind(name), "configured value"), name))
+			options = append(options, huh.NewOption(networkLabel(name, ports, "configured value"), name))
 		}
 	}
 	entry := &entryPrompt{
@@ -163,7 +175,7 @@ func lanGroups(current []string, ports []Port) ([]*page, *[]string) {
 			}
 			for _, name := range names {
 				if !hasOption(options, name) {
-					options = append(options, huh.NewOption(annotate(name, lanKind(name), "entered manually"), name))
+					options = append(options, huh.NewOption(networkLabel(name, ports, "entered manually"), name))
 				}
 			}
 			selected = resolveLAN(append(slices.Clone(selected), names...))
