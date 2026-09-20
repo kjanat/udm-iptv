@@ -113,6 +113,7 @@ jobs:
         with: { model: "${{ matrix.model }}" }
         background: true
       - run: ./test-install.sh "${MODEL}" udm-iptv_*.deb
+        env: { GH_TOKEN: "${{ github.token }}" }
       - name: Stop following integration container logs
         cancel: container-logs
       - if: github.event_name != 'pull_request'

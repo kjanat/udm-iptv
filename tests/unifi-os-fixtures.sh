@@ -86,3 +86,38 @@ output=$(from_name=test-container bash -eu "${work}/capture.sh" 2>&1) || status=
 grep -Fq 'installer diagnostic retained' <<<"${output}"
 grep -Fq 'initial installation failed in test-container (exit 42)' <<<"${output}"
 echo 'Installer diagnostics and original failure status are retained'
+
+# Exercise release lookup without network access or real credentials.
+sed -n '/^fetch_v5_package() {/,/^}/p' \
+	"${repo}/docker/unifi-os/test-install.sh" >"${work}/fetch.sh"
+# shellcheck source=/dev/null
+source "${work}/fetch.sh"
+gh() {
+	[[ $1 == api && $2 == 'repos/example/iptv/releases?per_page=30' ]]
+	if [[ ${lookup_status} != 0 ]]; then
+		return "${lookup_status}"
+	fi
+	printf '%s\n' "${release_data}"
+}
+curl() {
+	printf '%s\n' "$*" >"${work}/download"
+}
+export GITHUB_REPOSITORY=example/iptv
+v5_deb="${work}/v5.deb"
+lookup_status=0
+release_data='[{"draft":false,"prerelease":false,"assets":[]},{"draft":true,"prerelease":true,"assets":[]},{"draft":false,"prerelease":true,"assets":[{"name":"checksums.txt","browser_download_url":"https://example.invalid/checksums"},{"name":"v5.deb","browser_download_url":"https://example.invalid/v5.deb"}]}]'
+fetch_v5_package
+grep -Fq -- "-o ${v5_deb}" "${work}/download"
+grep -Fq -- '--retry 3 --connect-timeout 30 --max-time 300' "${work}/download"
+grep -Fq 'https://example.invalid/v5.deb' "${work}/download"
+rm "${work}/download"
+lookup_status=17
+status=0
+fetch_v5_package || status=$?
+[[ ${status} == 17 && ! -e ${work}/download ]]
+lookup_status=0
+release_data='[]'
+status=0
+fetch_v5_package || status=$?
+[[ ${status} == 1 && ! -e ${work}/download ]]
+echo 'Release lookup uses gh, propagates API failures, and rejects missing assets'

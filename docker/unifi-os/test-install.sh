@@ -263,15 +263,16 @@ fetch_v5_package() {
 	local repository=${GITHUB_REPOSITORY:-kjanat/udm-iptv}
 	local url
 
-	url=$(curl -fsSL "https://api.github.com/repos/${repository}/releases?per_page=30" \
+	# gh uses the runner's GH_TOKEN; anonymous requests share an IP rate limit.
+	url=$(gh api "repos/${repository}/releases?per_page=30" \
 		| jq -r 'map(select(.draft | not) | select(.prerelease)) | first
-			| .assets[] | select(.name | endswith(".deb")) | .browser_download_url')
+			| .assets[]? | select(.name | endswith(".deb")) | .browser_download_url') || return
 	if [[ -z ${url} || ${url} == null ]]; then
 		report_error "no prerelease .deb published on ${repository}"
 		return 1
 	fi
 	echo "v5 package ${url}" >&2
-	curl -fsSL -o "${v5_deb}" "${url}"
+	curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 -o "${v5_deb}" "${url}"
 }
 
 # The Go package runs a supervisor that owns the proxy, so the unit's main
