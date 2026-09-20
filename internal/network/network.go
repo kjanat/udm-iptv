@@ -124,7 +124,11 @@ func removeManagedVLAN(value config.Config, parentIndex int) error {
 		return fmt.Errorf("%w: %s", errInterfaceNotVLAN, name)
 	}
 	if !managedVLAN(vlan, parentIndex, value.WAN.VLAN) {
-		return fmt.Errorf("%w: %s is VLAN %d on link index %d; configured VLAN %d on %s", errForeignVLAN, name, vlan.VlanId, vlan.Attrs().ParentIndex, value.WAN.VLAN, value.WAN.Interface)
+		parent := fmt.Sprintf("link index %d", vlan.Attrs().ParentIndex)
+		if link, err := netlink.LinkByIndex(vlan.Attrs().ParentIndex); err == nil {
+			parent = link.Attrs().Name
+		}
+		return fmt.Errorf("%w: %s is VLAN %d on %s; configured VLAN %d on %s; verify wan.interface and wan.vlanInterface before restarting", errForeignVLAN, name, vlan.VlanId, parent, value.WAN.VLAN, value.WAN.Interface)
 	}
 	if err := netlink.LinkDel(existing); err != nil {
 		return fmt.Errorf("replace managed VLAN interface %s: %w", name, err)

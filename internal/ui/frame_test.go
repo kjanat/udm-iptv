@@ -6,9 +6,44 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/kjanat/udm-iptv/internal/config/configtest"
 )
+
+func TestDHCPOptionsHelpDocumentsInputInPopup(t *testing.T) {
+	frame := NewFrame(wizardForm(newPage(huh.NewInput().Key("dhcp-options"))), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+	view := plain(frame)
+	for _, want := range []string{"-O staticroutes -V IPTV_RG", "-H NAME", "quotes do not group words", "not blocked", "udhcpc --help"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("popup missing %q", want)
+		}
+	}
+	if height := lipgloss.Height(frame.helpBox()); height > 40 {
+		t.Errorf("help popup exceeds terminal: %d rows", height)
+	}
+}
+
+func TestHelpScrollsInsidePopup(t *testing.T) {
+	frame := NewFrame(wizardForm(newPage(huh.NewInput().Key("dhcp-options"))), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+	if height := lipgloss.Height(frame.helpBox()); height > 22 {
+		t.Fatalf("popup does not fit: %d rows\n%s", height, frame.helpBox())
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	if !frame.help || frame.helpOffset == 0 || !strings.Contains(frame.helpBox(), "list.") {
+		t.Fatalf("cannot scroll to the end of help:\n%s", frame.helpBox())
+	}
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if frame.help || focusedKey(frame.wizard.Form) != "dhcp-options" {
+		t.Fatal("closing help changed the question")
+	}
+}
 
 func TestFirstPageIsRecognizedOnEveryField(t *testing.T) {
 	value := configtest.Custom()

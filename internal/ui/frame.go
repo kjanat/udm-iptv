@@ -55,12 +55,8 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#444444")).
 			Padding(panelPaddingY, panelPaddingX)
-	helpStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7571F9")).
-			Padding(panelPaddingY, panelPaddingX)
 	accentStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7571F9"))
-	helpKeys    = key.NewBinding(key.WithKeys("f1", "ctrl+_"), key.WithHelp("F1", "explain"))
+	helpKeys    = key.NewBinding(key.WithKeys("f1", "?", "ctrl+_"), key.WithHelp("F1/?", "explain"))
 	quitKeys    = key.NewBinding(key.WithKeys("ctrl+c"))
 	backKeys    = key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "back"))
 	closeLabel  = "✕ close"
@@ -339,6 +335,7 @@ type Frame struct {
 	width, height  int
 	rows           int
 	help           bool
+	helpOffset     int
 	quitPrompt     bool
 	escArmed       bool
 	entry          *entryPrompt
@@ -462,6 +459,12 @@ func (frame *Frame) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	}
 	press := keyPress{msg: msg, armed: frame.escArmed}
 	frame.escArmed = msg.Code == tea.KeyEscape
+	if frame.help {
+		return frame.closeHelpOn(press)
+	}
+	if frame.explainRequested(press) {
+		return frame.toggleHelpOn(press)
+	}
 	if handled, cmd := frame.handleSearchKey(msg); handled {
 		return cmd
 	}
@@ -542,6 +545,7 @@ func (frame *Frame) explainRequested(press keyPress) bool {
 
 func (frame *Frame) toggleHelpOn(keyPress) tea.Cmd {
 	frame.help = !frame.help
+	frame.helpOffset = 0
 	if frame.help {
 		frame.observe(EventHelp)
 	}
@@ -555,8 +559,25 @@ func (frame *Frame) showingHelp(keyPress) bool {
 
 // closeHelpOn consumes the key, so an escape that closed the help does not
 // count as the first of two.
-func (frame *Frame) closeHelpOn(keyPress) tea.Cmd {
-	frame.help, frame.escArmed = false, false
+func (frame *Frame) closeHelpOn(press keyPress) tea.Cmd {
+	_, lines, height := frame.helpContent()
+	switch press.msg.Code {
+	case tea.KeyUp:
+		frame.helpOffset--
+	case tea.KeyDown:
+		frame.helpOffset++
+	case tea.KeyPgUp:
+		frame.helpOffset -= height
+	case tea.KeyPgDown:
+		frame.helpOffset += height
+	case tea.KeyHome:
+		frame.helpOffset = 0
+	case tea.KeyEnd:
+		frame.helpOffset = len(lines)
+	default:
+		frame.help, frame.escArmed = false, false
+	}
+	frame.helpOffset = min(max(frame.helpOffset, 0), max(len(lines)-height, 0))
 
 	return nil
 }
@@ -721,12 +742,12 @@ func (frame *Frame) render() string {
 	frame.rows = max(frame.rows, lipgloss.Height(page))
 	page = lipgloss.NewStyle().Height(frame.rows).Render(page)
 	box := frameStyle.Render(lipgloss.JoinVertical(lipgloss.Left, page, "", frame.progressLine()))
-	if frame.help {
-		box = frame.helpBox()
-	}
 	content := lipgloss.JoinVertical(lipgloss.Left, frame.topRow(lipgloss.Width(box)), box)
 	if frame.width > 0 && frame.height > 0 {
 		content = lipgloss.Place(frame.width, frame.height, lipgloss.Center, lipgloss.Center, content)
+	}
+	if frame.help {
+		content = frame.overlay(content, frame.helpBox())
 	}
 	if frame.entry != nil {
 		content = frame.overlay(content, frame.entryPopup())
@@ -796,17 +817,36 @@ func locate(content, text string) (int, int) {
 }
 
 func (frame *Frame) helpBox() string {
+	entry, lines, height := frame.helpContent()
+	width := frame.helpWidth()
+	start := min(frame.helpOffset, max(len(lines)-height, 0))
+	body := strings.Join(lines[start:min(start+height, len(lines))], "\n")
+	footer := accentStyle.Render("any key") + progressTextStyle.Render(" back to the question")
+	if len(lines) > height {
+		footer = progressTextStyle.Render("↑/↓ PgUp/PgDn scroll · Esc close")
+	}
+	text := lipgloss.JoinVertical(lipgloss.Left, accentStyle.Render(entry.title), "", body)
+	return popupStyle.Width(width + popupPadding).Render(lipgloss.JoinVertical(lipgloss.Left, text, "", footer))
+}
+
+func (frame *Frame) helpWidth() int {
+	return max(1, min(frame.contentWidth()-popupPadding, maxPopupWidth))
+}
+
+func (frame *Frame) helpContent() (helpEntry, []string, int) {
 	entry, ok := fieldHelp[focusedKey(frame.wizard.Form)]
 	if !ok {
 		entry = helpEntry{"Help", "No explanation is available for this question."}
 	}
-	width := frame.contentWidth()
-	body := lipgloss.NewStyle().Width(width).Render(entry.text)
-	footer := accentStyle.Render("any key") + progressTextStyle.Render(" back to the question")
-	text := lipgloss.JoinVertical(lipgloss.Left, accentStyle.Render(entry.title), "", body)
-	text = lipgloss.NewStyle().Width(width).Height(frame.rows).Render(text)
-
-	return helpStyle.Render(lipgloss.JoinVertical(lipgloss.Left, text, "", footer))
+	body := lipgloss.NewStyle().Width(frame.helpWidth()).Render(entry.text)
+	lines := strings.Split(body, "\n")
+	height := len(lines)
+	if frame.height > 0 {
+		// Border/padding, title/footer with gaps, and a row outside each edge.
+		const helpChrome = 2*(borderSize+popupPaddingY) + 6
+		height = max(1, frame.height-helpChrome)
+	}
+	return entry, lines, height
 }
 
 func (frame *Frame) observe(event Event) {
@@ -820,7 +860,7 @@ func (frame *Frame) observe(event Event) {
 func (frame *Frame) progressLine() string {
 	step, total := frame.wizard.progress()
 	text := fmt.Sprintf("Question %d of %d", step, total)
-	hint := accentStyle.Render("F1") + progressTextStyle.Render(" explain  ") +
+	hint := accentStyle.Render("F1/?") + progressTextStyle.Render(" explain  ") +
 		accentStyle.Render("esc") + progressTextStyle.Render(" back  ") +
 		accentStyle.Render("esc twice") + progressTextStyle.Render(" leave")
 	barWidth := frame.contentWidth() - lipgloss.Width(text) - lipgloss.Width(hint) - hintGap

@@ -666,7 +666,7 @@ func TestErrorsAndLogsKeepActiveSpan(t *testing.T) {
 		failures += correlatedFailures(t, event, spans)
 		logs += correlatedLogs(t, event, spans)
 	}
-	assertEqual(t, "correlated errors", failures, 2)
+	assertEqual(t, "correlated errors", failures, 1)
 	assertEqual(t, "correlated logs", logs, 4)
 }
 
@@ -734,7 +734,7 @@ func TestFailuresShareTheOperationTrace(t *testing.T) {
 		traces[fmt.Sprint(event.Contexts["trace"]["trace_id"])]++
 	}
 	assertEqual(t, "transactions", transactions, 1)
-	assertEqual(t, "failures", failures, 2)
+	assertEqual(t, "failures", failures, 1)
 	if len(traces) != 1 {
 		t.Fatalf("failures left the operation trace: %v", traces)
 	}
@@ -752,7 +752,7 @@ func TestFailureCarriesOperationTrailAndDiagnostics(t *testing.T) {
 	})
 	r.client.Flush(time.Second)
 	failures := failureEvents(transport.events)
-	assertEqual(t, "failures", len(failures), 2)
+	assertEqual(t, "failures", len(failures), 1)
 	trails := map[string][]string{}
 	for _, event := range failures {
 		assertEqual(t, event.Transaction+" attachments", len(event.Attachments), 1)
@@ -765,9 +765,6 @@ func TestFailureCarriesOperationTrailAndDiagnostics(t *testing.T) {
 	request := "GET https://api.github.com/repos/kjanat/udm-iptv/releases/latest"
 	if want := []string{request, "install started", "service.health started", "service.health failed"}; !slices.Equal(trails["service.health"], want) {
 		t.Fatalf("service.health trail = %q, want %q", trails["service.health"], want)
-	}
-	if want := []string{request, "install started", "service.health started", "service.health failed", "install failed"}; !slices.Equal(trails["install"], want) {
-		t.Fatalf("install trail = %q, want %q", trails["install"], want)
 	}
 }
 

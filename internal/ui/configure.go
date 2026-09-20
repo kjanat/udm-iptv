@@ -488,7 +488,7 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 			Description("Use 0 when IPTV is untagged.").
 			Placeholder("4").Value(&fields.vlan).Validate(validateVLANID),
 		huh.NewConfirm().Key("dhcp").Title("Use DHCP for the IPTV address?").
-			Description("Most providers assign this automatically.").
+			Description("Yes: receive an address automatically. No: enter a fixed address next.").
 			Affirmative("Yes").Negative("No").Value(&value.WAN.DHCP),
 	).title("IPTV connection")
 	if note != "" {
@@ -498,23 +498,15 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 	return []*page{
 		connection,
 		newPage(
-			huh.NewInput().Key("vlan-interface").Title("VLAN interface name").
-				Description("Virtual name, not a physical port.").
-				Placeholder("iptv").Value(&value.WAN.VLANInterface).Validate(config.ValidateInterfaceName),
-			huh.NewInput().Key("vlan-mac").Title("Custom MAC address").
-				Description("Leave empty unless your provider requires it.").
-				Value(&value.WAN.VLANMAC).Validate(validateOptionalMAC),
-		).title("VLAN interface").hide(func() bool { return fields.vlan == "0" }),
-		newPage(
 			huh.NewInput().Key("dhcp-options").Title("DHCP client options").
-				Description("Arguments passed to udhcpc.").
+				Description("Space-separated flags and values. Keep the provider profile's defaults unless instructed otherwise.").
 				Value(&fields.dhcpOptions),
-			huh.NewSelect[config.RoutePolicy]().Key("dhcp-routes").Title("Routes to accept from the lease").
-				Description("Usually the advertised routes only. A router fallback can create a second default route.").
+			huh.NewSelect[config.RoutePolicy]().Key("dhcp-routes").Title("Set up access to your provider's TV services?").
+				Description("Usually needed for the TV guide, replay and on-demand video.").
 				Options(
-					huh.NewOption("Advertised routes, but never a default route", config.RoutesNoDefault),
-					huh.NewOption("Advertised routes, including a default route", config.RoutesAllowDefault),
-					huh.NewOption("No routes from the lease", config.RoutesNone),
+					huh.NewOption("Yes, TV services only (recommended)", config.RoutesNoDefault),
+					huh.NewOption("Yes, also allow other internet traffic through IPTV (advanced)", config.RoutesAllowDefault),
+					huh.NewOption("No, this is already handled separately (advanced)", config.RoutesNone),
 				).Value(&value.WAN.DHCPRoutes),
 		).title("DHCP options").hide(func() bool { return !value.WAN.DHCP }),
 		newPage(
@@ -522,36 +514,35 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 				Description("Address for the IPTV connection with its prefix length, for example 10.0.0.2/24.").
 				Placeholder("10.0.0.2/24").Value(&value.WAN.StaticAddress).Validate(validateOptionalPrefix),
 		).title("Static address").hide(func() bool { return value.WAN.DHCP }),
+		newPage(
+			huh.NewInput().Key("vlan-interface").Title("VLAN interface name").
+				Description("Virtual name, not a physical port.").
+				Placeholder("iptv").Value(&value.WAN.VLANInterface).Validate(config.ValidateInterfaceName),
+			huh.NewInput().Key("vlan-mac").Title("Custom MAC address").
+				Description("Leave empty unless your provider requires it.").
+				Value(&value.WAN.VLANMAC).Validate(validateOptionalMAC),
+		).title("VLAN interface").hide(func() bool { return fields.vlan == "0" }),
 	}
 }
 
 func multicastPages(value *config.Config, fields *formValues) []*page {
 	return []*page{
+		newPage(newPrefixInputs(&fields.nat)).title("IPTV destinations"),
 		newPage(
-			huh.NewInput().Key("nat").Title("IPTV unicast destinations").
-				Description("Networks your TVs talk to for the guide, video on demand and other services. Write each one as an address and prefix length such as 213.75.0.0/16, separated by spaces or commas.").
-				Value(&fields.nat).Validate(validatePrefixes),
-		).title("IPTV destinations"),
-		newPage(
-			huh.NewSelect[string]().Key("proxy").Title("Multicast proxy").
-				Description("Recommended on current UniFi OS.").
+			huh.NewSelect[int]().Key("mld").Title("Does IPTV also use IPv6 multicast?").
+				Description("IPv4 uses IGMP. Enable MLD only if your provider also uses IPv6.").
 				Options(
-					huh.NewOption("improxy (recommended)", config.ProxyImproxy),
-					huh.NewOption("igmpproxy", config.ProxyIgmpproxy),
-				).Value(&value.Proxy.Program),
+					huh.NewOption("IPv4 only (MLD off)", 0),
+					huh.NewOption("IPv4 and IPv6 (MLDv2)", config.MaxMLDVersion),
+					huh.NewOption("IPv4 and IPv6 (legacy MLDv1)", mldVersion1),
+				).Value(&value.Proxy.MLDVersion),
+			newProxySelect(value),
 			huh.NewSelect[int]().Key("igmp").Title("IGMP version").
 				Description("IGMPv3 works for most current receivers.").
 				Options(
 					huh.NewOption("IGMPv3 (recommended)", config.DefaultIGMPVersion),
 					huh.NewOption("IGMPv2", igmpVersion2),
 				).Value(&value.Proxy.IGMPVersion),
-			huh.NewSelect[int]().Key("mld").Title("IPv6 multicast (MLD)").
-				Description("Off unless your provider carries IPTV over IPv6. Needs improxy.").
-				Options(
-					huh.NewOption("Off", 0),
-					huh.NewOption("MLDv2", config.MaxMLDVersion),
-					huh.NewOption("MLDv1", mldVersion1),
-				).Value(&value.Proxy.MLDVersion),
 			huh.NewConfirm().Key("quickleave").Title("Enable quickleave?").
 				Description("Off when several TVs share one interface.").
 				Affirmative("Yes").Negative("No").Value(&value.Proxy.QuickLeave),
@@ -565,6 +556,14 @@ func multicastPages(value *config.Config, fields *formValues) []*page {
 				Value(&fields.sources).Validate(validateSourcePrefixes),
 		).title("Multicast sources").hide(func() bool { return value.Proxy.Program != config.ProxyIgmpproxy }),
 	}
+}
+
+func proxyOptions(mld int) []huh.Option[string] {
+	options := []huh.Option[string]{huh.NewOption("improxy (recommended)", config.ProxyImproxy)}
+	if mld == 0 {
+		options = append(options, huh.NewOption("igmpproxy (IPv4 only)", config.ProxyIgmpproxy))
+	}
+	return options
 }
 
 func reviewSummary(value config.Config) string {

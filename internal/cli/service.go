@@ -15,11 +15,7 @@ import (
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
-var (
-	errLeaseAcquisitionFailed = errors.New("DHCP lease acquisition failed")
-	errLeaseRejected          = errors.New("DHCP server rejected the lease")
-	errUnsupportedHookAction  = errors.New("unsupported udhcpc action")
-)
+var errUnsupportedHookAction = errors.New("unsupported udhcpc action")
 
 func (application *Application) daemonCommand() *cobra.Command {
 	command := &cobra.Command{
@@ -46,7 +42,12 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 	var routes string
 	command := &cobra.Command{
 		Use: "dhcp-hook ACTION", Hidden: true, Args: cobra.ExactArgs(1),
-		RunE: application.reportingHook(func(_ *cobra.Command, arguments []string) error {
+		RunE: application.reportingHook(func(command *cobra.Command, arguments []string) error {
+			// These callbacks describe recoverable client events.
+			// udhcpc keeps trying until the daemon's deadline.
+			if arguments[0] == "leasefail" || arguments[0] == "nak" {
+				return application.dhcpRetryWarning(command.Context(), arguments[0])
+			}
 			policy := config.RoutePolicy(routes)
 			if value, err := config.Load(application.ConfigPath); err == nil {
 				policy = value.WAN.DHCPRoutes
@@ -66,10 +67,6 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 				applied := network.ApplyLease(lease, previous, policy)
 
 				return errors.Join(applied, service.WriteLeaseState(lease, applied))
-			case "leasefail":
-				return errLeaseAcquisitionFailed
-			case "nak":
-				return errLeaseRejected
 			default:
 				return fmt.Errorf("%w %q", errUnsupportedHookAction, arguments[0])
 			}
@@ -78,6 +75,19 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 	command.Flags().StringVar(&routes, "dhcp-routes", string(config.RoutesNoDefault), "route policy when the configuration is unreadable")
 
 	return command
+}
+
+func (application *Application) dhcpRetryWarning(ctx context.Context, action string) error {
+	message := "DHCP discovery round exhausted; client will retry"
+	if action == "nak" {
+		message = "DHCP server rejected the lease; client will retry"
+	}
+	application.monitor.Warn(ctx, message)
+	if _, err := fmt.Fprintln(application.Err, message); err != nil {
+		return fmt.Errorf("write DHCP retry warning: %w", err)
+	}
+
+	return nil
 }
 
 // diagnosticsJSON is the snapshot the daemon attaches to its hourly observation.
@@ -96,7 +106,13 @@ func (application *Application) diagnosticsJSON(ctx context.Context) (json.RawMe
 
 func (application *Application) waitHealthy(ctx context.Context, startup, stable time.Duration) error {
 	err := application.reportRun(ctx, "service.health", func(ctx context.Context) error {
-		return service.WaitHealthy(ctx, startup, stable)
+		if err := service.WaitHealthy(ctx, startup, stable); err != nil {
+			// Attach diagnostics before the innermost operation reports the
+			// failure; outer wrappers intentionally do not report it again.
+			return application.reportHealthFailure(ctx, err)
+		}
+
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("udm-iptv.service health check: %w", err)
