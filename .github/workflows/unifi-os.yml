@@ -25,6 +25,9 @@ env:
   UNIFI_OS_LATEST_MODEL: udmpro
   PR_CREATED_AT: "${{ github.event.pull_request.created_at }}"
 jobs:
+  build:
+    uses: $/.github/workflows/build.yml
+
   build-deb:
     name: Build udm-iptv Debian package
     runs-on: ubuntu-latest
@@ -119,3 +122,18 @@ jobs:
           model: "${{ matrix.model }}"
           firmwares: "${{ toJSON(matrix.firmwares) }}"
           latest: "${{ matrix.model == env.UNIFI_OS_LATEST_MODEL }}"
+
+  ci-passed:
+    name: CI passed
+    if: ${{ always() }}
+    needs: [build, build-deb, catalog, test-install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require every dependency to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "${RESULTS}" | jq -e '
+            length == 4 and all(.[]; .result == "success")
+          '
