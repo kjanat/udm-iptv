@@ -37,6 +37,7 @@ Other options:
   --branch REF             Ref from which to load a fallback installer
   --token-file PATH        Read the Actions API token from a file
   --timeout SECONDS        Workflow-run wait timeout
+  --prerelease             Include prereleases when resolving latest
   -h, --help               Show this message and exit
 EOF
 }
@@ -49,12 +50,17 @@ udm_iptv_upgrade() {
 	UDM_IPTV_TOKEN="${UDM_IPTV_TOKEN:-${GITHUB_TOKEN:-}}"
 	UDM_IPTV_TIMEOUT_SECONDS="${UDM_IPTV_TIMEOUT_SECONDS:-900}"
 	UDM_IPTV_FORCE="${UDM_IPTV_FORCE:-false}"
+	UDM_IPTV_PRERELEASE="${UDM_IPTV_PRERELEASE:-false}"
 	source=
 
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 			--force)
 				UDM_IPTV_FORCE=true
+				shift
+				;;
+			--prerelease)
+				UDM_IPTV_PRERELEASE=true
 				shift
 				;;
 			--latest)
@@ -164,7 +170,7 @@ udm_iptv_upgrade() {
 	export UDM_IPTV_VERSION UDM_IPTV_REPOSITORY UDM_IPTV_BRANCH
 	export UDM_IPTV_PACKAGE UDM_IPTV_PR UDM_IPTV_RUN
 	export UDM_IPTV_TOKEN UDM_IPTV_TIMEOUT_SECONDS UDM_IPTV_FORCE
-	export UDM_IPTV_STATE_DIR
+	export UDM_IPTV_PRERELEASE UDM_IPTV_STATE_DIR
 
 	echo "Running udm-iptv installer..."
 	if [ -r /usr/lib/udm-iptv/install.sh ]; then

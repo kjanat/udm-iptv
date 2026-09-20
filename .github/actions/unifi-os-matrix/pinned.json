@@ -1,0 +1,32 @@
+[
+	{
+		"platform": "UDM",
+		"version": "6.0.7",
+		"url": "https://fw-download.ubnt.com/data/unifi-dream/44d1-UDM-6.0.7-7b0485d3-da77-4cbc-b2f2-8522db92910c.bin",
+		"sha256": "0a704e6f0a4ea4f8bb8e32ca9535418375ba6ae6e44df74c7efa9f5e23aba753"
+	},
+	{
+		"platform": "UDMPRO",
+		"version": "6.0.7",
+		"url": "https://fw-download.ubnt.com/data/unifi-dream/4bac-UDMPRO-6.0.7-68679bee-36ad-4699-b36f-36d1acd20676.bin",
+		"sha256": "97f20eae85f5cd0fbd9390f2187cb1d28f803890caae96ce617f4ff0ff56d44f"
+	},
+	{
+		"platform": "UDMPROSE",
+		"version": "6.0.7",
+		"url": "https://fw-download.ubnt.com/data/unifi-dream/ad5a-UDMPROSE-6.0.7-21cbe675-16ea-4ae4-b048-6ebbbc83f2d1.bin",
+		"sha256": "ed9e38a552cc9b2f87fc4a5cab16417cc854c7894c3af9452f630ede5f981c1b"
+	},
+	{
+		"platform": "UDMPROMAX",
+		"version": "6.0.7",
+		"url": "https://fw-download.ubnt.com/data/unifi-dream/b34e-UDMPROMAX-6.0.7-79743f19-3007-4593-90d6-bb63b74cb794.bin",
+		"sha256": "134ddfe3818926bb18320ff94d400b3b653f44224d2fd90ee79a70865b80b006"
+	},
+	{
+		"platform": "UDMEA4C",
+		"version": "6.0.7",
+		"url": "https://fw-download.ubnt.com/data/unifi-dream/a6ea-UDMEA4C-6.0.7-6a0047c1-a40d-46e3-a195-10d997e1691b.bin",
+		"sha256": "a8cdf7c165f7127a9ec9e223cfbb624632d2531df6cfc5de59918594bfa8cd50"
+	}
+]

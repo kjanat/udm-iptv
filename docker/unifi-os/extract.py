@@ -12,7 +12,7 @@ class FirmwareError(Exception):
 
 def squashfs_bytes_used(superblock: bytes, remaining: int) -> int:
     if superblock[:4] != b"hsqs":
-        raise FirmwareError("PARTrootfs payload is not squashfs")
+        raise FirmwareError("rootfs payload is not squashfs")
     used = struct.unpack_from("<Q", superblock, 40)[0]
     if used < 96 or used > remaining:
         raise FirmwareError(f"invalid squashfs bytes_used {used}")
@@ -39,6 +39,7 @@ def extract(fwfile: Path, savedir: Path) -> None:
             print(version)
 
             offset = 0x108
+            rootfs_offset: int | None = None
             while offset + 4 <= len(mapping):
                 tag = bytes(mapping[offset : offset + 4])
                 if tag == b"\x00\x00\x00\x00":
@@ -60,16 +61,22 @@ def extract(fwfile: Path, savedir: Path) -> None:
                 footer_crc = int.from_bytes(mapping[end : end + 4], "big")
                 if crc32(file_header + payload) != footer_crc:
                     raise FirmwareError(f"CRC mismatch for FILE {name}")
-                _ = (savedir / f"{name}.bin").write_bytes(payload)
+                if payload[:4] == b"hsqs":
+                    rootfs_offset = start
+                else:
+                    _ = (savedir / f"{name}.bin").write_bytes(payload)
                 print(f"FILE {position} {name} {length}")
                 offset = end + 8
 
             part = mapping.find(b"PARTrootfs", offset if offset < len(mapping) else 0)
             if part < 0:
                 part = mapping.find(b"PARTrootfs")
-            if part < 0:
-                raise FirmwareError("no PARTrootfs found")
-            payload_off = part + 0x38
+            if part >= 0:
+                payload_off = part + 0x38
+            elif rootfs_offset is not None:
+                payload_off = rootfs_offset
+            else:
+                raise FirmwareError("no rootfs found")
             remaining = len(mapping) - payload_off
             superblock = mapping[payload_off : payload_off + 96]
             used = squashfs_bytes_used(superblock, remaining)

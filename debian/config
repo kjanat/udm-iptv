@@ -21,9 +21,9 @@ _if_inet_addr() {
 # Helper function to list interfaces
 _if_inet_list() {
 	for interface in $(find /sys/class/net -name "br*" -exec basename {} \; | sort); do
-		id=$(echo "${interface}" | sed -n 's/br\(\d*\)/\1/p')
+		id=$(echo "${interface}" | sed -n 's/^[^0-9]*\([0-9]\{1,\}\)$/\1/p')
 		type="LAN"
-		if [ "${id}" -gt 0 ]; then
+		if [ -n "${id}" ] && [ "${id}" -gt 0 ]; then
 			type="VLAN ${id}"
 		fi
 		addr=$(_if_inet_addr "${interface}")
@@ -33,9 +33,9 @@ _if_inet_list() {
 
 _if_inet_list_uxg() {
 	for interface in $(find /sys/class/net \( -name "br*" -o -name "eth0*" \) -a ! -name "eth0" -exec basename {} \; | sort); do
-		id=$(echo "${interface}" | sed -n 's/\(br\|eth\)\(\d*\)/\2/p')
+		id=$(echo "${interface}" | sed -n 's/^.*[^0-9]\([0-9]\{1,\}\)$/\1/p')
 		type="LAN"
-		if [ "${id}" -gt 0 ]; then
+		if [ -n "${id}" ] && [ "${id}" -gt 0 ]; then
 			type="VLAN ${id}"
 		fi
 		addr=$(_if_inet_addr "${interface}")
