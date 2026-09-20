@@ -1,5 +1,7 @@
 package ui
 
+const udhcpcDocumentationURL = "https://github.com/armcc/udhcp/blob/master/README.udhcpc"
+
 type helpEntry struct {
 	title, text string
 }
@@ -39,12 +41,13 @@ The default is fine.`},
 	"vlan-mac": {"Custom MAC address", `A hardware address the provider may expect to see on the TV lane.
 
 Leave it empty unless your provider explicitly told you to use one. Usually that is the address of the box they supplied.`},
-	"dhcp-options": {"DHCP client options", `Enter flags and values separated by spaces, without "udhcpc". Example (KPN): -O staticroutes -V IPTV_RG
+	"dhcp-options": {"DHCP client options", `Enter flags and values separated by spaces, without "udhcpc".
+Example (KPN): -O staticroutes -V IPTV_RG
 
 -O OPTION     Ask the provider for a DHCP option; repeatable.
               Example: -O staticroutes requests network routes.
 -V TEXT       Identify the device type to the provider.
-              Example: -V IPTV_RG (required by the KPN profile).
+              Example: -V IPTV_RG
 -H NAME       Send a hostname, for example -H tv-router.
 -r ADDRESS    Request an IP; the provider may offer another.
 -C            Omit the default client identifier.
@@ -54,16 +57,19 @@ Keep your profile's values unless your provider says otherwise. Empty means no e
 
 Do not override -i, -s, -p, -f, -R or -t/-T/-A: udm-iptv manages the interface, lease hook, process and retry timing. Avoid -b/-n/-q: they change when the client backgrounds or exits, breaking its lifecycle. These flags are passed through, not blocked by this input.
 
-Available flags vary by firmware. On the router, run udhcpc --help (or busybox udhcpc --help) for the installed client's full list.`},
+Further reading: udhcpc options and DHCP hook events
+` + udhcpcDocumentationURL + `
+
+Available flags vary by firmware and udhcpc version. On the router, run udhcpc --help (or busybox udhcpc --help) for the installed client's full list.`},
 	"dhcp-routes": {"Access to TV services", `Your provider can tell the router how to reach its TV services. This is separate from receiving the live TV stream.
 
-TV via IPTV; internet via your normal connection: accept routes to the provider's listed networks, such as the TV guide and on-demand servers, but reject a default route through IPTV. This avoids redirecting ordinary internet traffic through the TV connection.
+Routes to specific networks only: accept the networks listed in the DHCP lease, except the all-destinations route (0.0.0.0/0). This does not guarantee that ordinary internet traffic stays on another connection: the provider may advertise broad networks, and existing routes still matter.
 
-Internet via IPTV too: also accept a default route through IPTV. Browsing and apps could then use the TV connection and stop working. This is not an extra feature or a faster connection. Choose it only when your provider explicitly requires it.
+Also accept a route for all other destinations: accept that all-destinations route too, or use the lease's router address when no network list is supplied. Browsing and apps may then use the IPTV connection; whether that works depends on your provider and setup. This is not an extra feature or a faster connection.
 
 Do not configure automatically: ignore the provider's routes. Use this only if access is configured elsewhere; otherwise the guide or replay may fail.
 
-Technically, these directions are DHCP routes. This does not block traffic or replace firewall rules.`},
+Routes to specific networks only is the recommended default shared by the built-in profiles. This setting does not control IPv6 routes, block traffic or replace firewall rules.`},
 	"lan": {"TV networks", `The home networks where your TV boxes are connected, by cable or Wi-Fi. br0 is the default LAN.
 
 Move with the arrow keys. Press space or x to tick or untick a network. Press Enter when every network with a TV box is ticked.
@@ -71,9 +77,11 @@ Move with the arrow keys. Press space or x to tick or untick a network. Press En
 Networks not ticked cannot receive TV streams.
 
 Enter another interface manually… opens a small picker. It lists the router's other interfaces, or you type a name.`},
-	"nat": {"IPTV unicast destinations", `Besides live TV, TV boxes talk to provider servers. They fetch the programme guide, video on demand and pause features from there.
+	"nat": {"IPTV service networks (IPv4 NAT)", `Besides live TV, TV boxes talk to provider servers. They fetch the programme guide, video on demand and pause features from there.
 
-Those servers live in these network ranges. The router forwards that traffic over the TV lane.
+Enter one complete network per box, for example 195.121.0.0/16. The part after / describes the size of the network. Copy it from your provider; do not guess it. /32 means one IPv4 address. 0.0.0.0/0 means all IPv4 destinations, not just TV servers; Tweak and Vivo GVT currently use that in their built-in profiles.
+
+These entries configure IPv4 address translation for matching traffic already leaving the IPTV interface. They do not create routes or select which connection traffic uses. IPv6 networks are not supported here. MLD controls IPv6 multicast separately; enabling it does not add IPv6 address translation or configure IPv6 unicast routes.
 
 The values come from your provider profile. Each input holds one network. Use Ctrl+N to add a box, Ctrl+D to remove the selected box, and arrow keys to move between boxes. Press Enter to keep the list and continue.`},
 	"proxy": {"Multicast proxy", `Live TV arrives as multicast: one stream shared by every viewer. A proxy passes those streams from the TV lane to your home network.

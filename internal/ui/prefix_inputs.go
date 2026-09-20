@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -26,6 +28,25 @@ type prefixInputs struct {
 
 const prefixInputChrome = 4
 
+var (
+	errNetworkFormat = errors.New("enter a complete network, for example 195.121.0.0/16; the number after / specifies its size. Copy both parts from your provider; do not guess the size")
+	errNetworkIPv6   = errors.New("this field configures IPv4 address translation only and cannot use IPv6 networks; IPv6 multicast is configured separately under MLD")
+)
+
+func validateNATNetwork(value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.Contains(value, ":") {
+		return errNetworkIPv6
+	}
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil || !prefix.Addr().Is4() {
+		return errNetworkFormat
+	}
+	return nil
+}
+
 func newPrefixInputs(value *string) *prefixInputs {
 	p := &prefixInputs{Input: huh.NewInput().Key("nat"), value: value, width: preferredContentWidth}
 	for _, prefix := range splitList(*value) {
@@ -38,7 +59,7 @@ func newPrefixInputs(value *string) *prefixInputs {
 }
 
 func (p *prefixInputs) appendRow(value string) {
-	row := huh.NewInput().Value(&value).Placeholder("213.75.0.0/16").Validate(validateOptionalPrefix)
+	row := huh.NewInput().Value(&value).Placeholder("213.75.0.0/16").Validate(validateNATNetwork)
 	if p.theme != nil {
 		row.WithTheme(p.theme)
 	}
@@ -75,7 +96,7 @@ func (p *prefixInputs) selectRow(index int) tea.Cmd {
 
 func (p *prefixInputs) validateRows() bool {
 	for i, row := range p.rows {
-		if err := validateOptionalPrefix(prefixValue(row)); err != nil {
+		if err := validateNATNetwork(prefixValue(row)); err != nil {
 			p.selectRow(i)
 			p.err = fmt.Errorf("network %d: %w", i+1, err)
 			return false
@@ -138,7 +159,10 @@ func (p *prefixInputs) removeRow() {
 }
 
 func (p *prefixInputs) View() string {
-	lines := []string{accentStyle.Render("IPTV service networks"), "Keep your provider's defaults unless instructed otherwise."}
+	lines := []string{
+		accentStyle.Render("IPTV service networks (IPv4 NAT)"),
+		lipgloss.NewStyle().Width(p.width).Render("One network per box, for example 195.121.0.0/16. Copy the address and /number from your provider. IPv6 networks are not supported in this field."),
+	}
 	const visibleRows = 4
 	start := max(0, p.cursor-visibleRows+1)
 	end := min(len(p.rows), start+visibleRows)
@@ -149,9 +173,6 @@ func (p *prefixInputs) View() string {
 		lines = append(lines, fmt.Sprintf("Networks %d–%d of %d", start+1, end, len(p.rows)))
 	}
 	lines = append(lines, "ctrl+n add  ctrl+d remove  ↑/↓ select  enter continue")
-	if p.err != nil {
-		lines = append(lines, entryErrorStyle.Render(p.err.Error()))
-	}
 	return strings.Join(lines, "\n")
 }
 

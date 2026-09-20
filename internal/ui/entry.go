@@ -163,7 +163,7 @@ func (frame *Frame) validateChoice(choice entryChoice) error {
 
 func (frame *Frame) entryPopup() string {
 	width := min(max(frame.contentWidth()-popupPadding, minContentWidth), maxPopupWidth)
-	body := lipgloss.NewStyle().Width(width).Render(frame.entry.description)
+	body := lipgloss.NewStyle().Width(width).Render(hyperlinkURLs(frame.entry.description))
 	line := frame.entryText
 	if line == "" {
 		line = progressTextStyle.Render(frame.entry.placeholder)

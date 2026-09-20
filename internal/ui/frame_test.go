@@ -45,6 +45,21 @@ func TestHelpScrollsInsidePopup(t *testing.T) {
 	}
 }
 
+func TestDHCPHelpRendersOSC8DocumentationLink(t *testing.T) {
+	frame := NewFrame(wizardForm(newPage(huh.NewInput().Key("dhcp-options"))), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+	frame.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	view := frame.View().Content
+	if !strings.Contains(view, "\x1b]8;;"+udhcpcDocumentationURL) {
+		t.Fatal("documentation link is not an OSC 8 hyperlink in the rendered popup")
+	}
+	if !strings.Contains(view, "\x1b]8;;\x07") && !strings.Contains(view, "\x1b]8;;\x1b\\") {
+		t.Fatal("documentation hyperlink is not closed")
+	}
+}
+
 func TestFirstPageIsRecognizedOnEveryField(t *testing.T) {
 	value := configtest.Custom()
 	fields := newFormValues(value)

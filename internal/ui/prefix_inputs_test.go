@@ -40,6 +40,9 @@ func TestPrefixInputsRejectMultipleNetworksInOneBox(t *testing.T) {
 		if focusedKey(f.wizard.Form) != "nat" {
 			t.Error("invalid list advanced the wizard")
 		}
+		if count := strings.Count(plain(f), "network 1:"); count != 1 {
+			t.Errorf("validation error rendered %d times", count)
+		}
 	})
 	tm.Send(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	press(tm, tea.KeyEnter)
@@ -47,6 +50,23 @@ func TestPrefixInputsRejectMultipleNetworksInOneBox(t *testing.T) {
 	finish(t, tm)
 	if value != "" {
 		t.Fatalf("removing final network left %q", value)
+	}
+}
+
+func TestNATNetworkValidationExplainsFormatAndIPv6(t *testing.T) {
+	for _, value := range []string{"195.121.0", "195.121.0.0", "bad"} {
+		err := validateNATNetwork(value)
+		if err == nil || !strings.Contains(err.Error(), "195.121.0.0/16") || !strings.Contains(err.Error(), "do not guess") {
+			t.Errorf("%q lacks actionable format guidance: %v", value, err)
+		}
+	}
+	if err := validateNATNetwork("2001:db8::/32"); err == nil || !strings.Contains(err.Error(), "IPv6 multicast") {
+		t.Errorf("IPv6 limitation not explained: %v", err)
+	}
+	for _, value := range []string{"", "195.121.0.0/16", "148.122.7.125/32", "0.0.0.0/0"} {
+		if err := validateNATNetwork(value); err != nil {
+			t.Errorf("valid provider network %q rejected: %v", value, err)
+		}
 	}
 }
 
