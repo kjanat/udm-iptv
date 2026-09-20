@@ -108,11 +108,12 @@ var wizardTheme = huh.ThemeFunc(func(isDark bool) *huh.Styles {
 // page pairs a huh group with the field keys it owns and its hide condition,
 // which huh does not expose back to callers.
 type page struct {
-	search *searchable
-	entry  *entryPrompt
-	group  *huh.Group
-	keys   []string
-	hidden func() bool
+	address *dhcpConfirm
+	search  *searchable
+	entry   *entryPrompt
+	group   *huh.Group
+	keys    []string
+	hidden  func() bool
 }
 
 func newPage(fields ...huh.Field) *page {
@@ -365,6 +366,9 @@ func (frame *Frame) Init() tea.Cmd {
 // Update dispatches on the message kind; anything unknown goes to the form.
 func (frame *Frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case openEntryMsg:
+		frame.openEntry(msg.entry)
+		return frame, nil
 	case setWizardMsg:
 		return frame, frame.setWizard(msg.wizard)
 	case wizardDoneMsg:

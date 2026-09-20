@@ -83,7 +83,7 @@ func FieldKeys() []string {
 	value := config.Default()
 	fields := newFormValues(value)
 	pages, _, _ := configurationGroups(&value, nil, "", &fields, true)
-	keys := []string{"profile"}
+	keys := []string{"profile", "static-address"} // Static address is answered in the DHCP popup.
 	for _, p := range pages {
 		keys = append(keys, p.keys...)
 	}
@@ -247,6 +247,12 @@ func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, as
 	fields := newFormValues(*value)
 	groups, selectedPort, selectedLAN := configurationGroups(value, ports, note, &fields, askConsent)
 	for _, p := range groups {
+		if p.address != nil {
+			p.address.answered = answered.has("static-address")
+			if !value.WAN.DHCP && !p.address.answered {
+				continue
+			}
+		}
 		if answered.covers(p) {
 			p.skip()
 		}
@@ -483,14 +489,14 @@ func configurationGroups(value *config.Config, ports []Port, note string, fields
 }
 
 func uplinkPages(value *config.Config, note string, fields *formValues) []*page {
+	dhcp := newDHCPConfirm(&value.WAN.DHCP, &value.WAN.StaticAddress)
 	connection := newPage(
 		huh.NewInput().Key("vlan").Title("IPTV VLAN ID").
 			Description("Use 0 when IPTV is untagged.").
 			Placeholder("4").Value(&fields.vlan).Validate(validateVLANID),
-		huh.NewConfirm().Key("dhcp").Title("Use DHCP for the IPTV address?").
-			Description("Yes: receive an address automatically. No: enter a fixed address next.").
-			Affirmative("Yes").Negative("No").Value(&value.WAN.DHCP),
+		dhcp,
 	).title("IPTV connection")
+	connection.address = dhcp
 	if note != "" {
 		connection = connection.description(note)
 	}
@@ -504,16 +510,11 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 			huh.NewSelect[config.RoutePolicy]().Key("dhcp-routes").Title("Set up access to your provider's TV services?").
 				Description("Usually needed for the TV guide, replay and on-demand video.").
 				Options(
-					huh.NewOption("Yes, TV services only (recommended)", config.RoutesNoDefault),
-					huh.NewOption("Yes, also allow other internet traffic through IPTV (advanced)", config.RoutesAllowDefault),
-					huh.NewOption("No, this is already handled separately (advanced)", config.RoutesNone),
+					huh.NewOption("TV via IPTV; internet via your normal connection (recommended)", config.RoutesNoDefault),
+					huh.NewOption("Internet via IPTV too (only if your provider requires it)", config.RoutesAllowDefault),
+					huh.NewOption("Do not configure automatically (already set up separately)", config.RoutesNone),
 				).Value(&value.WAN.DHCPRoutes),
 		).title("DHCP options").hide(func() bool { return !value.WAN.DHCP }),
-		newPage(
-			huh.NewInput().Key("static-address").Title("Static IPTV address").
-				Description("Address for the IPTV connection with its prefix length, for example 10.0.0.2/24.").
-				Placeholder("10.0.0.2/24").Value(&value.WAN.StaticAddress).Validate(validateOptionalPrefix),
-		).title("Static address").hide(func() bool { return value.WAN.DHCP }),
 		newPage(
 			huh.NewInput().Key("vlan-interface").Title("VLAN interface name").
 				Description("Virtual name, not a physical port.").

@@ -101,6 +101,27 @@ func TestLANNetworkSelection(t *testing.T) {
 	}
 }
 
+func TestNetworkLabelsPreserveKnownAddressesAndRole(t *testing.T) {
+	port := Port{Name: "eth8", AddressesKnown: true, Addresses: []string{"203.0.113.10/24", "2001:db8::1/64"}, Description: "connected, Internet route"}
+	for _, origin := range []string{"entered manually", "configured value"} {
+		label := networkLabel("eth8", []Port{port}, origin)
+		if label != port.label() {
+			t.Fatalf("%s discarded interface information: %q", origin, label)
+		}
+	}
+	if label := networkLabel("custom0", nil, "entered manually"); strings.Contains(label, "LAN") || !strings.Contains(label, "addresses unavailable") {
+		t.Fatalf("unknown interface mislabelled: %q", label)
+	}
+	pages, _ := lanGroups([]string{"br0"}, []Port{port})
+	wizard := wizardForm(pages...)
+	wizard.Form.Init()
+	field := wizard.Form.GetFocusedField()
+	pages[0].entry.accept(field, []string{"eth8"})
+	if view := field.View(); !strings.Contains(view, port.label()) || strings.Contains(view, "eth8 (LAN") {
+		t.Fatalf("adding a known interface discarded its label:\n%s", view)
+	}
+}
+
 func TestLANKindLabels(t *testing.T) {
 	for _, test := range []struct {
 		port Port

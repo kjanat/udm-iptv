@@ -57,16 +57,13 @@ Do not override -i, -s, -p, -f, -R or -t/-T/-A: udm-iptv manages the interface, 
 Available flags vary by firmware. On the router, run udhcpc --help (or busybox udhcpc --help) for the installed client's full list.`},
 	"dhcp-routes": {"Access to TV services", `Your provider can tell the router how to reach its TV services. This is separate from receiving the live TV stream.
 
-TV services only: use those directions for the networks the provider lists, such as the TV guide and on-demand servers. Do not accept a catch-all path that sends other internet traffic through IPTV. Recommended for most setups.
+TV via IPTV; internet via your normal connection: accept routes to the provider's listed networks, such as the TV guide and on-demand servers, but reject a default route through IPTV. This avoids redirecting ordinary internet traffic through the TV connection.
 
-Also allow other internet traffic: accept that catch-all path too. Browsing and apps could then use IPTV instead of your normal internet connection and stop working. Choose this only when your provider explicitly requires it.
+Internet via IPTV too: also accept a default route through IPTV. Browsing and apps could then use the TV connection and stop working. This is not an extra feature or a faster connection. Choose it only when your provider explicitly requires it.
 
-Already handled separately: ignore the provider's directions. Use this only if access is configured elsewhere; otherwise the guide or replay may fail.
+Do not configure automatically: ignore the provider's routes. Use this only if access is configured elsewhere; otherwise the guide or replay may fail.
 
 Technically, these directions are DHCP routes. This does not block traffic or replace firewall rules.`},
-	"static-address": {"Static IPTV address", `The fixed address your provider gave you for the TV lane. Write it with its network size, for example 10.0.0.2/24.
-
-The part after the slash tells the router how large the provider's network is.`},
 	"lan": {"TV networks", `The home networks where your TV boxes are connected, by cable or Wi-Fi. br0 is the default LAN.
 
 Move with the arrow keys. Press space or x to tick or untick a network. Press Enter when every network with a TV box is ticked.
