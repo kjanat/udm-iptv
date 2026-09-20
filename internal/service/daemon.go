@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -45,10 +46,11 @@ const (
 	signalGrace = 250 * time.Millisecond
 	// addressUpdateBuffer bounds pending static-address change notifications.
 	addressUpdateBuffer = 4
-	// shutdownTimeout bounds how long a graceful stop waits before giving up.
-	shutdownTimeout = 30 * time.Second
-	// shutdownPoll is how often shutdown checks whether processes have exited.
-	shutdownPoll = 250 * time.Millisecond
+	// dhcpAcquireTimeout allows two complete discovery rounds (9s each),
+	// separated by a 2s retry delay, before the 45s systemd startup deadline.
+	dhcpAcquireTimeout = 30 * time.Second
+	// dhcpLeasePoll is how often acquisition checks the hook's lease record.
+	dhcpLeasePoll = 250 * time.Millisecond
 	// processWaitDelay bounds a killed process's exit after Wait's pipes close.
 	processWaitDelay = 5 * time.Second
 )
@@ -391,8 +393,7 @@ func (application *Daemon) startDHCP(ctx context.Context, value config.Config) (
 
 func (application *Daemon) startDHCPClient(ctx context.Context, value config.Config) (*managedProcess, error) {
 	hook := filepath.Join(application.StateDir, "bin", "udhcpc-hook")
-	arguments := []string{"-f", "-R", "-p", "/run/udm-iptv/udhcpc.pid", "-s", hook, "-i", network.Target(value)}
-	arguments = append(arguments, value.WAN.DHCPOptions...)
+	arguments := dhcpArguments(value, hook)
 	binary := "udhcpc"
 	if _, err := exec.LookPath(binary); err != nil {
 		binary = "busybox"
@@ -418,13 +419,19 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 	return process, nil
 }
 
+// dhcpArguments makes the retry policy explicit. User options come last so
+// installations can override it, but acquisition still has a bounded deadline.
+func dhcpArguments(value config.Config, hook string) []string {
+	return slices.Concat([]string{"-f", "-R", "-t", "3", "-T", "3", "-A", "2", "-p", "/run/udm-iptv/udhcpc.pid", "-s", hook, "-i", network.Target(value)}, value.WAN.DHCPOptions)
+}
+
 // waitDHCPLease waits until the hook records that it applied a lease of
 // this run to target. An address on the interface is not enough: the hook
 // sets it before the routes, and a route it could not install is a failure.
 func waitDHCPLease(ctx context.Context, process *managedProcess, target string, since time.Time) error {
-	deadline := time.NewTimer(shutdownTimeout)
+	deadline := time.NewTimer(dhcpAcquireTimeout)
 	defer deadline.Stop()
-	ticker := time.NewTicker(shutdownPoll)
+	ticker := time.NewTicker(dhcpLeasePoll)
 	defer ticker.Stop()
 	for {
 		select {

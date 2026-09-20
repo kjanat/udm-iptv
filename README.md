@@ -83,6 +83,8 @@ Reports: `/data/udm-iptv/diagnostics`. Review before sharing; provider prefixes 
 
 See [telemetry details](docs/telemetry.md) for optional reliability reports.
 
+See [startup troubleshooting](docs/troubleshooting.md) for DHCP and VLAN failures.
+
 ## Providers
 
 [Provider profiles](docs/providers) supply editable defaults. [KPN specifications](docs/providers/kpn.md).

@@ -58,7 +58,7 @@ func (application *Application) start(ctx context.Context) error {
 		return fmt.Errorf("start %s: %w", service.Unit, err)
 	}
 	if err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable); err != nil {
-		return application.reportHealthFailure(ctx, err)
+		return err
 	}
 
 	return writef(application.Out, "%s started.\n", service.Unit)

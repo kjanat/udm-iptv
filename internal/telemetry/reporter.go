@@ -378,6 +378,9 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 		return run(ctx)
 	}
 	ctx = sentry.SetHubOnContext(ctx, r.hub)
+	parentFailures, _ := ctx.Value(failureKey{}).(*operationFailures)
+	failures := &operationFailures{parent: parentFailures}
+	ctx = context.WithValue(ctx, failureKey{}, failures)
 	if _, nested := ctx.Value(attachmentKey{}).(*attachmentStore); !nested {
 		ctx = context.WithValue(ctx, attachmentKey{}, &attachmentStore{})
 	}
@@ -397,7 +400,7 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 			err = errPanic
 		}
 		r.breadcrumb(outcomeMessage(operation, err))
-		r.reportOutcome(ctx, operation, err, panicked != nil)
+		failures.report(ctx, r, operation, err, panicked != nil)
 		r.logOutcome(ctx, operation, err)
 		r.meterOutcome(ctx, operation, err, time.Since(start))
 		if span != nil {
@@ -426,6 +429,13 @@ func (r *Reporter) failure(ctx context.Context, operation string, err error, pan
 		event.Contexts["trace"] = sentry.Context{"trace_id": span.TraceID, "span_id": span.SpanID, "parent_span_id": span.ParentSpanID}
 	}
 	event.SetException(err, exceptionChainLimit)
+	// The SDK synthesizes a stack at this reporting call for plain Go errors.
+	// That stack groups unrelated failures at Reporter.failure. Keep genuine
+	// origin stacks, and let Sentry group plain errors by their type and value.
+	if len(event.Exception) > 0 && sentry.ExtractStacktrace(err) == nil {
+		event.Exception[len(event.Exception)-1].Stacktrace = nil
+	}
+	event.Fingerprint = []string{"{{ default }}", operation}
 	if panicked {
 		event.Exception = []sentry.Exception{{Type: "panic", Stacktrace: sentry.NewStacktrace(), Mechanism: &sentry.Mechanism{Type: "generic"}}}
 		event.Exception[0].Mechanism.SetUnhandled()

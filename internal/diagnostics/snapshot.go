@@ -81,6 +81,7 @@ type serviceStatus struct {
 }
 
 type networkStatus struct {
+	VLAN         *vlanCheck        `json:"vlanCheck,omitempty"`
 	Target       string            `json:"target"`
 	LinkState    string            `json:"linkState"`
 	AddressCount int               `json:"addressCount"`
@@ -141,6 +142,7 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		Network:    inspectLink(network.Target(value)),
 		Downstream: inspectDownstream(os.DirFS("/sys"), value.LAN.Interfaces),
 	}
+	result.Network.VLAN = inspectVLAN(value, netlink.LinkByName, netlink.LinkByIndex)
 	if value.Proxy.MLDVersion != 0 {
 		result.Network.IPv6Knobs = network.IPv6MulticastState(value)
 	}
@@ -513,7 +515,7 @@ func inspectLink(target string) networkStatus {
 // RenderSnapshot returns a human-readable string representation of a snapshot.
 // Configured settings and observed state are labelled apart.
 func RenderSnapshot(value Snapshot) string {
-	return fmt.Sprintf(`udm-iptv %s
+	return renderVLANCheck(value.Network.VLAN) + fmt.Sprintf(`udm-iptv %s
 Installation: %s
 Profile: %s
 WAN: %s, VLAN %d (%s), DHCP: %t
