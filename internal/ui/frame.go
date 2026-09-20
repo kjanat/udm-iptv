@@ -132,7 +132,7 @@ func (p *page) title(text string) *page {
 }
 
 func (p *page) description(text string) *page {
-	p.group.Description(text)
+	p.group.Description(hyperlinkURLs(text))
 
 	return p
 }
@@ -842,7 +842,7 @@ func (frame *Frame) helpContent() (helpEntry, []string, int) {
 	if !ok {
 		entry = helpEntry{"Help", "No explanation is available for this question."}
 	}
-	body := lipgloss.NewStyle().Width(frame.helpWidth()).Render(entry.text)
+	body := lipgloss.NewStyle().Width(frame.helpWidth()).Render(hyperlinkURLs(entry.text))
 	lines := strings.Split(body, "\n")
 	height := len(lines)
 	if frame.height > 0 {

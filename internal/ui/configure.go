@@ -507,11 +507,11 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 			huh.NewInput().Key("dhcp-options").Title("DHCP client options").
 				Description("Space-separated flags and values. Keep the provider profile's defaults unless instructed otherwise.").
 				Value(&fields.dhcpOptions),
-			huh.NewSelect[config.RoutePolicy]().Key("dhcp-routes").Title("Set up access to your provider's TV services?").
-				Description("Usually needed for the TV guide, replay and on-demand video.").
+			huh.NewSelect[config.RoutePolicy]().Key("dhcp-routes").Title("Which routes should we accept from your provider?").
+				Description("These tell the router where to send traffic. The right choice depends on your provider and setup.").
 				Options(
-					huh.NewOption("TV via IPTV; internet via your normal connection (recommended)", config.RoutesNoDefault),
-					huh.NewOption("Internet via IPTV too (only if your provider requires it)", config.RoutesAllowDefault),
+					huh.NewOption("Routes to specific networks only (recommended)", config.RoutesNoDefault),
+					huh.NewOption("Also accept a route for all other destinations", config.RoutesAllowDefault),
 					huh.NewOption("Do not configure automatically (already set up separately)", config.RoutesNone),
 				).Value(&value.WAN.DHCPRoutes),
 		).title("DHCP options").hide(func() bool { return !value.WAN.DHCP }),
