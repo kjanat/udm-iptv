@@ -1,0 +1,77 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+---
+name: Multicast fixture
+on:
+  push:
+    branches: ["**"]
+    paths: [tests/multicast/**, .github/workflows/multicast.yml]
+  pull_request:
+    paths: [tests/multicast/**, .github/workflows/multicast.yml]
+  workflow_dispatch:
+concurrency:
+  group: multicast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions: { contents: read }
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.name }}, ARM64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: upstream
+            implementation: upstream
+            firmware-image: ghcr.io/kjanat/unifi-os:udmpro-5.1.33@sha256:5d6138dd461c4d265380eb550f5e609b072268e50205007cdd050d09f1d38bf8
+          - name: udmpro-5.1.33
+            implementation: firmware
+            firmware-image: ghcr.io/kjanat/unifi-os:udmpro-5.1.33@sha256:5d6138dd461c4d265380eb550f5e609b072268e50205007cdd050d09f1d38bf8
+          - name: ucgmax-5.1.33
+            implementation: firmware
+            firmware-image: ghcr.io/kjanat/unifi-os:ucgmax-5.1.33@sha256:8d2509449e6f040624725690f1b37d1468f6ac7f6c0af59ffaf58e61f24174fd
+    env:
+      PROXY_IMPLEMENTATION: ${{ matrix.implementation }}
+      FIRMWARE_IMAGE: ${{ matrix.firmware-image }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - name: Verify native ARM64 runner and Docker daemon
+        run: |
+          mkdir -p tests/multicast/artifacts
+          case "$(uname -m)" in
+            aarch64|arm64) ;;
+            *) echo "Expected a native ARM64 runner" >&2; exit 1 ;;
+          esac
+          architecture="$(docker info --format '{{.Architecture}}')"
+          case "${architecture}" in
+            aarch64|arm64) ;;
+            *) echo "Expected a native ARM64 Docker daemon, got ${architecture}" >&2; exit 1 ;;
+          esac
+          {
+            uname -a
+            docker version
+            docker compose version
+          } | tee tests/multicast/artifacts/runner.txt
+      - name: Build fixture and run fixture checks
+        run: docker compose -f tests/multicast/compose.yaml build 2>&1 | tee tests/multicast/artifacts/build.log
+      # Only the five-second forwarding check; longer querier scenarios are manual.
+      - name: Run five-second multicast smoke test
+        timeout-minutes: 2
+        run: |
+          python3 tests/multicast/run.py smoke \
+            --implementation "${PROXY_IMPLEMENTATION}" \
+            --firmware-image "${FIRMWARE_IMAGE}"
+      - name: Upload fixture evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: multicast-${{ matrix.name }}-${{ github.run_attempt }}
+          path: tests/multicast/artifacts/
+          if-no-files-found: warn
+          retention-days: 14
