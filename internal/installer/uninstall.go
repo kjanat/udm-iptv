@@ -16,8 +16,15 @@ import (
 	"github.com/kjanat/udm-iptv/internal/service"
 )
 
+// UninstallOptions distinguishes generated installation files from the binary
+// dpkg owns and removes after its maintainer script returns.
+type UninstallOptions struct {
+	KeepConfig  bool
+	FromPackage bool
+}
+
 // Uninstall stops the service before removing its installation.
-func Uninstall(ctx context.Context, configPath, stateDir string, keepConfig bool) (result error) {
+func Uninstall(ctx context.Context, configPath, stateDir string, options UninstallOptions) (result error) {
 	root, err := openStateDirectory(stateDir)
 	if err != nil && !errors.Is(err, errStateDirectoryMissing) {
 		return err
@@ -35,7 +42,7 @@ func Uninstall(ctx context.Context, configPath, stateDir string, keepConfig bool
 		return fmt.Errorf("connect to systemd before uninstall: %w", err)
 	}
 	defer connection.Close()
-	remover := uninstaller{connection: connection, root: root, configPath: configPath, stateDir: stateDir, keepConfig: keepConfig}
+	remover := uninstaller{connection: connection, root: root, configPath: configPath, stateDir: stateDir, options: options}
 	return executeUninstall(ctx, uninstallActions{
 		stop:        remover.stopService,
 		disable:     remover.disableService,
@@ -56,7 +63,7 @@ type uninstaller struct {
 	root       *os.Root
 	configPath string
 	stateDir   string
-	keepConfig bool
+	options    UninstallOptions
 }
 
 func (u uninstaller) stopService(ctx context.Context) error {
@@ -102,10 +109,10 @@ func (u uninstaller) removeServiceFiles(context.Context) error {
 }
 
 func (u uninstaller) removeInstallationState(context.Context) error {
-	if err := removeStateFiles(u.root, u.configPath, u.keepConfig); err != nil {
+	if err := removeStateFiles(u.root, u.configPath, u.options); err != nil {
 		return err
 	}
-	if u.keepConfig || u.root == nil {
+	if u.options.KeepConfig || u.root == nil {
 		return nil
 	}
 	return ignoreNonEmpty(os.Remove(u.stateDir)) // Empty directories only; never recursive.

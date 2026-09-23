@@ -405,9 +405,7 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 	client.Env = append(os.Environ(), "UDM_IPTV_CONFIG="+application.ConfigPath)
 	client.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(client)
-	if err := RemoveLeaseState(); err != nil {
-		return nil, err
-	}
+	// Keep ownership from the previous client; readiness rejects records older than since.
 	since := time.Now().UTC()
 	process, err := startProcess(client)
 	if err != nil {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
+	"github.com/kjanat/udm-iptv/internal/diagnostics"
 )
 
 const captureTestGrace = 2 * time.Second
@@ -48,7 +50,7 @@ func TestConfirmCaptureStartedReportsAnEarlyExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := startCaptureTestWorker(t, "exit 1", capturePath)
-	err := confirmCaptureStarted(worker, capturePath, errorLogPath, captureTestGrace)
+	_, err := confirmCaptureStarted(worker, capturePath, errorLogPath, captureTestGrace)
 	if !errors.Is(err, errCaptureWorkerExited) {
 		t.Fatalf("early exit reported as started: %v", err)
 	}
@@ -63,9 +65,9 @@ func TestConfirmCaptureStartedReportsAnEarlyExit(t *testing.T) {
 func TestConfirmCaptureStartedAcceptsTheFirstRecord(t *testing.T) {
 	t.Parallel()
 	capturePath, errorLogPath := captureTestPaths(t)
-	worker := startCaptureTestWorker(t, `echo '{"type":"started"}' > "$1"; sleep 30`, capturePath)
+	worker := startCaptureTestWorker(t, `echo '{"type":"started"}' > "$1"; exec sleep 30`, capturePath)
 	started := time.Now()
-	if err := confirmCaptureStarted(worker, capturePath, errorLogPath, captureTestGrace); err != nil {
+	if _, err := confirmCaptureStarted(worker, capturePath, errorLogPath, captureTestGrace); err != nil {
 		t.Fatalf("running worker reported as failed: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed >= captureTestGrace {
@@ -79,20 +81,54 @@ func TestConfirmCaptureStartedAcceptsACompletedShortCapture(t *testing.T) {
 	t.Parallel()
 	capturePath, errorLogPath := captureTestPaths(t)
 	worker := startCaptureTestWorker(t, `echo '{"type":"completed"}' > "$1"; exit 0`, capturePath)
-	if err := confirmCaptureStarted(worker, capturePath, errorLogPath, captureTestGrace); err != nil {
-		t.Fatalf("completed capture reported as failed: %v", err)
+	status, err := confirmCaptureStarted(worker, capturePath, errorLogPath, captureTestGrace)
+	if err != nil || status.Type != diagnostics.EventCompleted {
+		t.Fatalf("completed capture reported as %s: %v", status.Type, err)
 	}
 }
 
 func TestConfirmCaptureStartedRejectsAStalledWorker(t *testing.T) {
 	t.Parallel()
 	capturePath, errorLogPath := captureTestPaths(t)
-	worker := startCaptureTestWorker(t, "sleep 30", capturePath)
-	err := confirmCaptureStarted(worker, capturePath, errorLogPath, 200*time.Millisecond)
+	worker := startCaptureTestWorker(t, "exec sleep 30", capturePath)
+	_, err := confirmCaptureStarted(worker, capturePath, errorLogPath, 200*time.Millisecond)
 	if !errors.Is(err, errCaptureNotConfirmed) {
 		t.Fatalf("stalled worker reported as started: %v", err)
 	}
 	if !strings.Contains(err.Error(), errorLogPath) {
 		t.Fatalf("stall report omits the error log: %v", err)
+	}
+}
+
+func TestConfirmCaptureStartedRejectsExitWithoutCompletion(t *testing.T) {
+	t.Parallel()
+	for _, script := range []string{"exit 0", `echo '{"type":"timeout"}' > "$1"; exit 0`, `echo '{"type":"failed"}' > "$1"; exit 0`} {
+		capturePath, errorLogPath := captureTestPaths(t)
+		worker := startCaptureTestWorker(t, script, capturePath)
+		if _, err := confirmCaptureStarted(worker, capturePath, errorLogPath, captureTestGrace); err == nil {
+			t.Fatalf("worker without successful completion accepted: %s", script)
+		}
+	}
+}
+
+func TestCaptureReportUsesWorkerDeadlineAndCompletedState(t *testing.T) {
+	t.Parallel()
+	deadline := time.Date(2026, 9, 23, 1, 2, 3, 0, time.UTC)
+	for _, kind := range []string{diagnostics.EventStarted, diagnostics.EventCompleted} {
+		var output bytes.Buffer
+		application := &Application{Out: &output}
+		status := diagnostics.Event{Type: kind, Deadline: deadline}
+		if err := application.reportCaptureStarted(diagnostics.Options{}, 1, "errors.log", status); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output.String(), "capture "+kind) {
+			t.Fatalf("wrong capture state: %s", output.String())
+		}
+		if kind == diagnostics.EventStarted && !strings.Contains(output.String(), deadline.Format(time.RFC3339)) {
+			t.Fatalf("worker deadline lost: %s", output.String())
+		}
+		if kind == diagnostics.EventCompleted && strings.Contains(output.String(), "Expected completion:") {
+			t.Fatalf("completed capture has a future deadline: %s", output.String())
+		}
 	}
 }

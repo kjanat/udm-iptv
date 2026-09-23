@@ -67,7 +67,7 @@ func TestPurgeRemovesOwnedStateOnly(t *testing.T) {
 	if err := atomicfile.Write(external, []byte("external configuration"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeStateFiles(root, external, false); err != nil {
+	if err := removeStateFiles(root, external, UninstallOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(directory)
@@ -132,7 +132,7 @@ func TestRemoveStatePreservesUnrelatedFiles(t *testing.T) {
 			populateState(t, root,
 				[]string{"bin", "runtime", "diagnostics", "sigstore", "sigstore/tuf"},
 				[]string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "bin/unrelated", "runtime/proxy", "diagnostics/capture", "sigstore/tuf/root.json", "config.json", "custom.json", "telemetry-errors.rate", "notes.txt"})
-			if err := removeStateFiles(root, filepath.Join(directory, "custom.json"), test.keep); err != nil {
+			if err := removeStateFiles(root, filepath.Join(directory, "custom.json"), UninstallOptions{KeepConfig: test.keep}); err != nil {
 				t.Fatal(err)
 			}
 			assertStatePresent(t, root, test.preserved)
@@ -153,7 +153,7 @@ func TestStateCleanupCannotFollowExternalSymlinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			root := stateRoot(t, directory)
-			err := removeStateFiles(root, "/external/config.json", false)
+			err := removeStateFiles(root, "/external/config.json", UninstallOptions{})
 			if entry == "bin" && err == nil {
 				t.Fatal("external bin link accepted")
 			}
@@ -162,5 +162,28 @@ func TestStateCleanupCannotFollowExternalSymlinks(t *testing.T) {
 				t.Fatalf("external file changed: %v", err)
 			}
 		})
+	}
+}
+
+func TestPackageCleanupLeavesDpkgBinary(t *testing.T) {
+	t.Parallel()
+	for _, keep := range []bool{false, true} {
+		directory := t.TempDir()
+		root := stateRoot(t, directory)
+		populateState(t, root, []string{"bin"}, []string{"bin/udm-iptv", "bin/udhcpc-hook", "config.json", lockName})
+		remover := uninstaller{
+			root: root, stateDir: directory, configPath: filepath.Join(directory, "config.json"),
+			options: UninstallOptions{KeepConfig: keep, FromPackage: true},
+		}
+		if err := remover.removeInstallationState(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		assertStatePresent(t, root, []string{"bin/udm-iptv", lockName})
+		assertStateAbsent(t, root, []string{"bin/udhcpc-hook"})
+		if keep {
+			assertStatePresent(t, root, []string{"config.json"})
+		} else {
+			assertStateAbsent(t, root, []string{"config.json"})
+		}
 	}
 }

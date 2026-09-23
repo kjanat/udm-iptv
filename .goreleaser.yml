@@ -33,7 +33,7 @@ nfpms:
     bindir: /data/udm-iptv/bin
     section: net
     priority: optional
-    dependencies: ["busybox | busybox-static", iptables, improxy]
+    dependencies: ["busybox | busybox-static", iptables, improxy, util-linux]
     suggests: ["igmpproxy (>= 0.2)"]
     contents:
       - { src: ./packaging/deb/copyright, dst: /usr/share/doc/udm-iptv/copyright }

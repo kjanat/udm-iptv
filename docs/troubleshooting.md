@@ -1,5 +1,13 @@
 # Startup troubleshooting
 
+## Diagnostic capture status
+
+Each capture keeps a private `.status.json` file alongside its text or JSONL output.
+It records the worker's start time and deadline, then its completed, timed-out or
+failed outcome. The launcher reports that acknowledgement; a clean process exit
+without a completion record is an error. A capture that finishes before the launcher
+returns is reported as completed, with no new completion deadline.
+
 ## DHCP acquisition
 
 DHCP has 30 seconds to apply a lease. Defaults (`-t 3 -T 3 -A 2`) allow two complete
@@ -18,6 +26,12 @@ udm-iptv diagnose
 The report compares the configured VLAN interface with the router's actual parent and
 VLAN ID, and explains any mismatch. Confirm which physical port carries your provider's
 IPTV connection before correcting settings with `udm-iptv configure`.
+
+Existing VLANs without the `udm-iptv` ownership marker are also refused, even when
+the parent and VLAN ID match. This includes VLANs created by older releases.
+Choose an unused IPTV interface name, or establish who owns the existing interface
+before migrating it. Untagged interfaces retain unrelated addresses and DHCP routes;
+collisions with resources absent from the recorded lease are refused.
 
 ## Preview upgrades
 

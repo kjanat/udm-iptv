@@ -3,6 +3,7 @@
 package network
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -33,7 +34,7 @@ func TestKernelLeaseRenewal(t *testing.T) {
 	previous := Lease{}
 	apply := func() {
 		t.Helper()
-		mustApplyLease(t, lease, previous)
+		mustApplyLease(t, &lease, previous)
 		previous = lease
 	}
 	apply()
@@ -45,7 +46,7 @@ func TestKernelLeaseRenewal(t *testing.T) {
 	}
 	invalid := lease
 	invalid.StaticRoutes = []string{"198.51.100.0/24", "192.0.2.1", "invalid"}
-	if err := ApplyLease(invalid, previous, config.RoutesAllowDefault); err == nil {
+	if err := ApplyLease(&invalid, previous, config.RoutesAllowDefault); err == nil {
 		t.Fatal("invalid option accepted")
 	}
 	checkLease(t, link, lease.Address, 1)
@@ -103,7 +104,7 @@ func enterPrivateNamespace(t *testing.T) {
 	})
 }
 
-func mustApplyLease(t *testing.T, lease, previous Lease) {
+func mustApplyLease(t *testing.T, lease *Lease, previous Lease) {
 	t.Helper()
 	if err := ApplyLease(lease, previous, config.RoutesAllowDefault); err != nil {
 		t.Fatal(err)
@@ -126,4 +127,119 @@ func checkLease(t *testing.T, link netlink.Link, address string, wantRoutes int)
 	if len(routes) != wantRoutes {
 		t.Fatalf("unexpected DHCP routes: %v", routes)
 	}
+}
+
+func TestKernelBorrowedLeasePreservesForeignDHCPRoute(t *testing.T) {
+	enterPrivateNamespace(t)
+	link := kernelDummy(t, "iptv-test")
+	firmwareAddress := uplinkAddress()
+	if err := netlink.AddrAdd(link, &firmwareAddress); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := dhcpRoute(link.Attrs().Index, "203.0.113.0/24", "0.0.0.0", 700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.RouteAdd(&foreign); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResetLease(link); err != nil {
+		t.Fatal(err)
+	}
+	lease := testLease()
+	lease.Interface = link.Attrs().Name
+	mustApplyLease(t, &lease, Lease{})
+	deconfig := Lease{Action: "deconfig", Interface: lease.Interface}
+	mustApplyLease(t, &deconfig, lease)
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{LinkIndex: link.Attrs().Index, Protocol: routeProtocolDHCP}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_PROTOCOL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || !trackedRoute(routes[0], []netlink.Route{foreign}) {
+		t.Fatalf("foreign DHCP route changed: %v", routes)
+	}
+}
+
+func TestKernelVLANRequiresOwnership(t *testing.T) {
+	enterPrivateNamespace(t)
+	parent := kernelDummy(t, "parent-test")
+	value := config.DefaultKPN()
+	value.WAN.Interface = "parent-test"
+	value.WAN.VLANInterface = "iptv-test"
+	value.WAN.VLAN = 4
+	foreign := &netlink.Vlan{Name: "iptv-test", ParentIndex: parent.Attrs().Index, VlanId: 4}
+	if err := netlink.LinkAdd(foreign); err != nil {
+		t.Fatal(err)
+	}
+	before := kernelLink(t, "iptv-test")
+	if _, err := ensureVLAN(value, parent); !errors.Is(err, errForeignVLAN) {
+		t.Fatalf("foreign matching VLAN accepted: %v", err)
+	}
+	after := kernelLink(t, "iptv-test")
+	if after.Attrs().Index != before.Attrs().Index || after.Attrs().Alias != "" {
+		t.Fatalf("foreign VLAN mutated: %v", after)
+	}
+	if err := netlink.LinkSetAlias(after, linkAlias); err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := ensureVLAN(value, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.Attrs().Index == before.Attrs().Index {
+		t.Fatal("marked VLAN not replaced")
+	}
+	persisted, err := netlink.LinkByName("iptv-test")
+	if err != nil || !owned(persisted) {
+		t.Fatalf("replacement ownership missing: %v, %v", persisted, err)
+	}
+}
+
+func TestKernelBorrowedFinalAddressPreservesForeignRoute(t *testing.T) {
+	enterPrivateNamespace(t)
+	link := kernelDummy(t, "iptv-test")
+	lease := testLease()
+	lease.Interface = link.Attrs().Name
+	mustApplyLease(t, &lease, Lease{})
+	foreign, err := dhcpRoute(link.Attrs().Index, "203.0.113.0/24", "0.0.0.0", 700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.RouteAdd(&foreign); err != nil {
+		t.Fatal(err)
+	}
+	deconfig := Lease{Action: "deconfig", Interface: lease.Interface}
+	if err := ApplyLease(&deconfig, lease, config.RoutesAllowDefault); !errors.Is(err, errBorrowedAddressInUse) {
+		t.Fatalf("unsafe final address cleanup accepted: %v", err)
+	}
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{LinkIndex: link.Attrs().Index, Protocol: routeProtocolDHCP}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_PROTOCOL)
+	if err != nil || len(routes) != 1 || !trackedRoute(routes[0], []netlink.Route{foreign}) {
+		t.Fatalf("foreign route lost: %v / %v", routes, err)
+	}
+	if err := netlink.RouteDel(&foreign); err != nil {
+		t.Fatal(err)
+	}
+	mustApplyLease(t, &deconfig, lease)
+	checkCleared(t, link)
+}
+
+func kernelDummy(t *testing.T, name string) netlink.Link {
+	t.Helper()
+	if err := netlink.LinkAdd(&netlink.Dummy{Name: name}); err != nil {
+		t.Fatal(err)
+	}
+	link := kernelLink(t, name)
+	if err := netlink.LinkSetUp(link); err != nil {
+		t.Fatal(err)
+	}
+	return link
+}
+
+func kernelLink(t *testing.T, name string) netlink.Link {
+	t.Helper()
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return link
 }

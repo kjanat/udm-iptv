@@ -62,9 +62,16 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 			}
 			switch arguments[0] {
 			case "deconfig":
-				return errors.Join(network.ApplyLease(lease, previous, policy), service.RemoveLeaseState())
+				applied := network.ApplyLease(&lease, previous, policy)
+				if applied != nil {
+					// Retain ownership for a later retry when cleanup was only partial.
+					previous.ManagedRoutes = lease.ManagedRoutes
+					previous.ManagedAddresses = lease.ManagedAddresses
+					return errors.Join(applied, service.WriteLeaseState(previous, applied))
+				}
+				return service.RemoveLeaseState()
 			case "bound", "renew":
-				applied := network.ApplyLease(lease, previous, policy)
+				applied := network.ApplyLease(&lease, previous, policy)
 
 				return errors.Join(applied, service.WriteLeaseState(lease, applied))
 			default:

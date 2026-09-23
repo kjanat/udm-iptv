@@ -55,6 +55,9 @@ udm-iptv uninstall
 
 `restart`, `stop` and uninstall cancel scheduled starts.
 
+Uninstall and package purge retain `/data/udm-iptv/.lock` to serialize later
+installation operations safely. Unrelated files in that directory also survive.
+
 Pauses end at reboot; automatic startup still applies.
 
 Failed scheduling attempts recovery and reports the outcome.

@@ -2,13 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
@@ -123,6 +126,49 @@ func TestRollbackConfigurationRestoresThePreviousFile(t *testing.T) {
 	info, err := os.Stat(rejected)
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("rejected copy mode %v, %v", info.Mode(), err)
+	}
+}
+
+func TestRecoveryRestartsAfterCancellationAndOutputFailure(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.json")
+	previous := []byte(`{"profile":"kpn"}`)
+	if err := atomicfile.Write(path, []byte(`{"profile":"custom"}`), filemode.PrivateFile); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	restarted := false
+	restart := func(recovery context.Context, check bool) error {
+		restarted = true
+		assertRecoveredConfiguration(recovery, t, check, path, previous)
+		return nil
+	}
+	reader, writer := io.Pipe()
+	_ = reader.Close()
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	err := recoverConfiguration(ctx, path, previous, writer, restart)
+	if !restarted || !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("restarted=%t, error=%v", restarted, err)
+	}
+}
+
+func assertRecoveredConfiguration(recovery context.Context, t *testing.T, check bool, path string, previous []byte) {
+	t.Helper()
+	if recovery.Err() != nil || !check {
+		t.Fatalf("recovery inherited cancellation or skipped health: %v, %t", recovery.Err(), check)
+	}
+	deadline, ok := recovery.Deadline()
+	if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > time.Minute {
+		t.Fatalf("recovery deadline: %v, %t", deadline, ok)
+	}
+	restored, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(restored, previous) {
+		t.Fatalf("restart saw %q: %v", restored, err)
 	}
 }
 

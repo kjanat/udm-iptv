@@ -308,7 +308,7 @@ func (h *firmwareHarness) reinstallAndPurge(name string) {
 	h.healthy(name)
 	h.inside(name, binary, "uninstall")
 	h.reboot(name)
-	h.inside(name, "test", "!", "-e", "/data/udm-iptv")
+	h.inside(name, "sh", "-ec", `test "$(ls -A /data/udm-iptv)" = .lock`)
 	h.inside(name, "test", "!", "-e", "/etc/systemd/system/udm-iptv.service")
 }
 

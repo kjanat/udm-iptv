@@ -81,11 +81,11 @@ func openStateChild(parent *os.Root, name string) (*os.Root, error) {
 }
 
 // Remove only owned entries. Unknown files and external configurations survive.
-func removeStateFiles(root *os.Root, configPath string, keepConfig bool) error {
+func removeStateFiles(root *os.Root, configPath string, options UninstallOptions) error {
 	if root == nil {
 		return nil
 	}
-	for _, name := range ownedStateFiles(root, configPath, keepConfig) {
+	for _, name := range ownedStateFiles(root, configPath, options) {
 		if err := removeOwnedFile(root, name); err != nil {
 			return err
 		}
@@ -93,7 +93,7 @@ func removeStateFiles(root *os.Root, configPath string, keepConfig bool) error {
 	if err := removeRecoveryCopies(root); err != nil {
 		return err
 	}
-	for _, name := range ownedStateDirectories(keepConfig) {
+	for _, name := range ownedStateDirectories(options.KeepConfig) {
 		if err := root.RemoveAll(name); err != nil {
 			return fmt.Errorf("remove installation directory %s: %w", name, err)
 		}
@@ -101,16 +101,21 @@ func removeStateFiles(root *os.Root, configPath string, keepConfig bool) error {
 	return removeEmpty(root, "bin")
 }
 
-func ownedStateFiles(root *os.Root, configPath string, keepConfig bool) []string {
-	files := []string{"bin/udm-iptv", "bin/udhcpc-hook", lockName}
-	if keepConfig {
+func ownedStateFiles(root *os.Root, configPath string, options UninstallOptions) []string {
+	// The lock inode survives removal, including after its holder releases it:
+	// another process may already have opened that inode before taking flock.
+	files := []string{"bin/udhcpc-hook"}
+	if !options.FromPackage {
+		files = append(files, "bin/udm-iptv")
+	}
+	if options.KeepConfig {
 		return files
 	}
 	files = append(files, "config.json", "config.json.rejected", "legacy.conf", "udm-iptv.conf", "udm-iptv.deb", "udm-iptv-restore", "debconf.preseed", "telemetry-research.json", "telemetry-research.lock")
 	for _, kind := range []string{"errors", "logs", "metrics", "traces", "presets", "network"} {
 		files = append(files, "telemetry-"+kind+".rate")
 	}
-	if relative, err := filepath.Rel(root.Name(), configPath); err == nil && relative != "." && filepath.IsLocal(relative) {
+	if relative, err := filepath.Rel(root.Name(), configPath); err == nil && relative != "." && relative != lockName && filepath.IsLocal(relative) && (!options.FromPackage || relative != "bin/udm-iptv") {
 		files = append(files, relative)
 	}
 	return files
