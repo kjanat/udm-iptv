@@ -552,9 +552,9 @@ func ImportLegacy(path string) (Config, error) {
 	value := legacyBase()
 	applyLegacyWAN(&value, values)
 	applyLegacyProxy(&value, values)
-	legacyLANSources := normalizeLegacyPrefixes(strings.Fields(values["IPTV_LAN_RANGES"]))
+	legacyLANSources := unicastPrefixes(normalizeLegacyPrefixes(strings.Fields(values["IPTV_LAN_RANGES"])))
 	if value.Proxy.Program == ProxyIgmpproxy {
-		value.Proxy.SourceRanges = mergePrefixes(value.WAN.NATDestinations, legacyLANSources)
+		value.Proxy.SourceRanges = mergePrefixes(unicastPrefixes(value.WAN.NATDestinations), legacyLANSources)
 	}
 	if profile, found := InferLegacyProfile(value); found {
 		value.Profile = profile
@@ -577,7 +577,7 @@ func parseLegacyAssignments(text string) (map[string]string, error) {
 		if !ok || !legacyKey(key) {
 			continue
 		}
-		decoded, err := decodeLegacyValue(key, strings.TrimSpace(raw))
+		decoded, err := decodeLegacyValue(key, strings.TrimSpace(legacyValueWithoutComment(raw)))
 		if err != nil {
 			return nil, err
 		}
@@ -589,6 +589,50 @@ func parseLegacyAssignments(text string) (map[string]string, error) {
 
 func legacyKey(key string) bool {
 	return strings.HasPrefix(key, "IPTV_") || key == "NO_GATEWAY"
+}
+
+// Shell comments start at an unquoted, unescaped word boundary. A hash inside
+// a quoted value or an assignment word remains data; no shell code is run.
+func legacyValueWithoutComment(raw string) string {
+	var state legacyValueState
+	boundary := false
+	for index, char := range raw {
+		if state.protected(char) {
+			boundary = false
+			continue
+		}
+		if char == '#' && boundary {
+			return raw[:index]
+		}
+		boundary = char == ' ' || char == '\t'
+	}
+
+	return raw
+}
+
+type legacyValueState struct {
+	quote   rune
+	escaped bool
+}
+
+// protected tracks quoting without interpreting expansions or executing code.
+func (state *legacyValueState) protected(char rune) bool {
+	switch {
+	case state.escaped:
+		state.escaped = false
+	case char == '\\' && state.quote != '\'':
+		state.escaped = true
+	case state.quote != 0:
+		if char == state.quote {
+			state.quote = 0
+		}
+	case char == '\'' || char == '"':
+		state.quote = char
+	default:
+		return false
+	}
+
+	return true
 }
 
 func legacyRoutePolicy(value Config, noGateway string) RoutePolicy {

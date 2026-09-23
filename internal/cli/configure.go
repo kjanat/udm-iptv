@@ -407,16 +407,27 @@ func (application *Application) saveConfiguration(command *cobra.Command, value 
 	if err != nil {
 		return err
 	}
+	return application.finishConfiguration(command.Context(), installed, previous, application.restart)
+}
+
+func (application *Application) finishConfiguration(ctx context.Context, installed bool, previous []byte, restart func(context.Context, bool) error) error {
+	// Reporting failure must not strand a persisted configuration before activation.
+	activationErr := application.activateConfiguration(ctx, installed, previous, restart)
+	outputErr := writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath)
+	return errors.Join(activationErr, outputErr)
+}
+
+func (application *Application) activateConfiguration(ctx context.Context, installed bool, previous []byte, restart func(context.Context, bool) error) error {
 	if !installed {
 		return writeString(application.Out, "The service is not installed; udm-iptv install applies the configuration.\n")
 	}
-	err = application.restart(command.Context(), true)
+	err := restart(ctx, true)
 	application.reportApplied = err == nil
 	if err == nil || previous == nil {
 		return err
 	}
 
-	return errors.Join(err, application.restoreConfiguration(command.Context(), previous))
+	return errors.Join(err, recoverConfiguration(ctx, application.ConfigPath, previous, application.Out, restart))
 }
 
 // persistConfiguration writes value and returns whether the service is
@@ -436,10 +447,6 @@ func (application *Application) persistConfiguration(value config.Config) (bool,
 		return false, nil, fmt.Errorf("save configuration to %s: %w", application.ConfigPath, err)
 	}
 	application.reportConfig = &value
-	if err := writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath); err != nil {
-		return false, nil, err
-	}
-
 	return installed, previous, nil
 }
 
@@ -447,13 +454,9 @@ func (application *Application) persistConfiguration(value config.Config) (bool,
 // would not run with it.
 const rejectedSuffix = ".rejected"
 
-// restoreConfiguration puts the configuration the service was running back
+// recoverConfiguration puts the configuration the service was running back
 // after a change it would not start with, keeps the rejected one beside it,
 // and restarts the service on the restored one.
-func (application *Application) restoreConfiguration(ctx context.Context, previous []byte) error {
-	return recoverConfiguration(ctx, application.ConfigPath, previous, application.Out, application.restart)
-}
-
 func recoverConfiguration(ctx context.Context, path string, previous []byte, output io.Writer, restart func(context.Context, bool) error) error {
 	rejected, err := rollbackConfiguration(path, previous)
 	if err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,17 +34,6 @@ func TestCollectorsShareCaptureDeadline(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
 		t.Fatalf("collector exceeded shared deadline by %s", elapsed)
-	}
-}
-
-func TestJournalCollectionIsBoundedAtSource(t *testing.T) {
-	t.Parallel()
-	arguments := journalArguments("s=cursor", 10_000, serviceUnit)
-	want := []string{"-n", "10000", "--after-cursor", "s=cursor", "-u", serviceUnit, "json"}
-	for _, value := range want {
-		if !slices.Contains(arguments, value) {
-			t.Fatalf("journal arguments %q do not contain %q", arguments, value)
-		}
 	}
 }
 

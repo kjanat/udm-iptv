@@ -55,8 +55,9 @@ udm-iptv uninstall
 
 `restart`, `stop` and uninstall cancel scheduled starts.
 
-Uninstall and package purge retain `/data/udm-iptv/.lock` to serialize later
-installation operations safely. Unrelated files in that directory also survive.
+Uninstall retains `/data/udm-iptv/.lock`, protecting later installations from concurrent changes.
+
+Unrelated files survive package purge.
 
 Pauses end at reboot; automatic startup still applies.
 
@@ -82,7 +83,18 @@ udm-iptv diagnose --capture 30m --format both --follow
 
 `q` or Ctrl-C closes the viewer; capture continues.
 
-Reports: `/data/udm-iptv/diagnostics`. Review before sharing; provider prefixes remain visible.
+Private reports: `/data/udm-iptv/diagnostics` (0600), including addresses and raw logs.
+
+Export a sanitized copy locally; the original stays unchanged:
+
+```sh
+udm-iptv diagnose export /data/udm-iptv/diagnostics/CAPTURE.jsonl > share.jsonl
+udm-iptv diagnose export /data/udm-iptv/diagnostics/CAPTURE.jsonl --format text > share.txt
+```
+
+See [diagnostics privacy](docs/diagnostics.md) for aliases, preserved evidence and omissions.
+
+Bounded journal events appear live; closing the viewer preserves capture.
 
 See [telemetry details](docs/telemetry.md) for optional reliability reports.
 

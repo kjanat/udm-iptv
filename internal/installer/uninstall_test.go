@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/godbus/dbus/v5"
 )
 
 var errInjectedUninstallStep = errors.New("injected uninstall failure")
@@ -16,8 +17,9 @@ var errInjectedUninstallStep = errors.New("injected uninstall failure")
 type uninstallBus struct {
 	uninstallConnection
 
-	calls     []string
-	failTimer bool
+	calls      []string
+	failTimer  bool
+	disableErr error
 }
 
 func (b *uninstallBus) StopUnitContext(_ context.Context, unit, _ string, result chan<- string) (int, error) {
@@ -31,7 +33,26 @@ func (b *uninstallBus) StopUnitContext(_ context.Context, unit, _ string, result
 
 func (b *uninstallBus) DisableUnitFilesContext(context.Context, []string, bool) ([]systemd.DisableUnitFileChange, error) {
 	b.calls = append(b.calls, "disable")
-	return nil, nil
+	return nil, b.disableErr
+}
+
+func TestUninstallDisableToleratesOnlyMissingUnit(t *testing.T) {
+	t.Parallel()
+	for _, cause := range []error{
+		dbus.Error{Name: "org.freedesktop.systemd1.NoSuchUnit"},
+		dbus.NewError("org.freedesktop.DBus.Error.FileNotFound", nil),
+		errInjectedUninstallStep,
+	} {
+		remover := uninstaller{connection: &uninstallBus{disableErr: cause}}
+		err := remover.disableService(t.Context())
+		if errors.Is(cause, errInjectedUninstallStep) {
+			if !errors.Is(err, cause) {
+				t.Fatalf("lost real disable error: %v", err)
+			}
+		} else if err != nil {
+			t.Fatalf("missing unit blocked uninstall: %v", err)
+		}
+	}
 }
 
 func TestUninstallCancelsResumeBeforeRemovingService(t *testing.T) {

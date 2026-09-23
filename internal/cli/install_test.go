@@ -38,6 +38,10 @@ func (b *installTestBackend) Preflight(_ context.Context, plan installer.Plan) e
 	return b.record("Check installation prerequisites", plan)
 }
 
+func (b *installTestBackend) Begin(context.Context, installer.Plan) (installer.InstallationTransaction, error) {
+	return installer.InstallationTransaction{}, nil
+}
+
 func (b *installTestBackend) PreserveRuntime(_ context.Context, plan installer.Plan) error {
 	return b.record("Preserve the proxy and shared libraries offline", plan)
 }

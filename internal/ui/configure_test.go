@@ -18,6 +18,21 @@ import (
 
 var errProfileSwitchAborted = errors.New("cancelled")
 
+func TestSettingsSwitchStaticToDHCP(t *testing.T) {
+	value := configtest.Custom()
+	value.WAN.DHCP = false
+	value.WAN.StaticAddress = "192.0.2.2/24"
+	_, apply := settingsForm(config.DefaultCatalog(), &value, nil, 0, false, nil)
+	// The DHCP confirm writes directly to the same draft field.
+	value.WAN.DHCP = true
+	if err := apply(); err != nil {
+		t.Fatal(err)
+	}
+	if !value.WAN.DHCP || value.WAN.StaticAddress != "" {
+		t.Fatalf("DHCP retained the stale static address: %+v", value.WAN)
+	}
+}
+
 func assertEqual[T comparable](t *testing.T, name string, got, want T) {
 	t.Helper()
 	if got != want {
@@ -91,7 +106,7 @@ func TestConfigureProfileSwitch(t *testing.T) {
 			t.Fatal(result.err)
 		}
 		assertEqual(t, "profile", result.value.Profile, "tweak")
-		assertEqual(t, "WAN interface", result.value.WAN.Interface, "eth8")
+		assertEqual(t, "WAN interface", result.value.WAN.Interface, "example9")
 		assertEqual(t, "telemetry enabled", result.value.Telemetry.Enabled, true)
 		assertEqual(t, "NAT destination", result.value.WAN.NATDestinations[0], "0.0.0.0/0")
 		result.value.WAN.NATDestinations[0] = "changed"

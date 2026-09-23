@@ -25,7 +25,7 @@ const (
 	// finalizeReserveDivisor caps the reserve at half a short capture, so a
 	// 1s capture still gets a final snapshot instead of the full reserve.
 	finalizeReserveDivisor = 2
-	// journalLineLimit bounds how many trailing journal lines a capture attaches.
+	// journalLineLimit bounds how many live journal records a capture retains.
 	journalLineLimit = 10_000
 )
 
@@ -58,13 +58,16 @@ type Options struct {
 // log entry, or status message. A log event's Time is when the record was
 // logged, and Source names the process that logged it.
 type Event struct {
-	Time     time.Time `json:"time"`
-	Deadline time.Time `json:"deadline,omitzero"`
-	Type     string    `json:"type"`
-	Message  string    `json:"message,omitempty"`
-	Snapshot *Snapshot `json:"snapshot,omitempty"`
-	Source   string    `json:"source,omitempty"`
-	Log      string    `json:"log,omitempty"`
+	Privacy string `json:"privacy,omitempty"`
+	// AddressOrder lists IPv4 aliases in original numerical order for querier election analysis.
+	AddressOrder []string  `json:"ipv4Order,omitempty"`
+	Time         time.Time `json:"time"`
+	Deadline     time.Time `json:"deadline,omitzero"`
+	Type         string    `json:"type"`
+	Message      string    `json:"message,omitempty"`
+	Snapshot     *Snapshot `json:"snapshot,omitempty"`
+	Source       string    `json:"source,omitempty"`
+	Log          string    `json:"log,omitempty"`
 }
 
 // Capture performs a diagnostic capture based on the provided options.
@@ -88,7 +91,8 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 		return err
 	}
 	markers := &markerReader{path: MarkerPath(options)}
-	cursor := journalCursor(ctx)
+	logs, stopLogs := followJournal(ctx)
+	defer stopLogs()
 	initial, err := application.snapshotWithin(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -100,7 +104,11 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	if err := write(Event{Time: initial.Timestamp, Type: EventInitial, Snapshot: &initial}); err != nil {
 		return err
 	}
-	if err := application.sampleSnapshots(ctx, options, endsAt, markers, write); err != nil {
+	if err := application.sampleSnapshots(ctx, options, endsAt, markers, logs, write); err != nil {
+		return err
+	}
+	stopLogs()
+	if err := drainJournal(ctx, logs, write); err != nil {
 		return err
 	}
 	if err := markers.drain(write); err != nil {
@@ -110,7 +118,7 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 		return write(Event{Time: time.Now().UTC(), Type: EventCompleted, Message: "Capture stopped by signal."})
 	}
 
-	return application.finalizeCapture(ctx, cursor, write)
+	return application.finalizeCapture(ctx, write)
 }
 
 // MarkerPath is the file a viewer appends manual markers to. Both capture
@@ -193,16 +201,13 @@ func expired(ctx context.Context) bool {
 	return ctx.Err() != nil
 }
 
-// finalizeCapture records the closing snapshot and the journal within
+// finalizeCapture records the closing snapshot within
 // whatever remains of the capture window.
-func (application *Collector) finalizeCapture(ctx context.Context, cursor string, write func(Event) error) error {
+func (application *Collector) finalizeCapture(ctx context.Context, write func(Event) error) error {
 	if final, finalErr := application.snapshotWithin(ctx); finalErr == nil {
 		if err := write(Event{Time: final.Timestamp, Type: EventFinal, Snapshot: &final}); err != nil {
 			return err
 		}
-	}
-	if err := writeJournal(ctx, cursor, write); err != nil {
-		return err
 	}
 	if expired(ctx) {
 		return write(Event{Time: time.Now().UTC(), Type: EventTimeout, Message: "Capture deadline reached; a collector may have stalled."})
@@ -265,8 +270,8 @@ func sampleInterval(verbosity string) time.Duration {
 }
 
 // sampleSnapshots records periodic snapshots until the capture must be
-// finalized, reserving time for the final snapshot and the journal.
-func (application *Collector) sampleSnapshots(ctx context.Context, options Options, endsAt time.Time, markers *markerReader, write func(Event) error) error {
+// finalized, reserving time to close the journal and take the final snapshot.
+func (application *Collector) sampleSnapshots(ctx context.Context, options Options, endsAt time.Time, markers *markerReader, logs <-chan Event, write func(Event) error) error {
 	ticker := time.NewTicker(sampleInterval(options.Verbosity))
 	defer ticker.Stop()
 	reserve := min(finalizeReserve, options.Capture/finalizeReserveDivisor)
@@ -278,16 +283,28 @@ func (application *Collector) sampleSnapshots(ctx context.Context, options Optio
 			return nil
 		case <-finalize.C:
 			return nil
-		case <-ticker.C:
-			if err := markers.drain(write); err != nil {
+		case event, open := <-logs:
+			if !open {
+				logs = nil
+				continue
+			}
+			if err := write(event); err != nil {
 				return err
 			}
-			finished, err := application.writeSample(ctx, write)
+		case <-ticker.C:
+			finished, err := application.writeMarkedSample(ctx, markers, write)
 			if err != nil || finished {
 				return err
 			}
 		}
 	}
+}
+
+func (application *Collector) writeMarkedSample(ctx context.Context, markers *markerReader, write func(Event) error) (bool, error) {
+	if err := markers.drain(write); err != nil {
+		return false, err
+	}
+	return application.writeSample(ctx, write)
 }
 
 // writeSample reports whether the capture deadline ended the sample.
@@ -301,19 +318,6 @@ func (application *Collector) writeSample(ctx context.Context, write func(Event)
 	}
 
 	return false, write(Event{Time: time.Now().UTC(), Type: EventError, Message: err.Error()})
-}
-
-func writeJournal(ctx context.Context, cursor string, write func(Event) error) error {
-	for _, entry := range captureJournal(ctx, cursor, journalLineLimit) {
-		if expired(ctx) {
-			break
-		}
-		if err := write(Event{Time: entry.Time, Type: EventLog, Source: entry.Source, Log: entry.Message}); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 type collectedValue[T any] struct {

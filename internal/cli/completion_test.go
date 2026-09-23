@@ -27,11 +27,17 @@ func TestBashCompletionRunsWithoutBashCompletionPackage(t *testing.T) {
 	cmd := exec.CommandContext(t.Context(), "bash", "--noprofile", "--norc", "-c", `
 source "$1"
 complete -p udm-iptv >/dev/null
+udm-iptv() {
+    if [[ "$1" != __complete ]]; then return 1; fi
+    printf 'configure\ninstall\nstatus\n:4\n'
+}
 COMP_WORDS=(udm-iptv "")
 COMP_CWORD=1
 COMP_LINE=$'udm-iptv '
 COMP_POINT=${#COMP_LINE}
 __start_udm-iptv
+[[ " ${COMPREPLY[*]} " == *" configure "* ]] || exit 1
+[[ " ${COMPREPLY[*]} " == *" status "* ]] || exit 1
 `, "bash", path)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

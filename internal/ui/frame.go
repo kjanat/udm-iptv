@@ -108,12 +108,13 @@ var wizardTheme = huh.ThemeFunc(func(isDark bool) *huh.Styles {
 // page pairs a huh group with the field keys it owns and its hide condition,
 // which huh does not expose back to callers.
 type page struct {
-	address *dhcpConfirm
-	search  *searchable
-	entry   *entryPrompt
-	group   *huh.Group
-	keys    []string
-	hidden  func() bool
+	address     *dhcpConfirm
+	search      *searchable
+	entry       *entryPrompt
+	group       *huh.Group
+	keys        []string
+	hidden      func() bool
+	filterPorts func(huh.Field)
 }
 
 func newPage(fields ...huh.Field) *page {
@@ -159,6 +160,12 @@ func (p *page) searching(search *searchable) *page {
 // "enter manually" row.
 func (p *page) entering(entry *entryPrompt) *page {
 	p.entry = entry
+
+	return p
+}
+
+func (p *page) filteringPorts(toggle func(huh.Field)) *page {
+	p.filterPorts = toggle
 
 	return p
 }
@@ -452,7 +459,21 @@ var frameKeys = []keyRule{
 	{(*Frame).escapesQuestion, (*Frame).escapeOn},
 	{(*Frame).stepsOutOfForm, (*Frame).goBackOn},
 	{(*Frame).explainRequested, (*Frame).toggleHelpOn},
+	{(*Frame).portFilterRequested, (*Frame).togglePortFilterOn},
 	{(*Frame).rejectedByVLAN, (*Frame).ignoreOn},
+}
+
+func (frame *Frame) portFilterRequested(press keyPress) bool {
+	p, ok := frame.wizard.focusedPage()
+	return ok && p.filterPorts != nil && press.msg.Code == 'p' && press.msg.Mod == tea.ModCtrl
+}
+
+func (frame *Frame) togglePortFilterOn(keyPress) tea.Cmd {
+	if p, ok := frame.wizard.focusedPage(); ok && p.filterPorts != nil {
+		p.filterPorts(frame.wizard.Form.GetFocusedField())
+	}
+
+	return frame.resize()
 }
 
 // handleKey routes a key by mode: quit prompt, entry popup, then the

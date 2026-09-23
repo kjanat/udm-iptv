@@ -157,6 +157,28 @@ func TestRecoveryRestartsAfterCancellationAndOutputFailure(t *testing.T) {
 	}
 }
 
+func TestConfigurationOutputFailureDoesNotSkipActivation(t *testing.T) {
+	t.Parallel()
+	reader, writer := io.Pipe()
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	application := &Application{Out: writer, ConfigPath: filepath.Join(t.TempDir(), "config.json")}
+	restarted := false
+	err := application.finishConfiguration(t.Context(), true, nil, func(_ context.Context, check bool) error {
+		restarted = check
+		return nil
+	})
+	if !restarted || !application.reportApplied || !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("restart=%t applied=%t error=%v", restarted, application.reportApplied, err)
+	}
+}
+
 func assertRecoveredConfiguration(recovery context.Context, t *testing.T, check bool, path string, previous []byte) {
 	t.Helper()
 	if recovery.Err() != nil || !check {

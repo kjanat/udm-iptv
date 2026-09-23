@@ -206,8 +206,8 @@ func natRule(destination, target string) []string {
 	return []string{"-d", destination, "-o", target, "-m", "comment", "--comment", natComment, "-j", "MASQUERADE"}
 }
 
-// EnsureNAT makes the MASQUERADE rules on the IPTV interface exactly value's
-// NAT destinations, removing any other MASQUERADE rule bound to that interface.
+// EnsureNAT reconciles this program's MASQUERADE rules on the IPTV interface
+// with the configured destinations. Unmarked rules retain their original owner.
 // It returns the rules it removed, with the counters iptables discards with them.
 func EnsureNAT(value config.Config) ([]NATRule, error) {
 	table, err := openNATTable()
@@ -230,7 +230,7 @@ func reconcileNAT(table natTable, value config.Config) ([]NATRule, error) {
 	}
 	var removed []NATRule
 	for _, rule := range rules {
-		if rule.Managed && wanted[rule.Destination] {
+		if !rule.Managed || wanted[rule.Destination] {
 			continue
 		}
 		if err := table.Delete(natTableName, natChain, rule.spec...); err != nil {
@@ -247,7 +247,7 @@ func reconcileNAT(table natTable, value config.Config) ([]NATRule, error) {
 	return removed, nil
 }
 
-// RemoveNAT removes every MASQUERADE rule bound to the IPTV interface and
+// RemoveNAT removes this program's MASQUERADE rules on the IPTV interface and
 // returns the removed rules with their counters.
 func RemoveNAT(value config.Config) ([]NATRule, error) {
 	table, err := openNATTable()
@@ -266,6 +266,9 @@ func removeNAT(table natTable, value config.Config) ([]NATRule, error) {
 	var removed []NATRule
 	var joined error
 	for _, rule := range rules {
+		if !rule.Managed {
+			continue
+		}
 		if err := table.Delete(natTableName, natChain, rule.spec...); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("remove NAT rule for %s: %w", rule.Destination, err))
 
@@ -337,6 +340,7 @@ func masqueradeRules(table natTable, target string) ([]masqueradeRule, error) {
 			continue
 		}
 		spec, packets, bytes := splitCounters(fields[2:])
+		normalizeNATComment(spec)
 		if !hasOption(spec, "-j", "MASQUERADE") || !hasOption(spec, "-o", target) {
 			continue
 		}
@@ -347,6 +351,17 @@ func masqueradeRules(table natTable, target string) ([]masqueradeRule, error) {
 	}
 
 	return rules, nil
+}
+
+// iptables may quote its comment in -S output; command arguments must carry
+// the actual comment, without those presentation quotes. Leave other comments
+// untouched rather than interpreting a partial or space-containing token.
+func normalizeNATComment(spec []string) {
+	for index := 0; index+1 < len(spec); index++ {
+		if spec[index] == "--comment" && spec[index+1] == strconv.Quote(natComment) {
+			spec[index+1] = natComment
+		}
+	}
 }
 
 // iptables -v -S adds "-c <packets> <bytes>" to each rule, which -D refuses.
@@ -491,8 +506,9 @@ func LeaseFromEnvironment(action string) (Lease, error) {
 	return lease, nil
 }
 
-// udhcpc exports every option it received as a lower-case variable named
-// after the option, so those are the lease as the server sent it.
+// udhcpc exports received options as lower-case variables. The daemon starts
+// it with an explicit environment containing no lower-case keys, so inherited
+// proxy credentials or unrelated variables cannot become recorded options.
 func dhcpOptions(environment []string) map[string]string {
 	options := map[string]string{}
 	for _, entry := range environment {

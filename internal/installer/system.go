@@ -109,22 +109,24 @@ func (backend SystemBackend) Activate(ctx context.Context, _ Plan) error {
 	return activateService(ctx)
 }
 
-// CheckHealth waits for readiness and reports the configuration as applied.
-func (backend SystemBackend) CheckHealth(ctx context.Context, plan Plan) error {
+// CheckHealth waits for readiness. Reporting waits until cleanup also succeeds.
+func (backend SystemBackend) CheckHealth(ctx context.Context, _ Plan) error {
 	err := backend.Health(ctx)
 	if err != nil {
 		return fmt.Errorf("installation completed but the service is unhealthy: %w", err)
 	}
-	if backend.Healthy != nil {
-		backend.Healthy(plan.Config)
-	}
-
 	return nil
 }
 
 // Cleanup removes obsolete legacy recovery files.
 func (backend SystemBackend) Cleanup(_ context.Context, plan Plan) error {
-	return removeObsoleteLegacyFiles(plan.StateDir)
+	if err := removeObsoleteLegacyFiles(plan.StateDir); err != nil {
+		return err
+	}
+	if backend.Healthy != nil {
+		backend.Healthy(plan.Config)
+	}
+	return nil
 }
 
 func removeObsoleteLegacyFiles(stateDir string) error {

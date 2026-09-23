@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
 var errNotRegularFile = errors.New("report must be a regular file")
@@ -66,6 +68,9 @@ func openReport(path string) (*os.File, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, errors.Join(errNotRegularFile, file.Close())
+	}
+	if err := file.Chmod(filemode.PrivateFile); err != nil {
+		return nil, errors.Join(fmt.Errorf("restrict private report permissions: %w", err), file.Close())
 	}
 	return file, nil
 }

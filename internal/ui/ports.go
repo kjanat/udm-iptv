@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,22 +29,82 @@ func (port Port) address() string {
 	if len(port.Addresses) > 0 {
 		return strings.Join(port.Addresses, ", ")
 	}
-	if port.AddressesKnown {
-		return "no assigned IP"
-	}
-
-	return "addresses unavailable"
+	return ""
 }
 
 func (port Port) label() string {
-	return annotate(port.Name, port.address(), port.Description)
+	return annotate(port.Name, port.address(), port.description())
+}
+
+func (port Port) description() string {
+	var parts []string
+	for part := range strings.SplitSeq(port.Description, ", ") {
+		if part != "link status unknown" {
+			parts = append(parts, part)
+		}
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+func (port Port) public() bool {
+	for _, value := range port.Addresses {
+		prefix, err := netip.ParsePrefix(value)
+		if err == nil && prefix.Addr().IsGlobalUnicast() && !prefix.Addr().IsPrivate() {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (port Port) linkRank() int {
+	for state := range strings.SplitSeq(port.Description, ", ") {
+		switch state {
+		case "connected", "example: connected":
+			return 0
+		case "disconnected", "example: disconnected":
+			return 1
+		}
+	}
+
+	return 2
+}
+
+func orderedWANPorts(ports []Port) []Port {
+	ordered := slices.Clone(ports)
+	slices.SortStableFunc(ordered, func(left, right Port) int {
+		if left.public() != right.public() {
+			if left.public() {
+				return -1
+			}
+			return 1
+		}
+		if left.linkRank() != right.linkRank() {
+			return left.linkRank() - right.linkRank()
+		}
+		leftBase, leftVLAN, _ := strings.Cut(left.Name, ".")
+		rightBase, rightVLAN, _ := strings.Cut(right.Name, ".")
+		if leftBase != rightBase {
+			return strings.Compare(leftBase, rightBase)
+		}
+		leftID, leftErr := strconv.Atoi(leftVLAN)
+		rightID, rightErr := strconv.Atoi(rightVLAN)
+		if leftErr == nil && rightErr == nil {
+			return leftID - rightID
+		}
+
+		return strings.Compare(left.Name, right.Name)
+	})
+
+	return ordered
 }
 
 func (port Port) lanLabel() string {
 	if !isDownstreamName(port.Name) {
 		return port.label()
 	}
-	return annotate(port.Name, lanKind(port.Name), port.address(), port.Description)
+	return annotate(port.Name, lanKind(port.Name), port.address(), port.description())
 }
 
 func networkLabel(name string, ports []Port, origin string) string {
@@ -82,6 +143,7 @@ func listHeight(options []huh.Option[string]) int {
 }
 
 func wanGroups(current *string, ports []Port) ([]*page, *string) {
+	ports = orderedWANPorts(ports)
 	selected := *current
 	options := make([]huh.Option[string], 0, len(ports)+manualEntrySlots)
 	for _, port := range ports {
@@ -116,7 +178,7 @@ func wanGroups(current *string, ports []Port) ([]*page, *string) {
 	return []*page{
 		newPage(huh.NewSelect[string]().Key("wan-port").
 			Title("Which connection goes to your provider?").
-			Description("Usually Internet route. Connected means link detected, not provider verified.").
+			Description("Public IPs first. Ctrl+P: public IPs / all interfaces. Connected means link detected, not provider verified.").
 			Options(withManual(options)...).Height(listHeight(options)).
 			Validate(func(value string) error {
 				if value == manualPort {
@@ -125,8 +187,33 @@ func wanGroups(current *string, ports []Port) ([]*page, *string) {
 
 				return nil
 			}).
-			Value(&selected)).title("Internet port").entering(entry),
+			Value(&selected)).title("Internet port").entering(entry).filteringPorts(publicPortFilter(ports, &options, &selected)),
 	}, &selected
+}
+
+func publicPortFilter(ports []Port, options *[]huh.Option[string], selected *string) func(huh.Field) {
+	var public []huh.Option[string]
+	for _, port := range ports {
+		if port.public() {
+			public = append(public, huh.NewOption(port.label(), port.Name))
+		}
+	}
+	filtered := false
+	return func(field huh.Field) {
+		list, ok := field.(*huh.Select[string])
+		if !ok || len(public) == 0 {
+			return
+		}
+		filtered = !filtered
+		visible := *options
+		if filtered {
+			visible = public
+		}
+		if !hasOption(visible, *selected) {
+			*selected = optionValues(visible)[0]
+		}
+		list.Options(withManual(visible)...)
+	}
 }
 
 func lanKind(name string) string {
