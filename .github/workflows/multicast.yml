@@ -190,5 +190,6 @@ jobs:
         with:
           name: multicast-regression-${{ inputs.implementation }}-${{ matrix.scenario }}-v${{ matrix.version }}-${{ github.run_attempt }}
           path: tests/multicast/artifacts/
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

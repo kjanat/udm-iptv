@@ -45,7 +45,7 @@ the INCLUDE/BLOCK source loop used an uninitialized next pointer.
   [RFC 4605 section 3](https://www.rfc-editor.org/rfc/rfc4605.html#section-3).
   It does not implement RFC 4605's default multiple-forwarder election policy.
   Do not use this forwarding behavior as loop protection with multiple proxies.
-- MLD and upstream kernel IGMP membership handling are unchanged.
+- MLD querier behavior and upstream kernel IGMP membership handling are unchanged.
 
 ## Build and direct regression tests
 

@@ -32,8 +32,46 @@ UniFi kernel; its exact scope and evidence files are described in [README.md](RE
 
 ## Fix validation
 
-The [patch](../../patches/improxy/README.md) adds election and recovery with
-associated membership-timer handling. Its before/after matrix uses the same
-baseline, lower, higher and recovery assertions for unmodified and patched builds,
-with IGMPv2 and IGMPv3 separately. CI results must be inspected before concluding
-that the patched executable passes; fixture unit tests alone do not establish that.
+At commit `22adcc0d2f209239f07c17f83c526043ac408997`, the same eight-case ARM64
+matrix ran against original source and the [patch](../../patches/improxy/README.md).
+Each scenario ran for 360 seconds, after its own five-second smoke test. Proxy,
+receiver and second-querier versions were all set to the version in the table.
+
+| Scenario       | Original v2 | Patched v2 | Original v3 | Patched v3 |
+| -------------- | ----------- | ---------- | ----------- | ---------- |
+| Baseline       | Pass        | Pass       | Pass        | Pass       |
+| Lower querier  | Fail        | Pass       | Fail        | Pass       |
+| Higher querier | Pass        | Pass       | Pass        | Pass       |
+| Recovery       | Fail        | Pass       | Fail        | Pass       |
+
+[Red CI](https://github.com/kjanat/udm-iptv/actions/runs/35809809077) retains the
+four actual election failures;
+[green CI](https://github.com/kjanat/udm-iptv/actions/runs/35809811873) passes all
+eight cases. Neither run treats a known defect as an expected-success result.
+[Automatic smoke](https://github.com/kjanat/udm-iptv/actions/runs/35809801397)
+also passes for original source, patched source and both firmware packages.
+
+The artifact audit reparsed every LAN/WAN PCAP and compared it with the recorded
+IGMP events, checked each run's file hashes and namespace cleanup, and verified
+native ARM64 provenance. Both runs used one consistent executable hash across
+their eight cases. The exported patched ELF matches the tested executable:
+`9f37d6bbeac26dbe5cad1461ee92d2e9d0247dac393fa60d756a39fff8304d7f`.
+It is statically linked; the upstream executable retains its original hash
+`06d06def658c06c9f42c55bf4682b1b361111bbbc7374919f372f42062a22d7a`.
+
+With a continuing lower querier, patched IMProxy sends only its initial General
+Query. In recovery, the lower querier sends at approximately 10 and 41.3 seconds,
+then becomes silent. Patched IMProxy resumes **255.098293s (v2)** and
+**255.074034s (v3)** after the last query. Thus the second query refreshes the
+deadline, and the proxy does not remain permanently passive.
+
+All sixteen scenarios pass forwarding/capture checks and report no observed
+sequence gaps between received packets. The largest UDP interpacket gap was
+22.43ms. These facts establish the bounded protocol fix, not the cause of the
+reporter's television failure. No router executable was replaced.
+
+The first patched artifact omitted `patch-sources/.gitignore` and `.dockerignore`
+because GitHub's upload action excludes hidden files by default. Its binary,
+patch, source archive and captures were present and hash-verified; the workflow
+now includes hidden files within the dedicated evidence directory so the exported
+bundle can satisfy its entire checksum manifest.
