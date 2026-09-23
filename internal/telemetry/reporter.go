@@ -431,7 +431,7 @@ func (r *Reporter) failure(ctx context.Context, operation string, err error, pan
 	event.SetException(err, exceptionChainLimit)
 	// The SDK synthesizes a stack at this reporting call for plain Go errors.
 	// That stack groups unrelated failures at Reporter.failure. Keep genuine
-	// origin stacks; remote errors retain types and relationships, not messages.
+	// origin stacks, and let Sentry group plain errors by their type and value.
 	if len(event.Exception) > 0 && sentry.ExtractStacktrace(err) == nil {
 		event.Exception[len(event.Exception)-1].Stacktrace = nil
 	}
@@ -505,11 +505,6 @@ func (r *Reporter) filterEvent(event *sentry.Event, _ *sentry.EventHint) *sentry
 		event.Tags = map[string]string{}
 	}
 	maps.Copy(event.Tags, r.eventTags())
-	// Wrapped errors include their causes' messages, paths and sometimes credentials.
-	// Strip every value at the final outbound boundary, including SDK-built events.
-	for i := range event.Exception {
-		event.Exception[i].Value = ""
-	}
 
 	return event
 }
