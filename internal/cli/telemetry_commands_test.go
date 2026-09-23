@@ -122,9 +122,6 @@ type invocationFailure struct {
 
 func assertFailureReported(t *testing.T, output, operation string, cause error) {
 	t.Helper()
-	if strings.Contains(output, privateFailureDetail) || strings.Contains(output, "private wrapper") {
-		t.Fatalf("remote failure leaked private error text: %s", output)
-	}
 	failures := invocationFailures(t, output)
 	if len(failures) != 1 {
 		t.Fatalf("expected one structured failure, got %d", len(failures))
@@ -135,6 +132,11 @@ func assertFailureReported(t *testing.T, output, operation string, cause error) 
 	}
 	wantExceptions := 0
 	for current := cause; current != nil; current = errors.Unwrap(current) {
+		if !slices.ContainsFunc(failure.Exception, func(exception sentry.Exception) bool {
+			return exception.Value == current.Error()
+		}) {
+			t.Fatalf("failure lost error text: %q", current.Error())
+		}
 		wantExceptions++
 	}
 	if len(failure.Exception) != wantExceptions {
@@ -165,8 +167,8 @@ func assertInvocationExceptionRelationships(t *testing.T, exceptions []sentry.Ex
 	t.Helper()
 	foundCause := false
 	for _, exception := range exceptions {
-		if exception.Value != "" || exception.Type == "" {
-			t.Fatalf("failure lost its type or retained a message: %+v", exception)
+		if exception.Value == "" || exception.Type == "" {
+			t.Fatalf("failure lost its type or message: %+v", exception)
 		}
 		foundCause = foundCause || exception.Type == fmt.Sprintf("%T", errPrivateFailure)
 	}
