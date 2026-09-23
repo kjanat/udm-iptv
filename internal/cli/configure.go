@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -449,18 +451,21 @@ const rejectedSuffix = ".rejected"
 // after a change it would not start with, keeps the rejected one beside it,
 // and restarts the service on the restored one.
 func (application *Application) restoreConfiguration(ctx context.Context, previous []byte) error {
-	rejected, err := rollbackConfiguration(application.ConfigPath, previous)
+	return recoverConfiguration(ctx, application.ConfigPath, previous, application.Out, application.restart)
+}
+
+func recoverConfiguration(ctx context.Context, path string, previous []byte, output io.Writer, restart func(context.Context, bool) error) error {
+	rejected, err := rollbackConfiguration(path, previous)
 	if err != nil {
 		return err
 	}
-	if err := writef(application.Out, "The service did not come up with the new configuration. The previous configuration is back at %s; the rejected one is kept at %s.\n", application.ConfigPath, rejected); err != nil {
-		return err
+	// Restoring the service must survive caller cancellation and a broken output pipe.
+	recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	if err := restart(recovery, true); err != nil {
+		return fmt.Errorf("restart on the previous configuration (rejected copy %s): %w", rejected, err)
 	}
-	if err := application.restart(ctx, true); err != nil {
-		return fmt.Errorf("restart on the previous configuration: %w", err)
-	}
-
-	return nil
+	return writef(output, "The service did not come up with the new configuration. The previous configuration is back at %s; the rejected one is kept at %s.\n", path, rejected)
 }
 
 // rollbackConfiguration moves the saved file to its rejected copy and writes

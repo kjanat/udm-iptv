@@ -2,10 +2,14 @@ package service
 
 import (
 	"errors"
+	"net"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vishvananda/netlink"
 
 	"github.com/kjanat/udm-iptv/internal/network"
 )
@@ -72,5 +76,36 @@ func TestLeaseReadyNeedsThisRunsAppliedLease(t *testing.T) {
 				t.Fatalf("failure text lost: %v", err)
 			}
 		})
+	}
+}
+
+func TestFailedLeaseStateRetainsRouteOwnership(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "lease.json")
+	lease := network.Lease{Action: "renew", Interface: "eth8", ManagedRoutes: []netlink.Route{{LinkIndex: 52, Dst: &net.IPNet{IP: net.ParseIP("198.51.100.0").To4(), Mask: net.CIDRMask(24, 32)}, Gw: net.ParseIP("192.0.2.1").To4(), Protocol: 16, Priority: 252}}}
+	address, err := netlink.ParseAddr("192.0.2.2/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.ManagedAddresses = []netlink.Addr{*address}
+	if err := writeLeaseState(path, lease, errRouteRefused); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readLeaseState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Applied || len(state.Lease.ManagedRoutes) != 1 {
+		t.Fatalf("failed lease ownership lost: %+v", state)
+	}
+	if len(state.Lease.ManagedAddresses) != 1 || state.Lease.ManagedAddresses[0].String() != address.String() {
+		t.Fatalf("recorded address ownership lost: %v", state.Lease.ManagedAddresses)
+	}
+	got, want := state.Lease.ManagedRoutes[0], lease.ManagedRoutes[0]
+	// JSON's net.IP parser returns a 16-byte representation of an IPv4 address.
+	got.Dst.IP = got.Dst.IP.To4()
+	got.Gw = got.Gw.To4()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("recorded route changed: %+v, want %+v", got, want)
 	}
 }

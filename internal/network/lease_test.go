@@ -71,6 +71,7 @@ func (f *leaseFixture) ops() leaseOperations {
 		up:             f.up,
 		routes:         f.listRoutes,
 		replaceRoute:   f.replaceRoute,
+		addRoute:       f.addRoute,
 		deleteRoute:    f.deleteRoute,
 	}
 }
@@ -377,7 +378,7 @@ func TestBorrowedInterfaceKeepsForeignAddresses(t *testing.T) {
 	t.Parallel()
 	fixture, ops := borrowedFixture()
 	lease := testLease()
-	if err := applyLease(lease, ops); err != nil {
+	if err := applyLeaseChange(&lease, Lease{}, config.RoutesAllowDefault, ops); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(fixture.changes, "address") || slices.Contains(fixture.changes, "delete-address") {
@@ -387,7 +388,7 @@ func TestBorrowedInterfaceKeepsForeignAddresses(t *testing.T) {
 		t.Fatalf("uplink address lost: %v", fixture.addresses)
 	}
 	deconfig := Lease{Action: "deconfig", Interface: lease.Interface}
-	if err := applyLeaseChange(deconfig, lease, config.RoutesAllowDefault, ops); err != nil {
+	if err := applyLeaseChange(&deconfig, lease, config.RoutesAllowDefault, ops); err != nil {
 		t.Fatal(err)
 	}
 	if len(fixture.addresses) != 1 || !sameAddress(fixture.addresses[0], uplinkAddress()) {
@@ -408,12 +409,12 @@ func TestBorrowedInterfaceRetiresThePreviousLeaseAddress(t *testing.T) {
 	t.Parallel()
 	fixture, ops := borrowedFixture()
 	lease := testLease()
-	if err := applyLease(lease, ops); err != nil {
+	if err := applyLeaseChange(&lease, Lease{}, config.RoutesAllowDefault, ops); err != nil {
 		t.Fatal(err)
 	}
 	moved := lease
 	moved.Address = "192.0.2.3"
-	if err := applyLeaseChange(moved, lease, config.RoutesAllowDefault, ops); err != nil {
+	if err := applyLeaseChange(&moved, lease, config.RoutesAllowDefault, ops); err != nil {
 		t.Fatal(err)
 	}
 	movedAddress, _, err := leaseAddress(moved)
@@ -424,7 +425,7 @@ func TestBorrowedInterfaceRetiresThePreviousLeaseAddress(t *testing.T) {
 		t.Fatalf("a moved lease on a borrowed interface left %v", fixture.addresses)
 	}
 	fixture.changes = nil
-	if err := applyLeaseChange(moved, moved, config.RoutesAllowDefault, ops); err != nil {
+	if err := applyLeaseChange(&moved, moved, config.RoutesAllowDefault, ops); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(fixture.changes, "delete-address") {
@@ -433,10 +434,10 @@ func TestBorrowedInterfaceRetiresThePreviousLeaseAddress(t *testing.T) {
 }
 
 func applyLease(lease Lease, ops leaseOperations) error {
-	return applyLeaseChange(lease, Lease{}, config.RoutesAllowDefault, ops)
+	return applyLeaseChange(&lease, Lease{}, config.RoutesAllowDefault, ops)
 }
 
-func TestManagedVLANRequiresAliasOrMatchingConfiguration(t *testing.T) {
+func TestManagedVLANRequiresOwnershipAlias(t *testing.T) {
 	t.Parallel()
 	marked := &netlink.Vlan{Alias: linkAlias, ParentIndex: 3, VlanId: 6}
 	same := &netlink.Vlan{ParentIndex: 2, VlanId: 4}
@@ -447,11 +448,11 @@ func TestManagedVLANRequiresAliasOrMatchingConfiguration(t *testing.T) {
 		want bool
 	}{
 		"marked link on another parent": {marked, true},
-		"unmarked configured VLAN":      {same, true},
+		"unmarked configured VLAN":      {same, false},
 		"internet VLAN with our name":   {foreign, false},
 		"configured ID on another port": {otherParent, false},
 	} {
-		if got := managedVLAN(test.vlan, 2, 4); got != test.want {
+		if got := managedVLAN(test.vlan); got != test.want {
 			t.Errorf("%s: managedVLAN = %t, want %t", name, got, test.want)
 		}
 	}
@@ -494,5 +495,198 @@ func TestGatewayChangeReplacesRouteWithoutDeletingReplacement(t *testing.T) {
 	}
 	if len(fixture.routes) != 1 || fixture.routes[0].Gw.String() != "192.0.2.254" {
 		t.Fatalf("replacement missing: %v", fixture.routes)
+	}
+}
+
+func TestBorrowedLeaseKeepsForeignDHCPRoutes(t *testing.T) {
+	fixture, ops := borrowedFixture()
+	foreign, err := dhcpRoute(52, "203.0.113.0/24", "203.0.113.1", 252)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.routes = []netlink.Route{foreign}
+	lease := testLease()
+	if err := applyLeaseChange(&lease, Lease{}, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(fixture.routes, func(route netlink.Route) bool { return leaseRouteIdentity(route) == leaseRouteIdentity(foreign) }) {
+		t.Fatal("foreign DHCP route removed during lease application")
+	}
+	if err := applyLease(Lease{Action: "deconfig", Interface: lease.Interface}, ops); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(fixture.routes, func(route netlink.Route) bool { return leaseRouteIdentity(route) == leaseRouteIdentity(foreign) }) {
+		t.Fatal("foreign DHCP route removed during deconfig")
+	}
+}
+
+func TestBorrowedLeaseRefusesForeignRouteCollision(t *testing.T) {
+	for _, gateway := range []string{"192.0.2.1", "192.0.2.254"} {
+		t.Run(gateway, func(t *testing.T) {
+			fixture, ops := borrowedFixture()
+			foreign, err := dhcpRoute(52, "213.75.112.0/21", gateway, 252)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.routes = []netlink.Route{foreign}
+			if err := applyLease(testLease(), ops); err == nil {
+				t.Fatal("foreign route collision accepted")
+			}
+			if len(fixture.changes) != 0 {
+				t.Fatalf("collision mutated network: %v", fixture.changes)
+			}
+		})
+	}
+}
+
+func TestResetBorrowedLeaseDoesNotAccessNetwork(t *testing.T) {
+	if err := ResetLease(borrowedLink()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *leaseFixture) addRoute(r *netlink.Route) error {
+	for _, old := range f.routes {
+		if leaseRouteKey(old) == leaseRouteKey(*r) {
+			return unix.EEXIST
+		}
+	}
+	return f.replaceRoute(r)
+}
+
+func TestBorrowedLeaseRetiresOnlyRecordedRoutes(t *testing.T) {
+	fixture, ops := borrowedFixture()
+	lease := testLease()
+	// The default was advertised but policy refused it. A firmware route with
+	// exactly those advertised attributes must not be treated as ours later.
+	lease.StaticRoutes = []string{"213.75.112.0/21", "192.0.2.1", "0.0.0.0/0", "192.0.2.1"}
+	foreign, err := dhcpRoute(52, "0.0.0.0/0", "192.0.2.1", 253)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.routes = []netlink.Route{foreign}
+	if err := applyLeaseChange(&lease, Lease{}, config.RoutesNoDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(lease.ManagedRoutes) != 1 {
+		t.Fatalf("uninstalled routes claimed: %v", lease.ManagedRoutes)
+	}
+	deconfig := Lease{Action: "deconfig", Interface: lease.Interface}
+	if err := applyLeaseChange(&deconfig, lease, config.RoutesNone, ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.routes) != 1 || !reflect.DeepEqual(fixture.routes[0], foreign) {
+		t.Fatalf("foreign route changed: %v", fixture.routes)
+	}
+}
+
+func TestBorrowedLeasePreservesForeignReplacement(t *testing.T) {
+	for _, field := range []string{"gateway", "source", "mtu"} {
+		t.Run(field, func(t *testing.T) {
+			checkForeignReplacement(t, field)
+		})
+	}
+}
+
+func checkForeignReplacement(t *testing.T, field string) {
+	t.Helper()
+	fixture, ops := borrowedFixture()
+	lease := testLease()
+	if err := applyLeaseChange(&lease, Lease{}, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	switch field {
+	case "gateway":
+		fixture.routes[0].Gw = net.ParseIP("192.0.2.254").To4()
+	case "source":
+		fixture.routes[0].Src = net.ParseIP("192.0.2.99").To4()
+	case "mtu":
+		fixture.routes[0].MTU = 1400
+	}
+	replaced := fixture.routes[0]
+	fixture.changes = nil
+	renewed := testLease()
+	if err := applyLeaseChange(&renewed, lease, config.RoutesAllowDefault, ops); !errors.Is(err, errForeignRoute) {
+		t.Fatalf("foreign replacement accepted: %v", err)
+	}
+	if len(fixture.changes) != 0 {
+		t.Fatalf("foreign replacement mutated: %v", fixture.changes)
+	}
+	deconfig := Lease{Action: "deconfig", Interface: lease.Interface}
+	if err := applyLeaseChange(&deconfig, lease, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.routes) != 1 || !reflect.DeepEqual(fixture.routes[0], replaced) {
+		t.Fatalf("foreign replacement deleted: %v", fixture.routes)
+	}
+}
+
+func TestBorrowedLeaseRetainsOwnershipAfterPartialFailure(t *testing.T) {
+	fixture, ops := borrowedFixture()
+	lease := testLease()
+	if err := applyLeaseChange(&lease, Lease{}, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	changed := testLease()
+	changed.StaticRoutes = []string{"198.51.100.0/24", "192.0.2.1", "203.0.113.0/24", "192.0.2.1"}
+	calls := 0
+	ops.addRoute = func(route *netlink.Route) error {
+		calls++
+		if calls == 2 {
+			return errInjectedFailure
+		}
+		return fixture.addRoute(route)
+	}
+	if err := applyLeaseChange(&changed, lease, config.RoutesAllowDefault, ops); !errors.Is(err, errInjectedFailure) {
+		t.Fatalf("missing failure: %v", err)
+	}
+	if len(changed.ManagedRoutes) != 2 {
+		t.Fatalf("partial ownership lost: %v", changed.ManagedRoutes)
+	}
+	deconfig := Lease{Action: "deconfig", Interface: changed.Interface}
+	if err := applyLeaseChange(&deconfig, changed, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.routes) != 0 {
+		t.Fatalf("partial routes leaked: %v", fixture.routes)
+	}
+}
+
+func TestBorrowedFailedLeaseCannotClaimForeignAddress(t *testing.T) {
+	fixture, ops := borrowedFixture()
+	previous := testLease()
+	if err := applyLeaseChange(&previous, Lease{}, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	proposal := testLease()
+	proposal.Address = uplinkAddress().IP.String()
+	if err := applyLeaseChange(&proposal, previous, config.RoutesAllowDefault, ops); !errors.Is(err, errForeignAddress) {
+		t.Fatalf("foreign address accepted: %v", err)
+	}
+	// The failed proposal is the hook's next persisted record. Deconfig may
+	// retire the old applied address, never the address merely proposed.
+	deconfig := Lease{Action: "deconfig", Interface: proposal.Interface}
+	if err := applyLeaseChange(&deconfig, proposal, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.addresses) != 1 || !sameAddress(fixture.addresses[0], uplinkAddress()) {
+		t.Fatalf("failed lease deleted foreign address: %v", fixture.addresses)
+	}
+}
+
+func TestBorrowedLeaseExclusiveAddRejectsConcurrentForeignRoute(t *testing.T) {
+	fixture, ops := borrowedFixture()
+	lease := testLease()
+	ops.addRoute = func(route *netlink.Route) error {
+		foreign := *route
+		foreign.Gw = net.ParseIP("192.0.2.254").To4()
+		fixture.routes = append(fixture.routes, foreign)
+		return fixture.addRoute(route)
+	}
+	if err := applyLeaseChange(&lease, Lease{}, config.RoutesAllowDefault, ops); !errors.Is(err, unix.EEXIST) {
+		t.Fatalf("concurrent collision accepted: %v", err)
+	}
+	if len(lease.ManagedRoutes) != 0 || len(fixture.routes) != 1 || fixture.routes[0].Gw.String() != "192.0.2.254" {
+		t.Fatalf("concurrent foreign route claimed/replaced: %v / %v", lease.ManagedRoutes, fixture.routes)
 	}
 }

@@ -12,7 +12,10 @@ type syncingWriter interface {
 	Sync() error
 }
 
-type diagnosticWriter struct{ json, text syncingWriter }
+type diagnosticWriter struct {
+	json, text syncingWriter
+	statusPath string
+}
 
 func (writer diagnosticWriter) write(event Event) error {
 	if writer.json != nil {
@@ -32,7 +35,10 @@ func (writer diagnosticWriter) write(event Event) error {
 		return nil
 	}
 
-	return writer.flush()
+	if err := writer.flush(); err != nil {
+		return err
+	}
+	return writeCaptureStatus(writer.statusPath, event)
 }
 
 func (writer diagnosticWriter) flush() error {

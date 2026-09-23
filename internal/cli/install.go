@@ -224,7 +224,7 @@ func (application *Application) uninstallCommand() *cobra.Command {
 				}
 			}
 
-			return application.removeInstallation(command, keepConfig)
+			return application.removeInstallation(command, installer.UninstallOptions{KeepConfig: keepConfig, FromPackage: fromPackage})
 		}),
 	}
 	command.Flags().BoolVar(&keepConfig, "keep-config", false, "retain the configuration in /data")
@@ -237,9 +237,9 @@ func (application *Application) uninstallCommand() *cobra.Command {
 // removeInstallation is the cleanup a package maintainer script reaches
 // through --from-package. It touches only what install created and never calls
 // the package manager, so dpkg stays in charge of the files it shipped.
-func (application *Application) removeInstallation(command *cobra.Command, keepConfig bool) error {
+func (application *Application) removeInstallation(command *cobra.Command, options installer.UninstallOptions) error {
 	var cleanup installer.CleanupError
-	err := installer.Uninstall(command.Context(), application.ConfigPath, application.StateDir, keepConfig)
+	err := installer.Uninstall(command.Context(), application.ConfigPath, application.StateDir, options)
 	switch {
 	case errors.As(err, &cleanup):
 		if err := writef(application.Err, "Warning: %s\n", cleanup.Err); err != nil {

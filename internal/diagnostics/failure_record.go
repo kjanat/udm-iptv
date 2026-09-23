@@ -19,7 +19,7 @@ func RecordFailure(options Options, cause error) error {
 		return nil
 	}
 	message := cause.Error()
-	var result error
+	result := writeCaptureStatus(StatusPath(options), Event{Time: time.Now().UTC(), Type: EventFailed, Message: message})
 	for _, output := range []struct {
 		path string
 		json bool

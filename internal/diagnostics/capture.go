@@ -59,6 +59,7 @@ type Options struct {
 // logged, and Source names the process that logged it.
 type Event struct {
 	Time     time.Time `json:"time"`
+	Deadline time.Time `json:"deadline,omitzero"`
 	Type     string    `json:"type"`
 	Message  string    `json:"message,omitempty"`
 	Snapshot *Snapshot `json:"snapshot,omitempty"`
@@ -83,7 +84,7 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	write := output.writer.write
 	started := startedAt.UTC()
 	ends := endsAt.UTC()
-	if err := write(Event{Time: started, Type: EventStarted, Message: "Capture started; expected completion " + ends.Format(time.RFC3339)}); err != nil {
+	if err := write(Event{Time: started, Deadline: ends, Type: EventStarted, Message: "Capture started; expected completion " + ends.Format(time.RFC3339)}); err != nil {
 		return err
 	}
 	markers := &markerReader{path: MarkerPath(options)}
@@ -216,7 +217,7 @@ type captureOutput struct {
 }
 
 func openCaptureOutput(options Options) (*captureOutput, error) {
-	output := &captureOutput{}
+	output := &captureOutput{writer: diagnosticWriter{statusPath: StatusPath(options)}}
 	for _, target := range []struct {
 		path string
 		kind string

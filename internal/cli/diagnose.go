@@ -51,6 +51,8 @@ var (
 	errCapturePathNotRegular  = errors.New("capture path must be a regular file")
 	errCaptureWorkerExited    = errors.New("the capture worker exited during initialisation")
 	errCaptureNotConfirmed    = errors.New("the capture worker has not written its first record")
+	errCaptureNotCompleted    = errors.New("the capture worker exited without completing its capture")
+	errCaptureTerminal        = errors.New("the capture ended unsuccessfully")
 )
 
 // diagnoseRule reports why an invocation of diagnose is not runnable.
@@ -232,16 +234,16 @@ func (application *Application) startCapture(ctx context.Context, options diagno
 	if err != nil {
 		return err
 	}
-	if err := confirmCaptureStarted(worker, captureFollowPath(options), errorLog.Name(), captureStartGrace); err != nil {
+	status, err := confirmCaptureStarted(worker, diagnostics.StatusPath(options), errorLog.Name(), captureStartGrace)
+	if err != nil {
 		return err
 	}
 	pid := worker.Process.Pid
-	completion := time.Now().Add(options.Capture).UTC()
-	if err := application.reportCaptureStarted(options, pid, errorLog.Name(), completion); err != nil {
+	if err := application.reportCaptureStarted(options, pid, errorLog.Name(), status); err != nil {
 		return err
 	}
 	if options.Follow {
-		return followCapture(captureFollowPath(options), completion, pid)
+		return followCapture(captureFollowPath(options), status.Deadline, pid)
 	}
 
 	return writef(application.Out, "Follow it with: udm-iptv diagnose --follow-file %s\n", captureFollowPath(options))
@@ -260,7 +262,7 @@ func (application *Application) prepareCaptureFiles(options diagnostics.Options)
 	if wantsJSON(options.Format) {
 		options.JSONPath = base + ".jsonl"
 	}
-	for _, path := range []string{options.TextPath, options.JSONPath} {
+	for _, path := range []string{options.TextPath, options.JSONPath, diagnostics.StatusPath(options)} {
 		if path == "" {
 			continue
 		}
@@ -303,11 +305,9 @@ const (
 	captureStartPoll  = 50 * time.Millisecond
 )
 
-// confirmCaptureStarted waits for the worker's first record in the capture
-// file. A worker that exits before writing one failed during initialisation;
-// a worker that exits successfully finished a short capture. Setsid keeps the
-// worker alive past this process, so the wait only ever observes an early exit.
-func confirmCaptureStarted(worker *exec.Cmd, capturePath, errorLogPath string, grace time.Duration) error {
+// confirmCaptureStarted reads the worker's atomic lifecycle acknowledgement.
+// Process liveness and exit status alone cannot establish capture success.
+func confirmCaptureStarted(worker *exec.Cmd, statusPath, errorLogPath string, grace time.Duration) (diagnostics.Event, error) {
 	exited := make(chan error, 1)
 	go func() { exited <- worker.Wait() }()
 	deadline := time.After(grace)
@@ -316,19 +316,48 @@ func confirmCaptureStarted(worker *exec.Cmd, capturePath, errorLogPath string, g
 	for {
 		select {
 		case cause := <-exited:
-			if cause == nil {
-				return nil
+			if cause != nil {
+				return diagnostics.Event{}, errors.Join(captureWorkerFailure(cause, errorLogPath), os.Remove(errorLogPath))
 			}
-
-			return errors.Join(captureWorkerFailure(cause, errorLogPath), os.Remove(errorLogPath))
+			status, err := captureAcknowledgement(statusPath)
+			if err != nil {
+				return status, err
+			}
+			if status.Type != diagnostics.EventCompleted {
+				return status, errCaptureNotCompleted
+			}
+			return status, nil
 		case <-deadline:
-			return fmt.Errorf("%w within %s: PID %d, capture %s, errors %s", errCaptureNotConfirmed, grace, worker.Process.Pid, capturePath, errorLogPath)
+			return diagnostics.Event{}, fmt.Errorf("%w within %s: PID %d, status %s, errors %s", errCaptureNotConfirmed, grace, worker.Process.Pid, statusPath, errorLogPath)
 		case <-poll.C:
-			if info, err := os.Stat(capturePath); err == nil && info.Size() > 0 {
-				return nil
+			status, err := captureAcknowledgement(statusPath)
+			if err != nil {
+				return status, err
 			}
+			if status.Type == diagnostics.EventStarted {
+				return status, nil
+			}
+			// A terminal success waits for process exit, including output-close errors.
 		}
 	}
+}
+
+func captureAcknowledgement(path string) (diagnostics.Event, error) {
+	var status diagnostics.Event
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && len(data) == 0) {
+		return status, nil
+	}
+	if err != nil {
+		return status, fmt.Errorf("read capture acknowledgement: %w", err)
+	}
+	if err := json.Unmarshal(data, &status); err != nil {
+		return status, fmt.Errorf("decode capture acknowledgement: %w", err)
+	}
+	if status.Type == diagnostics.EventTimeout || status.Type == diagnostics.EventFailed {
+		return status, fmt.Errorf("%w (%s): %s", errCaptureTerminal, status.Type, status.Message)
+	}
+	return status, nil
 }
 
 func captureWorkerFailure(cause error, errorLogPath string) error {
@@ -340,11 +369,13 @@ func captureWorkerFailure(cause error, errorLogPath string) error {
 	return fmt.Errorf("%w: %w: %s", errCaptureWorkerExited, cause, bytes.TrimSpace(log))
 }
 
-func (application *Application) reportCaptureStarted(options diagnostics.Options, pid int, logPath string, completion time.Time) error {
+func (application *Application) reportCaptureStarted(options diagnostics.Options, pid int, logPath string, status diagnostics.Event) error {
 	lines := []string{
-		fmt.Sprintf("Diagnostics capture started (PID %d).\n", pid),
+		fmt.Sprintf("Diagnostics capture %s (PID %d).\n", status.Type, pid),
 		fmt.Sprintf("Local worker errors: %s\n", logPath),
-		fmt.Sprintf("Expected completion: %s (%s from now).\n", completion.Format(time.RFC3339), options.Capture.Round(time.Second)),
+	}
+	if status.Type == diagnostics.EventStarted {
+		lines = append(lines, fmt.Sprintf("Expected completion: %s.\n", status.Deadline.Format(time.RFC3339)))
 	}
 	if options.TextPath != "" {
 		lines = append(lines, fmt.Sprintf("Text: %s\n", options.TextPath))
