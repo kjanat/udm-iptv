@@ -200,7 +200,7 @@ func (application *Application) reportSnapshot(ctx context.Context, options diag
 		return nil
 	}
 
-	return writeString(application.Out, ui.StatusText(diagnostics.RenderSnapshot(value)))
+	return writeString(application.Out, ui.Status(value))
 }
 
 func followCapture(path string, completion time.Time, pid int) error {

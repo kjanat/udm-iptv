@@ -4,41 +4,30 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/kjanat/udm-iptv/internal/diagnostics"
+	"github.com/kjanat/udm-iptv/internal/service"
 )
 
 const escape = "\x1b["
 
-func TestStatusTextColoursVerdictsAndLabels(t *testing.T) {
+func TestStatusColorsStructuredOutcomeWithoutRecoloringEvidence(t *testing.T) {
 	t.Parallel()
-	text := strings.Join([]string{
-		"udm-iptv 5.0.0-preview.3",
-		"Installation: package 5.0.0-preview.1 recorded by dpkg while 5.0.0-preview.3 runs; udm-iptv upgrade reinstalls the package",
-		"Service: active/running (enabled, restarts: 0)",
-		"NAT evidence per destination:",
-		"  213.75.0.0/16: routed (213.75.112.0/21 via 10.207.64.1), 5 packets, 560 B",
-		"  217.166.0.0/16: no route via iptv, 0 packets, 0 B",
-		"",
-		"Downstream checks",
-		"br0: link=up, snooping=enabled, querier=disabled",
-	}, "\n")
-	styled := StatusText(text)
-	for _, want := range []string{
-		headingStyle.Render("udm-iptv 5.0.0-preview.3"),
-		labelStyle.Render("Installation") + ": ",
-		badStyle.Render("recorded by dpkg while"),
-		goodStyle.Render("active/running"),
-		headingStyle.Render("NAT evidence per destination:"),
-		goodStyle.Render("routed"),
-		warnStyle.Render("no route via iptv"),
-		headingStyle.Render("Downstream checks"),
-		warnStyle.Render("disabled"),
-	} {
+	const evidence = "failed enabled not applied active/running"
+	value := diagnostics.Snapshot{Version: "test", ProxyConfig: new(evidence), Lease: &service.LeaseState{Applied: false, Failure: evidence}}
+	styled := Status(value)
+	for _, want := range []string{headingStyle.Render("udm-iptv test"), labelStyle.Render("Profile"), badStyle.Render("not applied") + ": " + evidence, "Generated proxy configuration:\n" + evidence} {
 		if !strings.Contains(styled, want) {
 			t.Errorf("missing %q in:\n%s", want, styled)
 		}
 	}
-	if strings.Count(styled, "\n") != strings.Count(text, "\n") {
-		t.Fatal("styling changed the line count")
+	if strings.Contains(styled, goodStyle.Render("applied")) {
+		t.Fatal("failed lease recolored as success")
+	}
+	if ansi.Strip(styled) != diagnostics.RenderSnapshot(value) {
+		t.Fatal("terminal styling changed diagnostic evidence")
 	}
 }
 
@@ -77,10 +66,10 @@ func TestStyledWriterStripsColourWithoutATerminal(t *testing.T) {
 	t.Parallel()
 	var buffer bytes.Buffer
 	writer := Styled(&buffer)
-	if _, err := writer.Write([]byte(StatusText("Service: active/running\n"))); err != nil {
+	if _, err := writer.Write([]byte(Status(diagnostics.Snapshot{Version: "test"}))); err != nil {
 		t.Fatal(err)
 	}
-	if got := buffer.String(); got != "Service: active/running\n" || strings.Contains(got, escape) {
+	if got := buffer.String(); got != diagnostics.RenderSnapshot(diagnostics.Snapshot{Version: "test"}) || strings.Contains(got, escape) {
 		t.Fatalf("piped output = %q", got)
 	}
 }
