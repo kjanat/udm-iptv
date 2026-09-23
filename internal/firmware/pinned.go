@@ -23,11 +23,16 @@ type pinnedBuild struct {
 }
 
 func selectPinnedCatalog(entries []catalogRelease, image, model string, cutoff time.Time) (Matrix, error) {
+	if model != modelAll {
+		if _, err := catalogModels(entries, model, cutoff, ReleaseTrack()); err != nil {
+			return Matrix{}, err
+		}
+	}
 	pins, err := pinnedBuilds()
 	if err != nil {
 		return Matrix{}, err
 	}
-	matrix := Matrix{}
+	matrix := Matrix{Include: []Pair{}}
 	for _, pin := range pins {
 		name := modelForBoard(pin.Platform)
 		if model != modelAll {
@@ -41,6 +46,10 @@ func selectPinnedCatalog(entries []catalogRelease, image, model string, cutoff t
 		if !found {
 			return Matrix{}, fmt.Errorf("%w for pinned %s", errCatalogPairRequired, name)
 		}
+		// An archived pin stops being an upgrade once releases catch up.
+		if compare(from.Version, pin.Version) >= 0 {
+			continue
+		}
 		pair := Pair{Model: name, Firmwares: []Release{
 			from,
 			{Board: pin.Platform, Version: pin.Version, URL: pin.URL, SHA256: pin.SHA256},
@@ -53,10 +62,6 @@ func selectPinnedCatalog(entries []catalogRelease, image, model string, cutoff t
 		pair.To = image + ":" + track.versionTag(name, pin.Version)
 		matrix.Include = append(matrix.Include, pair)
 	}
-	if len(matrix.Include) == 0 {
-		return Matrix{}, fmt.Errorf("%w: no pinned build for %s", errUnknownModel, model)
-	}
-
 	return matrix, nil
 }
 

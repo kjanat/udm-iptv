@@ -158,11 +158,14 @@ jobs:
             matrix=$(jq -c --argjson next "${next}" --arg track "${track}" \
               '.include += ($next.include | map(. + {track: $track}))' <<< "${matrix}")
           done
+          # Identical published image pairs share one test; retain every track label.
+          matrix=$(jq -c '.include |= (group_by([.model, .from, .to]) |
+            map(.[0] + {tracks: (map(.track) | unique)} | del(.track)))' <<< "${matrix}")
           jq -e '.include | length > 0' <<< "${matrix}" >/dev/null
           printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
 
   firmware:
-    name: fw cycle (${{ matrix.model }}, ${{ matrix.track }})
+    name: fw cycle (${{ matrix.model }}, ${{ join(matrix.tracks, '+') }})
     needs: [build, catalog]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25

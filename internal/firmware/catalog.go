@@ -389,7 +389,9 @@ func (track Track) Published(tags, image string) (Matrix, error) {
 		}
 		slices.SortFunc(versions, compare)
 		if len(versions) < releasesInPair {
-			return Matrix{}, fmt.Errorf("%w for %s", errPublishedPairRequired, device.Name)
+			// Newly published models may have only one image so far; they must
+			// not prevent testing complete upgrade pairs on other models.
+			continue
 		}
 		matrix.Include = append(matrix.Include, Pair{Model: device.Name, From: image + ":" + selected[versions[len(versions)-2]], To: image + ":" + selected[versions[len(versions)-1]]})
 	}

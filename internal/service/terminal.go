@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -16,6 +17,8 @@ type terminal struct {
 	master *os.File
 	slave  *os.File
 }
+
+var errTerminalDrainDeadline = errors.New("terminal output did not drain before the shutdown deadline")
 
 func openTerminal() (*terminal, error) {
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
@@ -89,8 +92,9 @@ func control(file *os.File, op func(fd int) error) error {
 
 // processOutput carries a child's stdout through a terminal to out.
 type processOutput struct {
-	term *terminal
-	done chan struct{}
+	term  *terminal
+	done  chan struct{}
+	flush func()
 }
 
 func attachTerminal(command *exec.Cmd, out io.Writer) (*processOutput, error) {
@@ -111,7 +115,7 @@ func attachTerminal(command *exec.Cmd, out io.Writer) (*processOutput, error) {
 // started closes the parent's copy of the child's end, so the copy ends
 // when the child exits.
 func (output *processOutput) started() error {
-	if output == nil || output.term.slave == nil {
+	if output == nil || output.term == nil || output.term.slave == nil {
 		return nil
 	}
 	err := output.term.slave.Close()
@@ -127,7 +131,21 @@ func (output *processOutput) finish() error {
 	if output == nil {
 		return nil
 	}
-	err := errors.Join(output.started(), output.term.master.Close())
+	if output.flush != nil {
+		defer output.flush()
+	}
+	if output.term == nil {
+		return nil
+	}
+	err := output.started()
+	timer := time.NewTimer(sigtermGrace)
+	defer timer.Stop()
+	select {
+	case <-output.done:
+	case <-timer.C:
+		err = errors.Join(err, errTerminalDrainDeadline)
+	}
+	err = errors.Join(err, output.term.master.Close())
 	<-output.done
 	if err != nil {
 		return fmt.Errorf("close the terminal: %w", err)

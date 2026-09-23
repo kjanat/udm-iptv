@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/netip"
 	"strings"
 	"testing"
@@ -28,73 +29,92 @@ func privateExportEvent() Event {
 	}
 }
 
-func TestSanitizedExportCoversManagedAddressMasksAndSysctlKeys(t *testing.T) {
+func TestExportPreservesFullEvidence(t *testing.T) {
 	t.Parallel()
-	private := privateExportEvent()
+	event := privateExportEvent()
 	address, err := netlink.ParseAddr("192.168.1.1/24")
 	if err != nil {
 		t.Fatal(err)
 	}
-	private.Snapshot.Lease.Lease.ManagedAddresses = []netlink.Addr{*address}
-	private.Snapshot.Network.IPv6Knobs = map[string]string{"customer-lan/accept_ra": "1"}
-	clean := sanitizeExportEvent(t, newTestExporter(t), private)
-	encoded := marshalExportEvent(t, clean)
-	if bytes.Contains(encoded, []byte("customer-lan")) {
-		t.Fatal("sysctl key leaked interface identity")
+	event.Snapshot.Lease.Lease.ManagedAddresses = []netlink.Addr{*address}
+	event.Snapshot.Network.IPv6Knobs = map[string]string{"customer-lan/accept_ra": "1"}
+	original := marshalExportEvent(t, event)
+	for _, format := range []string{"text", "jsonl"} {
+		var output bytes.Buffer
+		if err := ExportCapture(bytes.NewReader(original), &output, format); err != nil {
+			t.Fatal(err)
+		}
+		if format == "jsonl" && !bytes.Equal(bytes.TrimSpace(output.Bytes()), original) {
+			t.Fatalf("JSON export changed the event:\n%s", output.Bytes())
+		}
+		if format == "text" && !bytes.Contains(output.Bytes(), original) {
+			t.Fatalf("text export omitted the complete event:\n%s", output.Bytes())
+		}
 	}
-	if !strings.Contains(RenderEvent(clean), strings.Join(clean.AddressOrder, " < ")) {
-		t.Fatal("text lost election order")
-	}
-	if !bytes.Equal(clean.Snapshot.Lease.Lease.ManagedAddresses[0].Mask, address.Mask) {
-		t.Fatal("prefix mask changed")
-	}
-	if clean.Snapshot.Lease.Lease.ManagedAddresses[0].IP.String() != clean.Snapshot.Lease.Lease.Address {
-		t.Fatal("managed address lost its identity across lease fields")
+	if !bytes.Equal(original, marshalExportEvent(t, event)) {
+		t.Fatal("export modified its source event")
 	}
 }
 
-func TestSanitizedExportRejectsMissingSnapshots(t *testing.T) {
+func TestExportPreservesUnknownFieldsAndLargeCounters(t *testing.T) {
 	t.Parallel()
+	const raw = `{"type":"future-event","source":"gateway","log":"gateway gateway ::ffff:10.0.0.25","extra":{"counter":18446744073709551615,"parameters":"keep <this> & that","options":{"vendorclass":"IPTV_RG"}}}`
+	for _, format := range []string{"jsonl", "text"} {
+		var output bytes.Buffer
+		if err := ExportCapture(strings.NewReader(raw), &output, format); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output.String(), raw) {
+			t.Fatalf("%s lost unknown fields, address relationships or counter precision: %s", format, output.String())
+		}
+	}
+}
+
+func TestExportPreservesMarkersAndLegacyLabels(t *testing.T) {
+	t.Parallel()
+	const input = `{"type":"marker","privacy":"sanitized","time":"2026-09-23T00:00:00Z","message":"channel changed; picture frozen","ipv4Order":["10.0.0.2","10.0.0.1"]}`
 	var output bytes.Buffer
-	err := ExportCapture(strings.NewReader(`{"type":"initial"}`), &output, "text")
-	if !errors.Is(err, errExportSnapshotMissing) {
+	if err := ExportCapture(strings.NewReader(input), &output, "jsonl"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(output.String()) != input {
+		t.Fatal("export changed existing evidence or falsely relabelled old sanitized data")
+	}
+}
+
+func TestExportRejectsInvalidRecordsWithoutDroppingEarlierEvidence(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{`{"type":"initial"}`, "null", "[]", `{"type":`} {
+		t.Run(input, func(t *testing.T) {
+			const first = `{"type":"log","log":"keep this record"}`
+			var output bytes.Buffer
+			err := ExportCapture(strings.NewReader(first+"\n"+input), &output, "jsonl")
+			if err == nil || strings.TrimSpace(output.String()) != first {
+				t.Fatalf("partial capture = %q, error = %v", output.String(), err)
+			}
+		})
+	}
+	var output bytes.Buffer
+	if err := ExportCapture(strings.NewReader(`{"type":"initial"}`), &output, "text"); !errors.Is(err, errExportSnapshotMissing) {
 		t.Fatalf("missing snapshot: %v", err)
 	}
+	if err := ExportCapture(strings.NewReader("{}"), &output, "invalid"); !errors.Is(err, errExportFormat) {
+		t.Fatalf("invalid format: %v", err)
+	}
 }
 
-func TestSanitizedExportPreservesRelationshipsWithoutMutatingPrivateData(t *testing.T) {
+type failedExportWriter struct{}
+
+func (failedExportWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestExportPropagatesOutputFailure(t *testing.T) {
 	t.Parallel()
-	exporter := newTestExporter(t)
-	private := privateExportEvent()
-	before := marshalExportEvent(t, private)
-	clean := sanitizeExportEvent(t, exporter, private)
-	assertExportOmitsPrivateValues(t, clean)
-	assertExportAddressRelationships(t, clean)
-	assertExportAliasScope(t, exporter, private, clean)
-	if clean.Privacy != PrivacySanitized || clean.Time != private.Time {
-		t.Fatal("export lost mode or timestamp")
+	for _, format := range []string{"jsonl", "text"} {
+		err := ExportCapture(strings.NewReader(`{"type":"log","log":"evidence"}`), failedExportWriter{}, format)
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("%s: %v", format, err)
+		}
 	}
-	if !bytes.Equal(before, marshalExportEvent(t, private)) {
-		t.Fatal("sanitizing mutated private capture")
-	}
-}
-
-func newTestExporter(t *testing.T) *Exporter {
-	t.Helper()
-	exporter, err := NewExporter()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return exporter
-}
-
-func sanitizeExportEvent(t *testing.T, exporter *Exporter, private Event) Event {
-	t.Helper()
-	clean, err := exporter.Event(private)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return clean
 }
 
 func marshalExportEvent(t *testing.T, event Event) []byte {
@@ -104,63 +124,4 @@ func marshalExportEvent(t *testing.T, event Event) []byte {
 		t.Fatal(err)
 	}
 	return data
-}
-
-func assertExportOmitsPrivateValues(t *testing.T, clean Event) {
-	t.Helper()
-	encoded := marshalExportEvent(t, clean)
-	for _, secret := range []string{"192.168.1.1", "192.168.1.2", "239.2.3.4", "10.0.0.25", "gateway", "secret", "eth8"} {
-		if bytes.Contains(encoded, []byte(secret)) || strings.Contains(RenderEvent(clean), secret) {
-			t.Fatalf("export contains private value %q", secret)
-		}
-	}
-}
-
-func assertExportAddressRelationships(t *testing.T, clean Event) {
-	t.Helper()
-	prefix := netip.MustParsePrefix(clean.Snapshot.Network.Addresses[0])
-	if prefix.Bits() != 24 || prefix.Addr().String() != clean.Snapshot.Lease.Lease.Address || prefix.Addr() != clean.Snapshot.Multicast.Entries[0].Source {
-		t.Fatal("one address lost its cross-field identity or prefix length")
-	}
-	if !clean.Snapshot.Multicast.Entries[0].Group.IsMulticast() || clean.Snapshot.Multicast.Entries[0].Packets != 42 {
-		t.Fatal("multicast role or counter changed")
-	}
-	if len(clean.AddressOrder) != 2 || clean.AddressOrder[0] != prefix.Addr().String() {
-		t.Fatal("querier election ordering lost")
-	}
-	if !strings.Contains(RenderEvent(clean), "IPv4 aliases in original numerical order: "+strings.Join(clean.AddressOrder, " < ")) {
-		t.Fatal("text export lost original numerical ordering")
-	}
-}
-
-func assertExportAliasScope(t *testing.T, exporter *Exporter, private, clean Event) {
-	t.Helper()
-	second := sanitizeExportEvent(t, exporter, private)
-	if second.Snapshot.Lease.Lease.Address != clean.Snapshot.Lease.Lease.Address {
-		t.Fatal("alias changed within capture")
-	}
-	separate := sanitizeExportEvent(t, newTestExporter(t), private)
-	if separate.Snapshot.Lease.Lease.Address == clean.Snapshot.Lease.Lease.Address {
-		t.Fatal("exports share aliases")
-	}
-}
-
-func TestSanitizedExportRemovesRepeatedHostnamesAndMappedAddresses(t *testing.T) {
-	t.Parallel()
-	for _, format := range []string{"text", "jsonl"} {
-		input := Event{Type: EventLog, Log: strings.Join([]string{"gateway", "gateway", "::ffff:10.0.0.25", "password=swordfish"}, " ")}
-		encoded, err := json.Marshal(input)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var output bytes.Buffer
-		if err := ExportCapture(bytes.NewReader(encoded), &output, format); err != nil {
-			t.Fatal(err)
-		}
-		for _, secret := range []string{"gateway", "10.0.0.25", "swordfish"} {
-			if strings.Contains(output.String(), secret) {
-				t.Fatalf("%s leaked %s", format, secret)
-			}
-		}
-	}
 }

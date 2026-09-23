@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -65,7 +66,7 @@ func inspectSwitch(system fs.FS, firmware string) string {
 	state := "no local switch interfaces"
 	switch {
 	case err != nil:
-		state = "local switch interfaces unavailable"
+		state = "local switch interfaces unavailable: " + err.Error()
 	case len(ports) > 0:
 		state = strings.Join(ports, ", ")
 	}
@@ -119,18 +120,25 @@ func formatNativeProxy(unitLoaded bool, activeState string, extra []int, scanned
 		}
 		unit = "igmpproxy.service " + activeState
 	}
-	if scanned != nil {
-		return unit + ", extra proxy processes unavailable"
-	}
-	if len(extra) == 0 {
-		return unit + ", no extra proxy processes"
-	}
+	return unit + ", " + formatProxyScan(extra, scanned)
+}
+
+func formatProxyScan(extra []int, scanned error) string {
 	parts := make([]string, 0, len(extra))
 	for _, pid := range extra {
 		parts = append(parts, strconv.Itoa(pid))
 	}
-
-	return unit + ", extra proxy pids " + strings.Join(parts, " ")
+	result := "no extra proxy processes"
+	if len(extra) > 0 {
+		result = "extra proxy pids " + strings.Join(parts, " ")
+	}
+	if scanned != nil {
+		if len(extra) == 0 {
+			return "extra proxy processes unavailable: " + scanned.Error()
+		}
+		result += "; incomplete process scan: " + scanned.Error()
+	}
+	return result
 }
 
 func extraProxyPIDs(ours int) ([]int, error) {
@@ -139,6 +147,7 @@ func extraProxyPIDs(ours int) ([]int, error) {
 		return nil, fmt.Errorf("read /proc: %w", err)
 	}
 	var extra []int
+	var readErrors error
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 || pid == ours {
@@ -146,6 +155,9 @@ func extraProxyPIDs(ours int) ([]int, error) {
 		}
 		comm, err := os.ReadFile("/proc/" + entry.Name() + "/comm")
 		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				readErrors = errors.Join(readErrors, err)
+			}
 			continue
 		}
 		switch strings.TrimSpace(string(comm)) {
@@ -154,7 +166,7 @@ func extraProxyPIDs(ours int) ([]int, error) {
 		}
 	}
 
-	return extra, nil
+	return extra, readErrors
 }
 
 func formatReceivers(usage *MulticastInfo, groups *int) string {
@@ -242,20 +254,26 @@ func formatDownstream(link downstreamStatus) string {
 func readSysfsToken(system fs.FS, name string, choices map[string]string) string {
 	file, err := system.Open(name)
 	if err != nil {
-		return ""
+		if errors.Is(err, fs.ErrNotExist) {
+			return ""
+		}
+		return "unavailable: " + err.Error()
 	}
 	defer closeIgnoringError(file)
-	data, err := io.ReadAll(io.LimitReader(file, sysfsValueLimit))
+	data, err := io.ReadAll(io.LimitReader(file, sysfsValueLimit+1))
 	if err != nil {
-		return ""
+		return fmt.Sprintf("unavailable: %v (partial=%q)", err, data)
+	}
+	if len(data) > sysfsValueLimit {
+		return fmt.Sprintf("truncated after %d bytes: %q", sysfsValueLimit, data[:sysfsValueLimit])
 	}
 	token := strings.TrimSpace(string(data))
 	if value, ok := choices[token]; ok {
 		return value
 	}
 	if token == "" {
-		return ""
+		return "unrecognized: empty value"
 	}
 
-	return "unrecognized"
+	return fmt.Sprintf("unrecognized: %q", token)
 }

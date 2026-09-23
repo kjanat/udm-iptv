@@ -21,18 +21,25 @@ func (application *Application) reportSavedConfiguration(command *cobra.Command)
 	// Read the saved choice again, including first-install consent and opt-out
 	// selected inside the wizard. The old invocation reporter may be closed now.
 	value, err := config.Load(application.ConfigPath)
-	if err != nil || !value.Telemetry.Enabled || !value.Telemetry.Presets {
+	if err != nil {
+		command.PrintErrln("Configuration telemetry unavailable:", err)
+		return
+	}
+	if !value.Telemetry.Enabled || !value.Telemetry.Presets {
 		return
 	}
 	reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
 	if err != nil {
+		command.PrintErrln("Configuration telemetry unavailable:", err)
 		return
 	}
 	defer reporter.Close()
 	ctx, cancel := context.WithTimeout(command.Context(), reportConfigTimeout)
 	defer cancel()
 	setTelemetryMetadata(ctx, reporter, value, application.Version)
-	_ = reporter.RecordConfiguration(ctx, *application.reportConfig, application.reportApplied, application.networkIdentity)
+	if err := reporter.RecordConfiguration(ctx, *application.reportConfig, application.reportApplied, application.networkIdentity); err != nil {
+		command.PrintErrln("Configuration saved; telemetry report incomplete:", err)
+	}
 }
 
 func (application *Application) telemetryCommand() *cobra.Command {

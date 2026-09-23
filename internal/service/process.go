@@ -17,13 +17,16 @@ type managedProcess struct {
 	err     error
 }
 
-func startProcess(command *exec.Cmd) (*managedProcess, error) {
+func startProcess(command *exec.Cmd, completed ...func()) (*managedProcess, error) {
 	if err := command.Start(); err != nil {
 		return nil, fmt.Errorf("start process: %w", err)
 	}
 	process := &managedProcess{command: command, done: make(chan struct{})}
 	go func() {
 		process.err = command.Wait()
+		for _, finish := range completed {
+			finish()
+		}
 		close(process.done)
 	}()
 	return process, nil

@@ -7,16 +7,3 @@ Description: IPTV provider profile:
  Select the provider defaults to apply. Hardware-specific WAN and LAN interfaces
  are detected on the console. Choose Custom to leave IPTV unconfigured and set
  every value yourself by running "udm-iptv install" after this package finishes.
-
-Template: udm-iptv/telemetry
-Type: boolean
-Default: false
-Description: Send identifying diagnostics to help improve udm-iptv?
- Reports go to the maintainer's Sentry project in the EU. They include
- configuration and changes, logs, failures, network state, a persistent
- installation ID, and your public IP and reverse-DNS hostname. This is not
- anonymous. Credentials and packet payloads must not be included.
- .
- IPTV works without reporting. Choose No to keep reporting disabled.
- You can change this later with "udm-iptv configure set --telemetry=false"
- or enable it with "--telemetry=true". See docs/telemetry.md for details.

@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -48,7 +50,8 @@ func (application *Application) reporting(operation string, run cobraRun) cobraR
 		}
 		reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
 		if err != nil {
-			return run(command, args)
+			warning := application.warnTelemetryUnavailable(err)
+			return errors.Join(warning, run(command, args))
 		}
 		defer reporter.Close()
 		setTelemetryMetadata(command.Context(), reporter, value, application.Version)
@@ -135,7 +138,8 @@ func (application *Application) reportRun(ctx context.Context, operation string,
 	}
 	reporter, err := telemetry.New(value.Telemetry, application.Version, application.ConfigPath, application.StateDir)
 	if err != nil {
-		return run(ctx)
+		warning := application.warnTelemetryUnavailable(err)
+		return errors.Join(warning, run(ctx))
 	}
 	defer reporter.Close()
 	setTelemetryMetadata(ctx, reporter, value, application.Version)
@@ -143,5 +147,16 @@ func (application *Application) reportRun(ctx context.Context, operation string,
 		return fmt.Errorf("%s: %w", operation, err)
 	}
 
+	return nil
+}
+
+func (application *Application) warnTelemetryUnavailable(cause error) error {
+	output := application.Err
+	if output == nil {
+		output = os.Stderr
+	}
+	if _, err := fmt.Fprintf(output, "Telemetry unavailable; command continues without reporting: %v\n", cause); err != nil {
+		return fmt.Errorf("write telemetry initialization warning: %w", err)
+	}
 	return nil
 }

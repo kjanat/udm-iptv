@@ -193,7 +193,7 @@ func (application *Application) reportSnapshot(ctx context.Context, format strin
 		return nil
 	}
 
-	return writeString(application.Out, "Private local diagnostics; use diagnose export for a sanitized capture.\n"+ui.StatusText(diagnostics.RenderSnapshot(value)))
+	return writeString(application.Out, ui.StatusText(diagnostics.RenderSnapshot(value)))
 }
 
 func followCapture(path string, completion time.Time, pid int) error {

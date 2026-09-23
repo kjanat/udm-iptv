@@ -9,6 +9,10 @@ import (
 
 type failureKey struct{}
 
+type panicError struct{ value, typeName string }
+
+func (failure panicError) Error() string { return failure.value }
+
 // operationFailures tracks child failures within one invocation. Siblings and
 // later invocations still report independently, even for the same sentinel.
 type operationFailures struct {

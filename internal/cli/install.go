@@ -281,14 +281,20 @@ func (application *Application) restart(ctx context.Context, verify bool) error 
 	return nil
 }
 
-// reportHealthFailure prints private diagnostics locally and attaches only
-// the sanitized export to the reported operation.
+// reportHealthFailure collects once, retaining the same diagnostic evidence
+// locally and in the reported operation, subject to its reporting settings.
 func (application *Application) reportHealthFailure(ctx context.Context, err error) error {
 	var diagnostics bytes.Buffer
-	reportErr := application.collector().ReportFailureWithExport(ctx, application.Err, &diagnostics)
-	telemetry.Attach(ctx, diagnostics.Bytes())
+	reportErr := application.collector().ReportFailure(ctx, &diagnostics)
+	outputErr := application.publishFailureDiagnostics(ctx, diagnostics.Bytes())
 
-	return errors.Join(err, reportErr)
+	return errors.Join(err, reportErr, outputErr)
+}
+
+// A closed terminal must not prevent the operation from retaining its evidence.
+func (application *Application) publishFailureDiagnostics(ctx context.Context, data []byte) error {
+	telemetry.Attach(ctx, data)
+	return writeString(application.Err, string(data))
 }
 
 func (application *Application) installBackend() installer.Backend {

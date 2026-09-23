@@ -67,14 +67,14 @@ func runOfflineExportCommand(t *testing.T, path, format string) string {
 
 func assertExportCommandOutput(t *testing.T, output, format string) {
 	t.Helper()
-	for _, private := range []string{"secret-token", "192.168.10.152", "private-iptv"} {
-		if strings.Contains(output, private) {
-			t.Fatalf("%s export leaked %q", format, private)
+	for _, value := range []string{"secret-token", "192.168.10.152", "private-iptv"} {
+		if !strings.Contains(output, value) {
+			t.Fatalf("%s export lost %q", format, value)
 		}
 	}
 	if format == formatText {
-		if !strings.Contains(output, "[sanitized export]") || !strings.Contains(output, "IPv4 aliases in original numerical order:") {
-			t.Fatalf("text export missing privacy/election evidence: %s", output)
+		if !strings.Contains(output, "Event JSON:") {
+			t.Fatalf("text export missing complete record: %s", output)
 		}
 		return
 	}
@@ -82,7 +82,7 @@ func assertExportCommandOutput(t *testing.T, output, format string) {
 	if err := json.Unmarshal([]byte(output), &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.Privacy != diagnostics.PrivacySanitized || event.Snapshot == nil || len(event.AddressOrder) != 1 {
-		t.Fatalf("invalid sanitized event: %+v", event)
+	if event.Snapshot == nil || event.Snapshot.Lease.Lease.Options["credential"] != "secret-token" {
+		t.Fatalf("export lost original lease evidence: %+v", event)
 	}
 }

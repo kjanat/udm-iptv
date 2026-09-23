@@ -162,17 +162,7 @@ func (model captureModel) refreshed() captureModel {
 		model.structured = true
 		model.viewport.SetContent(strings.Join(timeline(events), "\n"))
 		model.status = status(latestSnapshot(events))
-		privacy := diagnostics.PrivacyPrivate
-		if events[0].Privacy == diagnostics.PrivacySanitized {
-			privacy = diagnostics.PrivacySanitized
-		}
-		model.status = append(model.status, "Privacy: "+privacy)
-		if privacy == diagnostics.PrivacySanitized {
-			order := events[len(events)-1].AddressOrder
-			if len(order) > 0 {
-				model.status = append(model.status, "Original IPv4 order: "+strings.Join(order, " < "))
-			}
-		}
+		model.status = append(model.status, capturePrivacy(events)...)
 		model.done = hasEvent(events, diagnostics.EventCompleted)
 		model.failed = hasEvent(events, diagnostics.EventFailed, diagnostics.EventTimeout)
 	} else {
@@ -188,6 +178,18 @@ func (model captureModel) refreshed() captureModel {
 	}
 
 	return model
+}
+
+func capturePrivacy(events []diagnostics.Event) []string {
+	if len(events) == 0 || events[0].Privacy != diagnostics.PrivacySanitized {
+		return []string{"Privacy: " + diagnostics.PrivacyPrivate}
+	}
+	lines := []string{"Privacy: " + diagnostics.PrivacySanitized}
+	if order := events[len(events)-1].AddressOrder; len(order) > 0 {
+		lines = append(lines, "Original IPv4 order: "+strings.Join(order, " < "))
+	}
+
+	return lines
 }
 
 func latestSnapshot(events []diagnostics.Event) *diagnostics.Snapshot {

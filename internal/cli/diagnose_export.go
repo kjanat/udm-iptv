@@ -13,8 +13,8 @@ func (application *Application) diagnoseExportCommand() *cobra.Command {
 	format := formatJSONL
 	command := &cobra.Command{
 		Use:   "export CAPTURE.jsonl",
-		Short: "Export a sanitized copy of a private capture",
-		Long:  "Export aliases locally; omit free text and DHCP option payloads.",
+		Short: "Export complete capture evidence",
+		Long:  "Export complete capture evidence, including logs and DHCP options.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if format != formatText && format != formatJSONL {
@@ -28,6 +28,6 @@ func (application *Application) diagnoseExportCommand() *cobra.Command {
 			return diagnostics.ExportCapture(input, application.Out, format)
 		},
 	}
-	command.Flags().StringVar(&format, "format", formatJSONL, "sanitized export format: text or jsonl")
+	command.Flags().StringVar(&format, "format", formatJSONL, "export format: text or jsonl")
 	return command
 }

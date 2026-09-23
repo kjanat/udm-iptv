@@ -23,24 +23,31 @@ const (
 	dailyBudgetFactor = 120
 )
 
+var (
+	errRateMinute = errors.New("telemetry per-minute budget exhausted")
+	errRateDay    = errors.New("telemetry daily budget exhausted")
+	errRateClock  = errors.New("telemetry budget clock moved backwards")
+	errRateRecord = errors.New("telemetry budget contains negative counters")
+)
+
 type rateBudget struct {
 	fd   int
 	file *os.File
 }
 
-func openRateBudget(directory, kind string) (rateBudget, bool) {
+func openRateBudget(directory, kind string) (rateBudget, error) {
 	fd, err := unix.Open(filepath.Join(directory, "telemetry-"+kind+".rate"), unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, filemode.PrivateFile)
 	if err != nil {
-		return rateBudget{}, false
+		return rateBudget{}, fmt.Errorf("open telemetry budget: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), "telemetry-rate")
 	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = file.Close()
 
-		return rateBudget{}, false
+		return rateBudget{}, fmt.Errorf("lock telemetry budget: %w", err)
 	}
 
-	return rateBudget{fd: fd, file: file}, true
+	return rateBudget{fd: fd, file: file}, nil
 }
 
 func (b rateBudget) release() {
@@ -55,26 +62,29 @@ type rateRecord struct {
 	usedDay    int
 }
 
-func (b rateBudget) read() (rateRecord, bool) {
+func (b rateBudget) read() (rateRecord, error) {
 	var record rateRecord
 	n, err := fmt.Fscan(io.LimitReader(b.file, rateRecordLimit), &record.minute, &record.usedMinute, &record.day, &record.usedDay)
 	if err != nil && (!errors.Is(err, io.EOF) || n != 0) {
-		return rateRecord{}, false
+		return rateRecord{}, fmt.Errorf("read telemetry budget: %w", err)
 	}
 
-	return record, true
+	return record, nil
 }
 
-func (b rateBudget) write(record rateRecord) bool {
+func (b rateBudget) write(record rateRecord) error {
 	if _, err := b.file.Seek(0, io.SeekStart); err != nil {
-		return false
+		return fmt.Errorf("seek telemetry budget: %w", err)
 	}
 	if err := b.file.Truncate(0); err != nil {
-		return false
+		return fmt.Errorf("truncate telemetry budget: %w", err)
 	}
 	_, err := fmt.Fprintf(b.file, "%d %d %d %d\n", record.minute, record.usedMinute, record.day, record.usedDay)
+	if err != nil {
+		return fmt.Errorf("write telemetry budget: %w", err)
+	}
 
-	return err == nil
+	return nil
 }
 
 func (record rateRecord) rollOver(now time.Time) (rateRecord, bool) {
@@ -92,9 +102,18 @@ func (record rateRecord) rollOver(now time.Time) (rateRecord, bool) {
 	return record, true
 }
 
-func (record rateRecord) hasHeadroom(perMinute int) bool {
-	return record.usedMinute >= 0 && record.usedDay >= 0 &&
-		record.usedMinute < perMinute && record.usedDay < perMinute*dailyBudgetFactor
+func (record rateRecord) headroomReason(perMinute int) error {
+	if record.usedMinute < 0 || record.usedDay < 0 {
+		return errRateRecord
+	}
+	if record.usedMinute >= perMinute {
+		return errRateMinute
+	}
+	if record.usedDay >= perMinute*dailyBudgetFactor {
+		return errRateDay
+	}
+
+	return nil
 }
 
 func (record rateRecord) consume() rateRecord {
@@ -106,22 +125,26 @@ func (record rateRecord) consume() rateRecord {
 
 // Sharing the budget across processes prevents daemon restart loops and DHCP
 // hook invocations from resetting it. No identifiers or payloads are persisted.
-func allowPersisted(directory, kind string, perMinute int, now time.Time) bool {
+func allowPersistedReason(directory, kind string, perMinute int, now time.Time) error {
 	if err := os.MkdirAll(directory, filemode.PrivateDir); err != nil {
-		return false
+		return fmt.Errorf("create telemetry budget directory: %w", err)
 	}
-	budget, ok := openRateBudget(directory, kind)
-	if !ok {
-		return false
+	budget, err := openRateBudget(directory, kind)
+	if err != nil {
+		return err
 	}
 	defer budget.release()
-	record, ok := budget.read()
-	if !ok {
-		return false
+	record, err := budget.read()
+	if err != nil {
+		return err
 	}
+	var ok bool
 	record, ok = record.rollOver(now)
-	if !ok || !record.hasHeadroom(perMinute) {
-		return false
+	if !ok {
+		return errRateClock
+	}
+	if err := record.headroomReason(perMinute); err != nil {
+		return err
 	}
 
 	return budget.write(record.consume())

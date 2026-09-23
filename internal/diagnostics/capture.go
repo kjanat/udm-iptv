@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -60,14 +61,15 @@ type Options struct {
 type Event struct {
 	Privacy string `json:"privacy,omitempty"`
 	// AddressOrder lists IPv4 aliases in original numerical order for querier election analysis.
-	AddressOrder []string  `json:"ipv4Order,omitempty"`
-	Time         time.Time `json:"time"`
-	Deadline     time.Time `json:"deadline,omitzero"`
-	Type         string    `json:"type"`
-	Message      string    `json:"message,omitempty"`
-	Snapshot     *Snapshot `json:"snapshot,omitempty"`
-	Source       string    `json:"source,omitempty"`
-	Log          string    `json:"log,omitempty"`
+	AddressOrder []string                   `json:"ipv4Order,omitempty"`
+	Time         time.Time                  `json:"time"`
+	Deadline     time.Time                  `json:"deadline,omitzero"`
+	Type         string                     `json:"type"`
+	Message      string                     `json:"message,omitempty"`
+	Snapshot     *Snapshot                  `json:"snapshot,omitempty"`
+	Source       string                     `json:"source,omitempty"`
+	Log          string                     `json:"log,omitempty"`
+	Journal      map[string]json.RawMessage `json:"journal,omitempty"`
 }
 
 // Capture performs a diagnostic capture based on the provided options.
@@ -87,19 +89,22 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	write := output.writer.write
 	started := startedAt.UTC()
 	ends := endsAt.UTC()
-	if err := write(Event{Time: started, Deadline: ends, Type: EventStarted, Message: "Capture started; expected completion " + ends.Format(time.RFC3339)}); err != nil {
+	policy := fmt.Sprintf("\nLive journal: %s and messages containing udm-iptv from %s; limits %d records, %d input bytes, %d bytes per record. Limit/read failures are recorded.", serviceUnit, udapiUnit, journalLineLimit, journalOutputLimit, journalRecordLimit)
+	if err := write(Event{Time: started, Deadline: ends, Type: EventStarted, Message: "Capture started; expected completion " + ends.Format(time.RFC3339) + policy}); err != nil {
 		return err
 	}
 	markers := &markerReader{path: MarkerPath(options)}
 	logs, stopLogs := followJournal(ctx)
-	defer stopLogs()
+	evidence := captureEvidence{markers: markers, logs: logs, stopLogs: stopLogs}
+	defer func() { resultErr = errors.Join(resultErr, evidence.finish(ctx, write)) }()
 	initial, err := application.snapshotWithin(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
-			return write(Event{Time: time.Now().UTC(), Type: EventTimeout, Message: "Capture deadline reached during the initial snapshot."})
+			cleanupErr := evidence.finish(ctx, write)
+			return errors.Join(cleanupErr, write(Event{Time: time.Now().UTC(), Type: EventTimeout, Message: "Capture deadline reached during the initial snapshot: " + err.Error()}))
 		}
 
-		return err
+		return errors.Join(err, write(Event{Time: time.Now().UTC(), Type: EventError, Message: "Initial snapshot unavailable: " + err.Error()}))
 	}
 	if err := write(Event{Time: initial.Timestamp, Type: EventInitial, Snapshot: &initial}); err != nil {
 		return err
@@ -107,11 +112,7 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	if err := application.sampleSnapshots(ctx, options, endsAt, markers, logs, write); err != nil {
 		return err
 	}
-	stopLogs()
-	if err := drainJournal(ctx, logs, write); err != nil {
-		return err
-	}
-	if err := markers.drain(write); err != nil {
+	if err := evidence.finish(ctx, write); err != nil {
 		return err
 	}
 	if stoppedBySignal(signalContext, ctx) {
@@ -119,6 +120,26 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	}
 
 	return application.finalizeCapture(ctx, write)
+}
+
+// finish is registered before collecting snapshots, so every return preserves
+// available evidence before closing its writers. It never extends ctx's deadline.
+type captureEvidence struct {
+	markers  *markerReader
+	logs     <-chan Event
+	stopLogs context.CancelFunc
+	finished bool
+}
+
+func (evidence *captureEvidence) finish(ctx context.Context, write func(Event) error) error {
+	if evidence.finished {
+		return nil
+	}
+	evidence.finished = true
+	evidence.stopLogs()
+	journalErr := drainJournal(ctx, evidence.logs, write)
+	markerErr := evidence.markers.finish(write)
+	return errors.Join(journalErr, markerErr)
 }
 
 // MarkerPath is the file a viewer appends manual markers to. Both capture
@@ -160,25 +181,72 @@ type markerReader struct {
 }
 
 func (reader *markerReader) drain(write func(Event) error) error {
-	file, err := os.Open(reader.path)
+	return reader.read(false, write)
+}
+
+func (reader *markerReader) finish(write func(Event) error) error {
+	return reader.read(true, write)
+}
+
+var errMarkerFileType = errors.New("marker path is not a regular file")
+
+func (reader *markerReader) read(final bool, write func(Event) error) error {
+	file, err := os.OpenFile(reader.path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return reader.failed("open", err, "", write)
 	}
 	defer closeIgnoringError(file)
-	if _, err := file.Seek(reader.offset, io.SeekStart); err != nil {
-		return nil
+	info, err := file.Stat()
+	if err != nil {
+		return reader.failed("stat", err, "", write)
 	}
-	buffered := bufio.NewReader(file)
+	if !info.Mode().IsRegular() {
+		return reader.failed("inspect", errMarkerFileType, "", write)
+	}
+	if _, err := file.Seek(reader.offset, io.SeekStart); err != nil {
+		return reader.failed("seek", err, "", write)
+	}
+	// Freeze the readable extent: concurrent marker appends cannot keep cleanup
+	// reading indefinitely, and an unfinished line never waits for a newline.
+	return reader.readRecords(io.LimitReader(file, max(0, info.Size()-reader.offset)), final, write)
+}
+
+func (reader *markerReader) readRecords(input io.Reader, final bool, write func(Event) error) error {
+	buffered := bufio.NewReader(input)
 	for {
 		line, err := buffered.ReadString('\n')
 		if err != nil {
-			return nil
+			return reader.readEnd(line, err, final, write)
 		}
 		reader.offset += int64(len(line))
 		if err := write(markerEvent(strings.TrimSuffix(line, "\n"))); err != nil {
 			return err
 		}
 	}
+}
+
+func (reader *markerReader) readEnd(line string, err error, final bool, write func(Event) error) error {
+	if !errors.Is(err, io.EOF) {
+		reader.offset += int64(len(line))
+		return reader.failed("read", err, line, write)
+	}
+	if final && line != "" {
+		reader.offset += int64(len(line))
+		return write(Event{Time: time.Now().UTC(), Type: EventError, Message: fmt.Sprintf("Incomplete final marker in %s; raw=%q", reader.path, line)})
+	}
+	return nil
+}
+
+func (reader *markerReader) failed(operation string, err error, partial string, write func(Event) error) error {
+	cause := fmt.Errorf("%s marker file %s at offset %d: %w", operation, reader.path, reader.offset, err)
+	message := cause.Error()
+	if partial != "" {
+		message += fmt.Sprintf("; partial raw=%q", partial)
+	}
+	return errors.Join(cause, write(Event{Time: time.Now().UTC(), Type: EventError, Message: message}))
 }
 
 func markerEvent(line string) Event {
@@ -208,6 +276,8 @@ func (application *Collector) finalizeCapture(ctx context.Context, write func(Ev
 		if err := write(Event{Time: final.Timestamp, Type: EventFinal, Snapshot: &final}); err != nil {
 			return err
 		}
+	} else if err := write(Event{Time: time.Now().UTC(), Type: EventError, Message: "Final snapshot unavailable: " + finalErr.Error()}); err != nil {
+		return err
 	}
 	if expired(ctx) {
 		return write(Event{Time: time.Now().UTC(), Type: EventTimeout, Message: "Capture deadline reached; a collector may have stalled."})
@@ -229,7 +299,7 @@ func openCaptureOutput(options Options) (*captureOutput, error) {
 		into *syncingWriter
 	}{
 		{options.JSONPath, "JSON", &output.writer.json},
-		{options.TextPath, "text", &output.writer.text},
+		{options.TextPath, exportTextFormat, &output.writer.text},
 	} {
 		if target.path == "" {
 			continue

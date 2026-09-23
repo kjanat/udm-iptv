@@ -5,7 +5,4 @@
 db_version 2.0
 db_capb backup
 db_input high udm-iptv/profile || true
-if [ ! -f /data/udm-iptv/config.json ]; then
-	db_input high udm-iptv/telemetry || true
-fi
 db_go

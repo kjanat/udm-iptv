@@ -57,6 +57,33 @@ func TestTerminalCarriesOutputLineByLineUntilTheChildExits(t *testing.T) {
 	}
 }
 
+func TestTerminalFinishesReadingBeforeFlushing(t *testing.T) {
+	t.Parallel()
+	var out lockedBuffer
+	command := exec.CommandContext(t.Context(), "sh", "-c", "printf 'trailing evidence'")
+	output, err := attachTerminal(command, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flushed string
+	output.flush = func() { flushed = out.String() }
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := output.started(); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := output.finish(); err != nil {
+		t.Fatal(err)
+	}
+	if flushed != "trailing evidence" {
+		t.Fatalf("flush overtook output: %q", flushed)
+	}
+}
+
 func TestTerminalKeepsNewlinesRaw(t *testing.T) {
 	t.Parallel()
 	term, err := openTerminal()
