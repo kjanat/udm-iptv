@@ -279,12 +279,12 @@ func (application *Application) restartCommand() *cobra.Command {
 func (application *Application) restart(ctx context.Context, verify bool) error {
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
-		return application.reportHealthFailure(ctx, fmt.Errorf("connect to systemd: %w", err))
+		return application.reportActivationFailure(ctx, fmt.Errorf("connect to systemd: %w", err))
 	}
 	defer connection.Close()
 	lifecycle := service.Lifecycle{Connection: connection, Unit: service.Unit}
 	if err := lifecycle.Restart(ctx); err != nil {
-		return application.reportHealthFailure(ctx, fmt.Errorf("restart udm-iptv.service: %w", err))
+		return application.reportActivationFailure(ctx, fmt.Errorf("restart udm-iptv.service: %w", err))
 	}
 	if verify {
 		return application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
@@ -293,18 +293,21 @@ func (application *Application) restart(ctx context.Context, verify bool) error 
 	return nil
 }
 
+// An initial installation can enable reporting after the command wrapper ran.
+func (application *Application) reportActivationFailure(ctx context.Context, cause error) error {
+	return application.reportRun(ctx, "service.activate", func(ctx context.Context) error {
+		return application.reportHealthFailure(ctx, cause)
+	})
+}
+
 // reportHealthFailure collects once, retaining the same diagnostic evidence
 // locally and in the reported operation, subject to its reporting settings.
 func (application *Application) reportHealthFailure(ctx context.Context, err error) error {
-	return errors.Join(err, application.collectFailureDiagnostics(ctx))
-}
-
-func (application *Application) collectFailureDiagnostics(ctx context.Context) error {
 	var diagnostics bytes.Buffer
 	reportErr := application.collector().ReportFailure(ctx, &diagnostics)
 	outputErr := application.publishFailureDiagnostics(ctx, diagnostics.Bytes())
 
-	return errors.Join(reportErr, outputErr)
+	return errors.Join(err, reportErr, outputErr)
 }
 
 // A closed terminal must not prevent the operation from retaining its evidence.
@@ -325,7 +328,7 @@ func (application *Application) installBackend() installer.Backend {
 		Health: func(ctx context.Context) error {
 			return application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
 		},
-		Failure: application.collectFailureDiagnostics,
+		Failure: application.reportActivationFailure,
 		Saved:   func(value config.Config) { application.reportConfig = &value },
 		Healthy: func(value config.Config) { application.reportConfig, application.reportApplied = &value, true },
 	}

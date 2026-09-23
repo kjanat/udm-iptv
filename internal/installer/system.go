@@ -25,7 +25,7 @@ type SystemBackend struct {
 	Out, Err       io.Writer
 	Completion     func(context.Context) ([]byte, error)
 	Health         func(context.Context) error
-	Failure        func(context.Context) error
+	Failure        func(context.Context, error) error
 	Saved, Healthy func(config.Config)
 }
 
@@ -110,7 +110,7 @@ func (backend SystemBackend) Activate(ctx context.Context, _ Plan) error {
 	err := activateService(ctx)
 	if err != nil && backend.Failure != nil {
 		// Capture the failed unit before the installation transaction rolls back.
-		return errors.Join(err, backend.Failure(ctx))
+		return backend.Failure(ctx, err)
 	}
 	return err
 }

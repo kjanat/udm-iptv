@@ -12,7 +12,8 @@ const reportFailureTimeout = 10 * time.Second
 
 // ReportFailure writes the snapshot and recent service logs to output.
 func (application *Collector) ReportFailure(parent context.Context, output io.Writer) error {
-	ctx, cancel := context.WithTimeout(parent, reportFailureTimeout)
+	// Cancellation can be the failure itself; collect before rollback erases it.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), reportFailureTimeout)
 	defer cancel()
 	if err := writeString(output, "\n=== udm-iptv failure diagnostics ===\n"); err != nil {
 		return fmt.Errorf("write failure diagnostics header: %w", err)

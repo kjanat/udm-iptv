@@ -50,12 +50,12 @@ func (application *Application) stopCommand() *cobra.Command {
 func (application *Application) start(ctx context.Context) error {
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
-		return application.reportHealthFailure(ctx, fmt.Errorf("connect to systemd: %w", err))
+		return application.reportActivationFailure(ctx, fmt.Errorf("connect to systemd: %w", err))
 	}
 	defer connection.Close()
 	lifecycle := service.Lifecycle{Connection: connection, Unit: service.Unit}
 	if err := lifecycle.Start(ctx); err != nil {
-		return application.reportHealthFailure(ctx, fmt.Errorf("start %s: %w", service.Unit, err))
+		return application.reportActivationFailure(ctx, fmt.Errorf("start %s: %w", service.Unit, err))
 	}
 	if err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable); err != nil {
 		return err
