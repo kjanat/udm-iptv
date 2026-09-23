@@ -151,10 +151,18 @@ jobs:
       - name: Select firmware pairs
         id: catalog
         env: { GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}", IMAGE: "ghcr.io/${{ github.repository_owner }}/unifi-os" }
-        run: go run ./cmd/firmware published --output "${GITHUB_OUTPUT}"
+        run: |
+          matrix='{"include":[]}'
+          for track in release beta pinned; do
+            next=$(go run ./cmd/firmware --track "${track}" published)
+            matrix=$(jq -c --argjson next "${next}" --arg track "${track}" \
+              '.include += ($next.include | map(. + {track: $track}))' <<< "${matrix}")
+          done
+          jq -e '.include | length > 0' <<< "${matrix}" >/dev/null
+          printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
 
   firmware:
-    name: fw cycle (${{ matrix.model }})
+    name: fw cycle (${{ matrix.model }}, ${{ matrix.track }})
     needs: [build, catalog]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25

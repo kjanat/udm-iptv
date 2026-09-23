@@ -33,6 +33,8 @@ const (
 	// trackRelease and trackBeta are the names --track accepts.
 	trackRelease = "release"
 	trackBeta    = "beta"
+	trackPinned  = "pinned"
+	modelAll     = "all"
 )
 
 var (
@@ -88,6 +90,12 @@ type catalogRelease struct {
 	} `json:"_links"`
 }
 
+type catalogDocument struct {
+	Embedded struct {
+		Firmware []catalogRelease `json:"firmware"`
+	} `json:"_embedded"`
+}
+
 // Track is the set of firmware channels a matrix draws from, and whether a
 // prerelease version counts as a candidate. The zero value selects releases.
 type Track struct {
@@ -103,6 +111,12 @@ func BetaTrack() Track {
 	return Track{Channels: []string{channelRelease, channelBeta}, Prerelease: true}
 }
 
+// PinnedTrack exercises explicitly recorded builds absent from the catalog.
+// Its image tags and moving aliases stay separate from released firmware.
+func PinnedTrack() Track { return Track{Channels: []string{trackPinned}, Prerelease: true} }
+
+func (track Track) pinned() bool { return slices.Contains(track.Channels, trackPinned) }
+
 // TrackNamed returns the track name selects, and whether that name exists.
 func TrackNamed(name string) (Track, bool) {
 	switch name {
@@ -110,6 +124,8 @@ func TrackNamed(name string) (Track, bool) {
 		return ReleaseTrack(), true
 	case trackBeta:
 		return BetaTrack(), true
+	case trackPinned:
+		return PinnedTrack(), true
 	}
 
 	return Track{}, false
@@ -139,6 +155,9 @@ func (track Track) accepts(version string) bool {
 func compare(a, b string) int { return semver.Compare("v"+a, "v"+b) }
 
 func (track Track) versionTag(model, version string) string {
+	if track.pinned() {
+		return model + "-pinned-" + version
+	}
 	if track.Prerelease {
 		return model + "-beta-" + version
 	}
@@ -146,6 +165,9 @@ func (track Track) versionTag(model, version string) string {
 }
 
 func (track Track) latestAlias() string {
+	if track.pinned() {
+		return trackPinned
+	}
 	if track.Prerelease {
 		return trackBeta
 	}
@@ -159,12 +181,17 @@ func boardFor(model string) (string, error) {
 		}
 	}
 
+	if validModel.MatchString(model) && model != modelAll {
+		return strings.ToUpper(model), nil
+	}
+
 	return "", fmt.Errorf("%w: %s", errUnknownModel, model)
 }
 
 var (
 	downloadURL = regexp.MustCompile(`^https://fw-download\.ubnt\.com/[A-Za-z0-9/_.-]+\.bin$`)
 	imageName   = regexp.MustCompile(`^ghcr\.io/[a-z0-9][a-z0-9_.-]*/unifi-os$`)
+	validModel  = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
 )
 
 // ValidateImage reports whether image is a valid ghcr.io/*/unifi-os repository.
@@ -258,11 +285,15 @@ func (track Track) SelectCatalog(reader io.Reader, image, model string, cutoff t
 	if err != nil {
 		return Matrix{}, err
 	}
+	if track.pinned() {
+		return selectPinnedCatalog(entries, image, model, cutoff)
+	}
+	devices, err := catalogModels(entries, model, cutoff, track)
+	if err != nil {
+		return Matrix{}, err
+	}
 	matrix := Matrix{}
-	for _, device := range models {
-		if model != "all" && model != device.Name {
-			continue
-		}
+	for _, device := range devices {
 		pair, err := track.catalogPair(device.Name, device.Board, image, newestPerVersion(entries, device.Board, cutoff, track))
 		if err != nil {
 			return Matrix{}, err
@@ -278,7 +309,7 @@ func validateCatalogSelectors(image, model string) error {
 	if err != nil {
 		return err
 	}
-	if model == "all" {
+	if model == modelAll {
 		return nil
 	}
 	_, err = boardFor(model)
@@ -287,11 +318,7 @@ func validateCatalogSelectors(image, model string) error {
 }
 
 func decodeCatalog(reader io.Reader) ([]catalogRelease, error) {
-	var catalog struct {
-		Embedded struct {
-			Firmware []catalogRelease `json:"firmware"`
-		} `json:"_embedded"`
-	}
+	var catalog catalogDocument
 	err := json.NewDecoder(reader).Decode(&catalog)
 	if err != nil {
 		return nil, fmt.Errorf("decode firmware catalog: %w", err)
@@ -350,8 +377,11 @@ func (track Track) Published(tags, image string) (Matrix, error) {
 	if err != nil {
 		return Matrix{}, err
 	}
+	if track.pinned() {
+		return publishedPins(tags, image)
+	}
 	matrix := Matrix{}
-	for _, device := range models {
+	for _, device := range track.publishedModels(tags) {
 		selected := track.publishedVersions(tags, device.Name)
 		versions := make([]string, 0, len(selected))
 		for version := range selected {
@@ -363,6 +393,9 @@ func (track Track) Published(tags, image string) (Matrix, error) {
 		}
 		matrix.Include = append(matrix.Include, Pair{Model: device.Name, From: image + ":" + selected[versions[len(versions)-2]], To: image + ":" + selected[versions[len(versions)-1]]})
 	}
+	if len(matrix.Include) == 0 {
+		return Matrix{}, errPublishedPairRequired
+	}
 
 	return matrix, nil
 }
@@ -370,12 +403,17 @@ func (track Track) Published(tags, image string) (Matrix, error) {
 func (track Track) publishedVersions(tags, model string) map[string]string {
 	selected := make(map[string]string)
 	for tag := range strings.FieldsSeq(tags) {
-		version, found := strings.CutPrefix(tag, model+"-")
-		if !found {
+		name, version, found := strings.Cut(tag, "-")
+		if !found || !sameModel(name, model) {
 			continue
 		}
 		beta := false
-		if track.Prerelease {
+		if track.pinned() {
+			version, found = strings.CutPrefix(version, trackPinned+"-")
+			if !found {
+				continue
+			}
+		} else if track.Prerelease {
 			version, beta = strings.CutPrefix(version, "beta-")
 		}
 		if track.accepts(version) && (selected[version] == "" || beta) {

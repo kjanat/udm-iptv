@@ -30,7 +30,7 @@ var (
 	errFirmwareTooLarge     = errors.New("firmware exceeds four GiB")
 	errNotUBNTImage         = errors.New("not a UBNT firmware image")
 	errHeaderCRCMismatch    = errors.New("firmware header CRC mismatch")
-	errNoRootfs             = errors.New("no PARTrootfs found")
+	errNoRootfs             = errors.New("no root filesystem found")
 	errMissingSuperblock    = errors.New("missing squashfs superblock")
 	errInvalidRootfsLength  = errors.New("invalid squashfs length")
 	errRootfsExceedsImage   = errors.New("squashfs exceeds firmware size")
@@ -49,7 +49,7 @@ func Extract(source io.ReaderAt, size int64, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	start, length, err := rootfsRange(source, part, size)
+	start, length, err := rootfsRange(source, part.offset, part.end)
 	if err != nil {
 		return err
 	}
@@ -79,25 +79,32 @@ func validateFirmwareHeader(source io.ReaderAt, size int64) error {
 	return nil
 }
 
-func locateRootfs(source io.ReaderAt, size int64) (int64, error) {
-	offset, err := validateFiles(source, size)
+type rootfsRegion struct {
+	offset, end int64
+}
+
+func locateRootfs(source io.ReaderAt, size int64) (rootfsRegion, error) {
+	offset, fileRoot, err := validateFiles(source, size)
 	if err != nil {
-		return 0, err
+		return rootfsRegion{}, err
 	}
 	part, err := findRootfs(source, offset, size)
 	if err != nil {
-		return 0, err
+		return rootfsRegion{}, err
 	}
 	if part < 0 {
 		part, err = findRootfs(source, ubntHeaderSize, size)
 		if err != nil {
-			return 0, err
+			return rootfsRegion{}, err
 		}
 	}
 	if part < 0 {
-		return 0, errNoRootfs
+		if fileRoot.end != 0 {
+			return fileRoot, nil
+		}
+		return rootfsRegion{}, errNoRootfs
 	}
-	return part, nil
+	return rootfsRegion{part, size}, nil
 }
 
 func recordFits(offset, size, need int64) bool {
@@ -134,12 +141,13 @@ func squashfsLength(superblock []byte, available int64) (int64, error) {
 	return int64(length), nil
 }
 
-func validateFiles(source io.ReaderAt, size int64) (int64, error) {
+func validateFiles(source io.ReaderAt, size int64) (int64, rootfsRegion, error) {
 	offset := int64(ubntHeaderSize)
+	var root rootfsRegion
 	var tag [4]byte
 	for offset+4 <= size {
 		if _, err := source.ReadAt(tag[:], offset); err != nil {
-			return 0, fmt.Errorf("read firmware record tag at %d: %w", offset, err)
+			return 0, root, fmt.Errorf("read firmware record tag at %d: %w", offset, err)
 		}
 		switch string(tag[:]) {
 		case "\x00\x00\x00\x00":
@@ -147,15 +155,36 @@ func validateFiles(source io.ReaderAt, size int64) (int64, error) {
 		case "FILE":
 			next, err := validateFile(source, offset, size)
 			if err != nil {
-				return 0, err
+				return 0, root, err
+			}
+			candidate, err := fileRootfs(source, offset, next-crcFooterSize)
+			if err != nil {
+				return 0, root, err
+			}
+			if candidate {
+				root = rootfsRegion{offset, next - crcFooterSize}
 			}
 			offset = next
 		default:
-			return offset, nil
+			return offset, root, nil
 		}
 	}
 
-	return offset, nil
+	return offset, root, nil
+}
+
+// Only a validated FILE payload beginning with squashfs is a fallback root.
+// Its own payload length bounds bytes_used, even if more firmware follows it.
+func fileRootfs(source io.ReaderAt, offset, end int64) (bool, error) {
+	var magic [4]byte
+	if end-offset-fileRecordHeaderSize < int64(len(magic)) {
+		return false, nil
+	}
+	if _, err := source.ReadAt(magic[:], offset+fileRecordHeaderSize); err != nil {
+		return false, fmt.Errorf("read FILE payload magic: %w", err)
+	}
+
+	return string(magic[:]) == "hsqs", nil
 }
 
 func validateFile(source io.ReaderAt, offset, size int64) (int64, error) {

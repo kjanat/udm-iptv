@@ -15,6 +15,7 @@ on:
 permissions: { contents: read }
 jobs:
   build:
+    name: Build udm-iptv Debian package
     runs-on: ubuntu-latest
     outputs: { artifact: build-artifacts }
     steps:
