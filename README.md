@@ -13,8 +13,7 @@ sudo apt install ./udm-iptv-arm64.deb
 
 Installation verifies stable proxy readiness before reporting success.
 
-<details>
-<summary>Standalone binary</summary>
+### Standalone binary
 
 ```sh
 curl -fLO https://github.com/kjanat/udm-iptv/releases/latest/download/udm-iptv-linux-arm64
@@ -27,8 +26,6 @@ sudo ./udm-iptv-linux-arm64 install
 `install --dry-run` previews without root, changes, telemetry or health checks.
 
 `--non-interactive` skips prompts. `apt install` performs real installation.
-
-</details>
 
 Configuration: `/data/udm-iptv/config.json`. Legacy settings migrate automatically.
 
@@ -125,5 +122,3 @@ CI builds binaries; routers need no Go toolchain.
 ## License
 
 GPL-2.0-or-later. See [COPYING.txt](COPYING.txt).
-
- <!-- markdownlint-disable-file line-length no-inline-html -->

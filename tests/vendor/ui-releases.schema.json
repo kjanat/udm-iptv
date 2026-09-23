@@ -1,0 +1,41 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "UniFi community release index",
+	"description": "Releases announced on https://community.ui.com, grouped by product family. Written by 'refresh.sh' from the 'releases()' query in 'releases.graphql', reshaped by 'shape.jq'.",
+	"markdownDescription": "Releases announced on [community.ui.com](https://community.ui.com), grouped by product family. Written by `refresh.sh` from the `releases()` query in `releases.graphql`, reshaped by `shape.jq`.",
+	"type": "object",
+	"propertyNames": {
+		"description": "Product family: the release slug with its version stripped off the end, as in 'UniFi-OS-Dream-Machines' or 'UniFi-OS-Express-7'.",
+		"markdownDescription": "Product family: the release slug with its version stripped off the end, as in `UniFi-OS-Dream-Machines` or `UniFi-OS-Express-7`.",
+		"pattern": "^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$"
+	},
+	"additionalProperties": {
+		"description": "Every release of that family the index holds, newest version first, one entry per version and stage.",
+		"type": "array",
+		"minItems": 1,
+		"items": {
+			"type": "object",
+			"required": ["version", "stage", "id"],
+			"additionalProperties": false,
+			"properties": {
+				"version": {
+					"description": "Version as the API reports it, verbatim. Mobile apps append a store build number in brackets, as in '3.8.2 (655)'.",
+					"markdownDescription": "Version as the API reports it, verbatim. Mobile apps append a store build number in brackets, as in `3.8.2 (655)`.",
+					"type": "string",
+					"minLength": 1
+				},
+				"stage": {
+					"description": "'GA' is generally available and 'RC' a release candidate.  \n'T' is all but invisible without a signed-in session that has release-testing access, and is where the '6.0.x' releases sit.  \n'U' appears on 13 releases in the whole catalogue.  \n\nThe API expands neither letter: 'ReleaseStage' has no label field and introspection is disabled.",
+					"markdownDescription": "- `GA` is generally available and \n- `RC` a release candidate.  \n- `T` is all but invisible without a signed-in session that has release-testing access, and is where the `6.0.x` releases sit.  \n- `U` appears on 13 releases in the whole catalogue.  \n\nThe API expands neither letter: `ReleaseStage` has no label field and introspection is disabled.",
+					"enum": ["GA", "RC", "T", "U"]
+				},
+				"id": {
+					"description": "Argument to the 'release(id:)' query in 'release.graphql', which returns the per-board download links.",
+					"markdownDescription": "Argument to the `release(id:)` query in `release.graphql`, which returns the per-board download links.",
+					"type": "string",
+					"format": "uuid"
+				}
+			}
+		}
+	}
+}

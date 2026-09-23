@@ -1,0 +1,31 @@
+{
+	"data": {
+		"release": {
+			"id": "439a4756-3fa0-4529-ba89-719ae900c752",
+			"title": "UniFi OS - Dream Machines",
+			"version": "6.0.7",
+			"links": [
+				{
+					"title": "UDM",
+					"url": "https://fw-download.ubnt.com/data/unifi-dream/44d1-UDM-6.0.7-7b0485d3-da77-4cbc-b2f2-8522db92910c.bin"
+				},
+				{
+					"title": "UDM-Pro",
+					"url": "https://fw-download.ubnt.com/data/unifi-dream/4bac-UDMPRO-6.0.7-68679bee-36ad-4699-b36f-36d1acd20676.bin"
+				},
+				{
+					"title": "UDM-SE",
+					"url": "https://fw-download.ubnt.com/data/unifi-dream/ad5a-UDMPROSE-6.0.7-21cbe675-16ea-4ae4-b048-6ebbbc83f2d1.bin"
+				},
+				{
+					"title": "UDM-Pro-Max",
+					"url": "https://fw-download.ubnt.com/data/unifi-dream/b34e-UDMPROMAX-6.0.7-79743f19-3007-4593-90d6-bb63b74cb794.bin"
+				},
+				{
+					"title": "UDM-Beast",
+					"url": "https://fw-download.ubnt.com/data/unifi-dream/a6ea-UDMEA4C-6.0.7-6a0047c1-a40d-46e3-a195-10d997e1691b.bin"
+				}
+			]
+		}
+	}
+}

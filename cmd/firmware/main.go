@@ -106,11 +106,11 @@ func command() *cobra.Command {
 
 func configureTrack(root *cobra.Command, pipeline *firmware.Pipeline) {
 	var name string
-	root.PersistentFlags().StringVar(&name, "track", "release", "Firmware track: release or beta.")
+	root.PersistentFlags().StringVar(&name, "track", "release", "Firmware track: release, beta or pinned.")
 	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
 		track, ok := firmware.TrackNamed(name)
 		if !ok {
-			return fmt.Errorf("%w %q: use release or beta", errUnknownTrack, name)
+			return fmt.Errorf("%w %q: use release, beta or pinned", errUnknownTrack, name)
 		}
 		pipeline.Track = track
 		return nil

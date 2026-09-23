@@ -1,0 +1,10 @@
+query($searchTerm: String, $limit: Int, $sortBy: ReleasesSortBy) {
+	releases(searchTerm: $searchTerm, limit: $limit, sortBy: $sortBy) {
+		items {
+			id
+			version
+			stage
+			slug
+		}
+	}
+}
