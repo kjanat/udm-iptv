@@ -1,13 +1,13 @@
 # yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
 ---
 name: Multicast fixture
-run-name: Multicast ${{ inputs.scenario || 'smoke' }} (${{ github.ref_name }})
+run-name: Multicast ${{ inputs.scenario || 'smoke' }}${{ inputs.scenario == 'regression' && format(' {0}', inputs.implementation) || '' }} (${{ github.ref_name }})
 on:
   push:
     branches: ["**"]
-    paths: [tests/multicast/**, .github/workflows/multicast.yml]
+    paths: [tests/multicast/**, patches/improxy/**, .github/workflows/multicast.yml]
   pull_request:
-    paths: [tests/multicast/**, .github/workflows/multicast.yml]
+    paths: [tests/multicast/**, patches/improxy/**, .github/workflows/multicast.yml]
   workflow_dispatch:
     inputs:
       scenario:
@@ -15,13 +15,20 @@ on:
         type: choice
         required: true
         default: smoke
-        options: [smoke, baseline, lower, higher]
+        options: [smoke, baseline, lower, higher, recovery, regression]
+      implementation:
+        description: Implementation for the full regression matrix (other scenarios test all builds)
+        type: choice
+        required: true
+        default: patched
+        options: [upstream, patched]
 concurrency:
-  group: multicast-${{ github.event.pull_request.number || github.ref }}-${{ inputs.scenario || 'smoke' }}
+  group: multicast-${{ github.event.pull_request.number || github.ref }}-${{ inputs.scenario || 'smoke' }}-${{ inputs.scenario == 'regression' && inputs.implementation || 'all' }}
   cancel-in-progress: true
 permissions: { contents: read }
 jobs:
   smoke:
+    if: ${{ inputs.scenario != 'regression' }}
     name: ${{ inputs.scenario || 'smoke' }} (${{ matrix.name }}, ARM64)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
@@ -31,6 +38,9 @@ jobs:
         include:
           - name: upstream
             implementation: upstream
+            firmware-image: ghcr.io/kjanat/unifi-os:udmpro-5.1.33@sha256:5d6138dd461c4d265380eb550f5e609b072268e50205007cdd050d09f1d38bf8
+          - name: patched
+            implementation: patched
             firmware-image: ghcr.io/kjanat/unifi-os:udmpro-5.1.33@sha256:5d6138dd461c4d265380eb550f5e609b072268e50205007cdd050d09f1d38bf8
           - name: udmpro-5.1.33
             implementation: firmware
@@ -90,6 +100,95 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: multicast-${{ inputs.scenario || 'smoke' }}-${{ matrix.name }}-${{ github.run_attempt }}
+          path: tests/multicast/artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+  regression:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'regression' }}
+    name: ${{ inputs.implementation }} / ${{ matrix.scenario }} / IGMPv${{ matrix.version }} (ARM64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [baseline, lower, higher, recovery]
+        version: [2, 3]
+    env:
+      PROXY_IMPLEMENTATION: ${{ inputs.implementation }}
+      SCENARIO: ${{ matrix.scenario }}
+      IGMP_VERSION: ${{ matrix.version }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - name: Verify native ARM64 runner and Docker daemon
+        run: |
+          mkdir -p tests/multicast/artifacts
+          case "$(uname -m)" in
+            aarch64|arm64) ;;
+            *) echo "Expected a native ARM64 runner" >&2; exit 1 ;;
+          esac
+          architecture="$(docker info --format '{{.Architecture}}')"
+          case "${architecture}" in
+            aarch64|arm64) ;;
+            *) echo "Expected a native ARM64 Docker daemon, got ${architecture}" >&2; exit 1 ;;
+          esac
+          {
+            uname -a
+            docker version
+            docker compose version
+          } | tee tests/multicast/artifacts/runner.txt
+      - name: Build fixture and run fixture checks
+        run: docker compose -f tests/multicast/compose.yaml build 2>&1 | tee tests/multicast/artifacts/build.log
+      # Export once per implementation; this container is never started.
+      - name: Export tested ARM64 binary and build provenance
+        if: ${{ matrix.scenario == 'baseline' && matrix.version == 3 }}
+        run: |
+          artifact="tests/multicast/artifacts/binary-${PROXY_IMPLEMENTATION}-arm64"
+          mkdir -p "${artifact}"
+          container="$(docker create --network none "udm-iptv-multicast:${PROXY_IMPLEMENTATION}")"
+          trap 'docker rm "${container}" >/dev/null' EXIT
+          docker cp "${container}:/opt/proxy/." "${artifact}/"
+          docker image inspect "udm-iptv-multicast:${PROXY_IMPLEMENTATION}" > "${artifact}/image.json"
+          cp tests/multicast/artifacts/runner.txt "${artifact}/runner.txt"
+          cp tests/multicast/artifacts/build.log "${artifact}/build.log"
+          if [[ "${PROXY_IMPLEMENTATION}" == patched ]]; then
+            cp -R patches/improxy "${artifact}/patch-sources"
+          fi
+          jq -n --arg commit "${GITHUB_SHA}" --arg implementation "${PROXY_IMPLEMENTATION}" \
+            --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            '{commit: $commit, implementation: $implementation, run: $run, attempt: $attempt}' \
+            > "${artifact}/provenance.json"
+          (
+            cd "${artifact}"
+            mapfile -d '' -t files < <(find . -type f -print0 | sort -z)
+            sha256sum "${files[@]}" > SHA256SUMS
+          )
+      - name: Run five-second multicast smoke test
+        timeout-minutes: 2
+        run: |
+          python3 tests/multicast/run.py smoke \
+            --implementation "${PROXY_IMPLEMENTATION}" \
+            --proxy-version "${IGMP_VERSION}" --receiver-version "${IGMP_VERSION}" \
+            --query-version "${IGMP_VERSION}"
+      - name: Run six-minute regression scenario
+        timeout-minutes: 8
+        run: |
+          python3 tests/multicast/run.py scenario \
+            --implementation "${PROXY_IMPLEMENTATION}" \
+            --scenario "${SCENARIO}" --duration 360 \
+            --proxy-version "${IGMP_VERSION}" --receiver-version "${IGMP_VERSION}" \
+            --query-version "${IGMP_VERSION}"
+      - name: Upload regression evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: multicast-regression-${{ inputs.implementation }}-${{ matrix.scenario }}-v${{ matrix.version }}-${{ github.run_attempt }}
           path: tests/multicast/artifacts/
           if-no-files-found: warn
           retention-days: 14

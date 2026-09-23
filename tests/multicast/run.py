@@ -22,7 +22,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["smoke", "scenario"])
     parser.add_argument(
-        "--implementation", choices=["upstream", "firmware"], default="upstream"
+        "--implementation",
+        choices=["upstream", "firmware", "patched"],
+        default="upstream",
     )
     parser.add_argument("--firmware-image")
     args, options = parser.parse_known_args()

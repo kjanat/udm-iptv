@@ -90,7 +90,7 @@ def receiver():
         )
 
 
-def querier(address, version):
+def querier(address, version, query_limit):
     with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_IGMP) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"lan\0")
         sock.setsockopt(
@@ -100,11 +100,17 @@ def querier(address, version):
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_OPTIONS, b"\x94\x04\x00\x00")
         sock.settimeout(0.1)
         next_query, other_until, startup = time.monotonic(), 0.0, 2
+        sent = 0
         emit("ready", address=address, version=version)
         while running:
             now = time.monotonic()
-            if now >= next_query and now >= other_until:
+            if (
+                now >= next_query
+                and now >= other_until
+                and (query_limit == 0 or sent < query_limit)
+            ):
                 sock.sendto(query(version), ("224.0.0.1", 0))
+                sent += 1
                 emit("query", address=address, version=version)
                 startup = max(0, startup - 1)
                 next_query = now + (31.25 if startup else 125)
@@ -133,6 +139,7 @@ if __name__ == "__main__":
     parser.add_argument("role", choices=["sender", "receiver", "querier"])
     parser.add_argument("--address", default="192.0.2.10")
     parser.add_argument("--version", type=int, choices=[2, 3], default=3)
+    parser.add_argument("--query-limit", type=int, default=0)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -141,4 +148,4 @@ if __name__ == "__main__":
     elif args.role == "receiver":
         receiver()
     else:
-        querier(args.address, args.version)
+        querier(args.address, args.version, args.query_limit)
