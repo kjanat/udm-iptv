@@ -8,6 +8,15 @@ import (
 	"syscall"
 )
 
+// ReadProxyConfig reads the effective configuration written for the running proxy.
+func ReadProxyConfig() (string, error) {
+	data, err := os.ReadFile(proxyConfigPath)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", proxyConfigPath, err)
+	}
+	return string(data), nil
+}
+
 // ReadRuntimeState reads the running proxy's state written by the daemon.
 func ReadRuntimeState() (RuntimeState, error) {
 	data, err := os.ReadFile(runtimeStatePath)

@@ -18,6 +18,24 @@ import (
 
 var errProfileSwitchAborted = errors.New("cancelled")
 
+func TestPostTVSelectionKeepsTheSelectedWANPort(t *testing.T) {
+	t.Parallel()
+	value := configtest.KPN()
+	value.WAN.Interface = "eth4"
+	if err := applyProfile(config.DefaultCatalog(), &value, "posttv"); err != nil {
+		t.Fatal(err)
+	}
+	if value.WAN.Interface != "eth4.35" {
+		t.Fatalf("PostTV selected %s, want eth4.35", value.WAN.Interface)
+	}
+	if err := applyProfile(config.DefaultCatalog(), &value, "posttv"); err != nil {
+		t.Fatal(err)
+	}
+	if value.WAN.Interface != "eth4.35" {
+		t.Fatalf("reselecting PostTV changed WAN to %s", value.WAN.Interface)
+	}
+}
+
 func TestSettingsSwitchStaticToDHCP(t *testing.T) {
 	value := configtest.Custom()
 	value.WAN.DHCP = false

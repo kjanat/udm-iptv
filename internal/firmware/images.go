@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -243,15 +244,7 @@ func (p Pipeline) Publish(ctx context.Context, image, model string, releases []R
 	}
 	for index, release := range releases {
 		source := image + ":" + p.Track.versionTag(model, release.Version)
-		tags := []string{source, image + ":" + p.Track.versionTag(release.Board, release.Version)}
-		if index == len(releases)-1 {
-			alias := p.Track.latestAlias()
-			tags = append(tags, image+":"+model+"-"+alias, image+":"+release.Board+"-"+alias)
-			if model == "udmpro" {
-				tags = append(tags, image+":"+alias)
-			}
-		}
-		for _, tag := range tags {
+		for _, tag := range p.Track.publicationTags(image, model, release, index == len(releases)-1) {
 			err := p.publishTag(ctx, source, tag)
 			if err != nil {
 				return err
@@ -260,6 +253,38 @@ func (p Pipeline) Publish(ctx context.Context, image, model string, releases []R
 	}
 
 	return nil
+}
+
+func (track Track) publicationTags(image, model string, release Release, latest bool) []string {
+	aliases := publicationModels(model, release.Board)
+	tags := make([]string, 0, 2*len(aliases)+1)
+	for _, alias := range aliases {
+		tags = append(tags, image+":"+track.versionTag(alias, release.Version))
+	}
+	if latest {
+		alias := track.latestAlias()
+		for _, name := range aliases {
+			tags = append(tags, image+":"+name+"-"+alias)
+		}
+		if model == "udmpro" {
+			tags = append(tags, image+":"+alias)
+		}
+	}
+	return tags
+}
+
+// The shell publisher used lower-case platform names. Keep those aliases
+// current alongside the Go model names, including when a legacy name was
+// explicitly requested (udmprose/udmse and udmea4c/udmbeast).
+func publicationModels(model, board string) []string {
+	var names []string
+	for _, name := range []string{model, board, modelForBoard(board), strings.ToLower(board)} {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+
+	return names
 }
 
 func (p Pipeline) publishTag(ctx context.Context, source, target string) error {

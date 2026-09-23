@@ -82,7 +82,7 @@ func openStateChild(parent *os.Root, name string) (*os.Root, error) {
 
 // Remove only owned entries. Unknown files and external configurations survive.
 func removeStateFiles(root *os.Root, configPath string, options UninstallOptions) error {
-	if root == nil {
+	if root == nil || options.KeepData {
 		return nil
 	}
 	for _, name := range ownedStateFiles(root, configPath, options) {

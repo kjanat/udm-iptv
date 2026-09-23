@@ -3,6 +3,7 @@
 name: CI
 on:
   pull_request:
+  push: { branches: [master] }
   workflow_call:
     inputs: { release: { description: "Validate tagged release instead of snapshot.", type: boolean, default: false } }
     outputs: { artifact: { description: "Validated binaries and Debian package.", value: "${{ jobs.build.outputs.artifact }}" } }
@@ -170,10 +171,37 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     strategy: { fail-fast: false, matrix: "${{ fromJSON(needs.catalog.outputs.matrix) }}" }
-    env: { SRC: "${{ matrix.from }}", DST: "${{ matrix.to }}" }
+    env:
+      SRC: ${{ matrix.from }}
+      DST: ${{ matrix.to }}
     steps:
       - *Checkout
       - *Go
       - *dlArtefacts
       - name: Test firmware installation, reboot and offline recovery
+        env: { UDM_IPTV_FIRMWARE_EVIDENCE: "${{ runner.temp }}/firmware-evidence" }
         run: go test -tags firmware -v -count=1 -timeout=20m ./tests/firmware
+      - name: Upload firmware evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: firmware-evidence-${{ matrix.model }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/firmware-evidence
+          include-hidden-files: true
+          if-no-files-found: error
+
+  ci-passed:
+    name: CI passed
+    if: ${{ always() }}
+    needs: [build, test, actionlint, integration, fmt, lint, package, catalog, firmware]
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require every dependency to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "${RESULTS}" | jq -e '
+            keys == ["actionlint", "build", "catalog", "firmware", "fmt", "integration", "lint", "package", "test"]
+            and all(.[]; .result == "success")
+          '

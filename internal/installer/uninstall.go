@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
@@ -21,6 +22,7 @@ import (
 // dpkg owns and removes after its maintainer script returns.
 type UninstallOptions struct {
 	KeepConfig  bool
+	KeepData    bool
 	FromPackage bool
 }
 
@@ -121,7 +123,7 @@ func (u uninstaller) removeInstallationState(context.Context) error {
 	if err := removeStateFiles(u.root, u.configPath, u.options); err != nil {
 		return err
 	}
-	if u.options.KeepConfig || u.root == nil {
+	if u.options.KeepConfig || u.options.KeepData || u.root == nil {
 		return nil
 	}
 	return ignoreNonEmpty(os.Remove(u.stateDir)) // Empty directories only; never recursive.
@@ -242,7 +244,7 @@ func packageOwned(status string) bool {
 }
 
 func aptRemove(ctx context.Context, action string, out, errOut io.Writer) error {
-	return runApt(ctx, out, errOut, action, "-y", packageName)
+	return runApt(ctx, out, errOut, false, action, "-y", packageName)
 }
 
 func aptInstall(ctx context.Context, packagePath string, allowDowngrade bool, out, errOut io.Writer) error {
@@ -250,12 +252,12 @@ func aptInstall(ctx context.Context, packagePath string, allowDowngrade bool, ou
 	if allowDowngrade {
 		arguments = append(arguments, "--allow-downgrades")
 	}
-	return runApt(ctx, out, errOut, append(arguments, packagePath)...)
+	return runApt(ctx, out, errOut, false, append(arguments, packagePath)...)
 }
 
-func runApt(ctx context.Context, out, errOut io.Writer, arguments ...string) error {
+func runApt(ctx context.Context, out, errOut io.Writer, keepData bool, arguments ...string) error {
 	apt := exec.CommandContext(ctx, "apt-get", arguments...)
-	apt.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	apt.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "UDM_IPTV_REMOVE_KEEP_DATA="+strconv.FormatBool(keepData))
 	apt.Stdout, apt.Stderr = out, errOut
 	if err := apt.Run(); err != nil {
 		return fmt.Errorf("apt-get %s: %w", strings.Join(arguments, " "), err)
@@ -268,8 +270,14 @@ func runApt(ctx context.Context, out, errOut io.Writer, arguments ...string) err
 // and reaches the internal cleanup from there. It reports whether it
 // delegated, and runs before anything is deleted, so a failure leaves the
 // installation whole rather than half removed behind dpkg's back.
-func DelegateRemoval(ctx context.Context, keepConfig bool, out, errOut io.Writer) (bool, error) {
-	return delegateRemoval(ctx, keepConfig, out, errOut, systemPackageCommands())
+func DelegateRemoval(ctx context.Context, options UninstallOptions, out, errOut io.Writer) (bool, error) {
+	commands := systemPackageCommands()
+	if options.KeepData {
+		commands.remove = func(ctx context.Context, action string, out, errOut io.Writer) error {
+			return runApt(ctx, out, errOut, true, action, "-y", packageName)
+		}
+	}
+	return delegateRemoval(ctx, options.KeepConfig || options.KeepData, out, errOut, commands)
 }
 
 func delegateRemoval(ctx context.Context, keepConfig bool, out, errOut io.Writer, commands packageCommands) (bool, error) {

@@ -358,7 +358,7 @@ func KeepsSettings(id string) bool {
 
 // Apply returns current re-labelled for "custom" or "legacy", or a fresh copy
 // of the named profile's settings that keeps current's telemetry choice and
-// LAN interfaces and WAN interface when the provider does not dictate one.
+// LAN interfaces. Provider WAN sub-interface templates use the selected port.
 func (catalog Catalog) Apply(id string, current Config) (Config, error) {
 	if KeepsSettings(id) {
 		current.Profile = id
@@ -371,14 +371,27 @@ func (catalog Catalog) Apply(id string, current Config) (Config, error) {
 	}
 	value := profile.Config.Clone()
 	value.Telemetry = current.Telemetry
-	if value.WAN.Interface == "" {
-		value.WAN.Interface = current.WAN.Interface
-	}
+	value.WAN.Interface = profileWANInterface(value.WAN.Interface, current.WAN.Interface)
 	if len(current.LAN.Interfaces) > 0 {
 		value.LAN.Interfaces = slices.Clone(current.LAN.Interfaces)
 	}
 
 	return value, nil
+}
+
+// The catalog uses eth8.N for a provider sub-interface on the selected WAN
+// port. Resolve it when applying the profile, after hardware defaults were
+// selected, and avoid stacking its VLAN suffix on an existing sub-interface.
+// Fixed names such as ppp0 remain provider settings.
+func profileWANInterface(template, selected string) string {
+	if template == "" {
+		return selected
+	}
+	if suffix, relative := strings.CutPrefix(template, "eth8."); relative && selected != "" {
+		parent, _, _ := strings.Cut(selected, ".")
+		return parent + "." + suffix
+	}
+	return template
 }
 
 // Country looks up a market by ISO code.

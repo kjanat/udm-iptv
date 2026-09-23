@@ -103,8 +103,8 @@
         },
         "sourceRanges": {
           "$ref": "#/$defs/cidrList",
-          "description": "Networks multicast video may originate from. Used as altnet by igmpproxy only; improxy ignores it. Multicast groups such as 224.0.0.0/4 belong here, never in natDestinations.",
-          "markdownDescription": "Networks multicast video may originate from. Written as `altnet` lines for **igmpproxy only**; `improxy` has no equivalent and ignores it.\n\nMulticast groups such as `224.0.0.0/4` belong here, never in `natDestinations`."
+          "description": "Unicast source networks multicast video may originate from. Used as altnet by igmpproxy only; improxy ignores it. Multicast group addresses are destinations and are not allowed here.",
+          "markdownDescription": "Unicast source networks multicast video may originate from. Written as `altnet` lines for **igmpproxy only**; `improxy` has no equivalent and ignores it.\n\nMulticast groups such as `224.0.0.0/4` are destinations, not source networks. Do not list them in `sourceRanges` or `natDestinations`."
         },
         "wan": {
           "$ref": "#/$defs/wan"
@@ -196,7 +196,7 @@
         "natDestinations": {
           "$ref": "#/$defs/cidrList",
           "description": "Unicast destinations reached through the IPTV uplink. Each becomes an iptables MASQUERADE rule matching on destination. Never list multicast groups here.",
-          "markdownDescription": "Unicast destinations reached through the IPTV uplink (guide, video on demand, DNS). Each becomes an `iptables -t nat -A POSTROUTING -d <cidr> -o <iptv> -j MASQUERADE` rule, matching on **destination**.\n\nNever list multicast groups here; they go in `sourceRanges`."
+          "markdownDescription": "Unicast destinations reached through the IPTV uplink (guide, video on demand, DNS). Each becomes an `iptables -t nat -A POSTROUTING -d <cidr> -o <iptv> -j MASQUERADE` rule, matching on **destination**.\n\nNever list multicast groups here or in `sourceRanges`; group forwarding is managed through receiver memberships."
         },
         "staticAddress": {
           "$ref": "#/$defs/cidr",

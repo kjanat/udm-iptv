@@ -189,3 +189,28 @@ func TestEveryFlagFieldIsAWizardField(t *testing.T) {
 		t.Fatalf("answered = %q", got)
 	}
 }
+
+func TestPostTVProfileFlagKeepsTheSelectedWANPort(t *testing.T) {
+	t.Parallel()
+	for _, override := range []string{"", "eth3.35"} {
+		flags, command := boundConfigureFlags()
+		if err := command.Flags().Set("profile", "posttv"); err != nil {
+			t.Fatal(err)
+		}
+		want := "eth9.35"
+		if override != "" {
+			if err := command.Flags().Set("wan-interface", override); err != nil {
+				t.Fatal(err)
+			}
+			want = override
+		}
+		value := config.DefaultKPN()
+		value.WAN.Interface = "eth9"
+		if err := flags.apply(command, &value); err != nil {
+			t.Fatal(err)
+		}
+		if value.WAN.Interface != want {
+			t.Errorf("PostTV WAN = %s with override %q, want %s", value.WAN.Interface, override, want)
+		}
+	}
+}
