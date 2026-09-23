@@ -30,6 +30,18 @@ func TestJournalOutputPreservesPartialStdoutAndStderr(t *testing.T) {
 	assertDiagnosticDetails(t, report.String(), "joined multicast group", "Permission denied reading journal", "Journal collection incomplete")
 }
 
+func TestFailureReportRetainsJournalAfterCancellation(t *testing.T) {
+	installJournalScript(t, "printf '%s\\n' '"+liveJournalRecord+"'\n")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var report bytes.Buffer
+	collector := &Collector{ConfigPath: filepath.Join(t.TempDir(), "absent.json")}
+	if err := collector.ReportFailure(ctx, &report); err != nil {
+		t.Fatal(err)
+	}
+	assertDiagnosticDetails(t, report.String(), "joined multicast group")
+}
+
 func TestJournalOutputMakesDiscardedBytesExplicit(t *testing.T) {
 	installJournalScript(t, "printf '%s' '1234567890'\n")
 	data, err := journalOutput(t.Context(), 4)

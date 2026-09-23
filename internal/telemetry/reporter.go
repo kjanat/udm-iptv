@@ -250,10 +250,11 @@ func (r *Reporter) Close() {
 }
 
 var operations = map[string]bool{
-	"install": true, "upgrade": true, "configure": true, "restart": true, "uninstall": true,
+	"install": true, "upgrade": true, "configure": true, "configure.set": true,
+	"start": true, "stop": true, "restart": true, "uninstall": true,
 	OperationDaemon: true, "daemon.startup": true, "dhcp.bound": true, "dhcp.renew": true,
 	"dhcp.deconfig": true, "dhcp.leasefail": true, "dhcp.nak": true,
-	"dhcp.acquire": true, "service.health": true,
+	"dhcp.acquire": true, "service.activate": true, "service.health": true,
 }
 
 // SetMetadata retains printable hardware metadata, including newly released

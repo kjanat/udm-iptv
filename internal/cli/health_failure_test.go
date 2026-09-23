@@ -9,11 +9,15 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/getsentry/sentry-go"
+
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 	"github.com/kjanat/udm-iptv/internal/diagnostics"
 	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
@@ -59,6 +63,42 @@ func TestActivationFailureRetainsLocalAndReportedDiagnostics(t *testing.T) {
 				t.Fatal("reported activation failure lost diagnostic evidence")
 			}
 		})
+	}
+}
+
+func TestFreshInstallActivationFailureUsesSavedTelemetry(t *testing.T) {
+	installFailureJournal(t)
+	directory := t.TempDir()
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(directory, "missing-bus"))
+	capture := captureTelemetry(t)
+	var local bytes.Buffer
+	application := &Application{ConfigPath: filepath.Join(directory, "config.json"), StateDir: directory, Err: &local}
+	value := configtest.Custom()
+	value.Telemetry = config.Telemetry{Enabled: true, Errors: true}
+	plan := installer.Plan{ConfigPath: application.ConfigPath, Config: value}
+	backend := application.installBackend()
+	if err := backend.SaveConfig(t.Context(), plan); err != nil {
+		t.Fatal(err)
+	}
+	err := backend.Activate(t.Context(), plan)
+	if err == nil || !strings.Contains(err.Error(), "connect to systemd") {
+		t.Fatalf("lost activation failure: %v", err)
+	}
+	if !strings.Contains(local.String(), failureJournalMessage) {
+		t.Fatal("activation failure omitted local diagnostics")
+	}
+	output := capture.output()
+	var failure invocationFailure
+	if err := json.Unmarshal(healthFailureItem(t, output, "event"), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Transaction != "service.activate" || !slices.ContainsFunc(failure.Exception, func(exception sentry.Exception) bool {
+		return strings.Contains(exception.Value, "connect to systemd")
+	}) {
+		t.Fatalf("first installation lost its activation error: %+v", failure)
+	}
+	if !bytes.Equal(healthFailureAttachment(t, output), local.Bytes()) {
+		t.Fatal("first installation did not report its diagnostic evidence")
 	}
 }
 
@@ -183,23 +223,41 @@ func runHealthFailureReport(t *testing.T, settings config.Telemetry, run func(co
 
 func healthFailureAttachment(t *testing.T, envelope string) []byte {
 	t.Helper()
+	return healthFailureItem(t, envelope, "attachment")
+}
+
+func healthFailureItem(t *testing.T, envelope, kind string) []byte {
+	t.Helper()
 	reader := bufio.NewReader(strings.NewReader(envelope))
+	var found []byte
 	for {
 		line, err := reader.ReadBytes('\n')
+		if errors.Is(err, io.EOF) {
+			break
+		}
 		if err != nil {
-			t.Fatalf("missing diagnostic attachment: %v", err)
+			t.Fatal(err)
 		}
 		var header struct {
 			Type   string `json:"type"`
 			Length int    `json:"length"`
 		}
-		if json.Unmarshal(line, &header) != nil || header.Type != "attachment" {
+		if json.Unmarshal(line, &header) != nil || header.Type == "" {
 			continue
 		}
 		payload := make([]byte, header.Length)
 		if _, err := io.ReadFull(reader, payload); err != nil {
 			t.Fatal(err)
 		}
-		return payload
+		if header.Type == kind {
+			if found != nil {
+				t.Fatalf("duplicate diagnostic %s", kind)
+			}
+			found = payload
+		}
 	}
+	if found == nil {
+		t.Fatalf("missing diagnostic %s", kind)
+	}
+	return found
 }
