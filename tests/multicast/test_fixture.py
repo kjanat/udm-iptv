@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lab import election_result
 from run import normalized_architecture
 from wire import checksum, igmp, query, read_pcap
 
@@ -75,6 +76,73 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(normalized_architecture("aarch64"), "arm64")
         self.assertEqual(normalized_architecture("x86_64"), "amd64")
         self.assertNotEqual(normalized_architecture("x86_64"), "arm64")
+
+
+class ElectionEvidenceTests(unittest.TestCase):
+    def other(self, version=3):
+        return [
+            {
+                "time": stamp,
+                "version": version,
+                "max_response_code": 100,
+                "qrv": 2,
+                "qqic": 125,
+            }
+            for stamp in (10, 41.25)
+        ]
+
+    def test_original_continued_queries_fail_lower_election(self):
+        queries = [{"time": stamp} for stamp in (2, 33, 158, 283)]
+        self.assertEqual(
+            election_result("lower", queries, self.other(), 360)["status"], "fail"
+        )
+
+    def test_yield_and_correct_recovery_pass_both_versions(self):
+        for version in (2, 3):
+            queries = [{"time": stamp} for stamp in (2, 296.3)]
+            result = election_result("recovery", queries, self.other(version), 360)
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(result["expected_recovery_at"], 296.25)
+
+    def test_unpatched_schedule_fails_recovery(self):
+        queries = [{"time": stamp} for stamp in (2, 33, 158, 283)]
+        self.assertEqual(
+            election_result("recovery", queries, self.other(), 360)["status"], "fail"
+        )
+
+    def test_permanently_silent_proxy_cannot_pass(self):
+        self.assertEqual(
+            election_result("recovery", [{"time": 2}], self.other(), 360)["status"],
+            "fail",
+        )
+
+    def test_recovery_requires_refresh_from_second_query(self):
+        queries = [{"time": stamp} for stamp in (2, 265, 296.3)]
+        self.assertEqual(
+            election_result("recovery", queries, self.other(), 360)["status"], "fail"
+        )
+
+    def test_early_end_or_missing_stimulus_is_inconclusive(self):
+        for other, finish in ((self.other(), 280), ([], 360), (self.other()[:1], 360)):
+            self.assertEqual(
+                election_result("recovery", [], other, finish)["status"], "inconclusive"
+            )
+
+    def test_wrong_timer_values_cannot_support_recovery_claim(self):
+        other = self.other()
+        other[-1]["qqic"] = 10
+        self.assertEqual(
+            election_result("recovery", [], other, 360)["status"], "inconclusive"
+        )
+
+    def test_lower_and_higher_expect_opposite_behavior(self):
+        queries = [{"time": 2}]
+        self.assertEqual(
+            election_result("lower", queries, self.other(), 360)["status"], "pass"
+        )
+        self.assertEqual(
+            election_result("higher", queries, self.other(), 360)["status"], "fail"
+        )
 
 
 if __name__ == "__main__":

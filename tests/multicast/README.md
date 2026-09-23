@@ -19,7 +19,7 @@ LAN, publishes a port or mounts the Docker socket.
 
 ## Build, then prove the fixture works
 
-From the repository root, with Docker Engine and Compose available:
+From the repository root, with Docker Engine and Compose 2.17+ available:
 
 ```sh
 docker compose -f tests/multicast/compose.yaml build
@@ -44,15 +44,26 @@ The five seconds **do not test querier-election convergence, the normal query
 interval, or membership expiry**. A successful smoke test is a prerequisite for
 those experiments, not evidence that they pass.
 
-## Two implementations, explicitly separated
+## Implementations, explicitly separated
 
-| Mode                 | Program                                                                            | Required Docker daemon |
-| -------------------- | ---------------------------------------------------------------------------------- | ---------------------- |
-| `upstream` (default) | Native build of `haibbo/improxy` commit `5a9d153d10e19ef835af9fc5f2a971799677a7ed` | Native AMD64 or ARM64  |
-| `firmware`           | Unmodified executable, loader and libraries from a pinned UniFi OCI image          | Native ARM64           |
+| Mode                 | Program                                                                                                  | Required Docker daemon |
+| -------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `upstream` (default) | Native build of `haibbo/improxy` commit `5a9d153d10e19ef835af9fc5f2a971799677a7ed`                       | Native AMD64 or ARM64  |
+| `firmware`           | Unmodified executable, loader and libraries from a pinned UniFi OCI image                                | Native ARM64           |
+| `patched`            | The same pinned source plus [the IPv4 querier patch](../../patches/improxy/README.md), statically linked | Native AMD64 or ARM64  |
 
 Upstream source is fetched at the fixed commit without timer or behavior patches.
 Source results do not establish shipped-binary behavior.
+
+The patched build runs focused C tests against the production code before building
+the executable used by the fixture. It records the source archive and patch hashes,
+compiler/linker versions and build flags. This is a separate executable; building
+or running the fixture does not replace the proxy installed on a router.
+
+```sh
+PROXY_IMPLEMENTATION=patched docker compose -f tests/multicast/compose.yaml build
+python3 tests/multicast/run.py smoke --implementation patched
+```
 
 Firmware mode defaults to UDM Pro 5.1.33, pinned by OCI manifest digest in Compose.
 Its executable SHA-256 is
@@ -76,7 +87,7 @@ socket translation lacks the multicast-routing operations needed by IMProxy.
 Setting Compose `platform: linux/arm64` would not solve that limitation.
 
 [The ARM64 workflow](../../.github/workflows/multicast.yml) builds and smoke-tests
-the source implementation and pinned UDM Pro/UCG Max 5.1.33 firmware images on
+the original and patched source implementations and pinned UDM Pro/UCG Max 5.1.33 firmware images on
 `ubuntu-24.04-arm`. It checks both host and daemon architecture and uploads evidence
 even on failure. It never automatically runs the longer scenarios.
 
@@ -88,12 +99,14 @@ Run these only after the smoke test passes:
 python3 tests/multicast/run.py scenario --scenario baseline --duration 360
 python3 tests/multicast/run.py scenario --scenario lower --duration 360
 python3 tests/multicast/run.py scenario --scenario higher --duration 360
+python3 tests/multicast/run.py scenario --scenario recovery --duration 360
 ```
 
-Add `--implementation firmware` to use the firmware image already built.
+Add `--implementation firmware` or `--implementation patched` to use that image
+already built.
 Each invocation creates fresh namespaces, processes and membership state.
 
-To run the same six-minute experiments on the three native ARM64 CI implementations:
+To run the same six-minute experiments on all four native ARM64 CI builds:
 
 ```sh
 gh workflow run multicast.yml -R kjanat/udm-iptv --ref go -f scenario=baseline
@@ -107,18 +120,39 @@ the evidence. Separate scenarios can run concurrently without cancelling each
 other. Repeating the same scenario on the same ref replaces its in-progress run.
 Pushes, pull requests and manual dispatches with `scenario=smoke` run only smoke.
 
+For the complete before/after regression matrix, dispatch each implementation
+separately. Each run covers baseline, lower, higher and recovery with all three
+protocol version flags set to v2, then v3 (eight independent ARM64 jobs):
+
+```sh
+gh workflow run multicast.yml -R kjanat/udm-iptv --ref go -f scenario=regression -f implementation=upstream
+gh workflow run multicast.yml -R kjanat/udm-iptv --ref go -f scenario=regression -f implementation=patched
+```
+
+Failures remain failing jobs, including the unmodified upstream control. These
+dispatches do not cancel each other. The baseline/v3 job exports the tested binary
+and build provenance inside its evidence artifact; the patched export also includes
+the patch and C test sources. Artifact retention is fourteen days.
+
 The second querier starts after ten seconds. `.10` should win against proxy `.20`;
 `.30` should yield. The query source implements that election response with the
 default 255-second other-querier interval. It uses TTL 1, Router Alert, valid IGMP
 checksums, QRV 2, query interval 125 seconds and max response time 10 seconds.
 It is a small controlled stimulus, not a complete replacement for a switch.
 
+In `recovery`, the lower querier sends exactly two startup queries (~10 and ~41.25
+seconds), then remains silent. The proxy must remain quiet until 255 seconds after
+the **second** query, then resume within three seconds of expiry. This distinguishes
+correct timer refresh from early takeover and from permanent suppression. A
+quarter-second allowance covers timestamp/scheduler granularity at the deadline.
+Recovery requires at least 320 seconds; all other scenarios allow 45 seconds.
+
 `--proxy-version`, `--receiver-version` and `--query-version` independently accept
 `2` or `3`. Defaults are proxy v3, receiver v2 and second-querier v3. The Linux
 receiver performs real kernel membership/report processing. Captures record the
 versions actually observed; the upstream host behavior belongs to the host kernel.
 
-Minimum scenario duration is 45 seconds. With this source revision, proxy queries
+With the unpatched source revision, proxy queries
 are scheduled near 2, 33, 158 and 283 seconds after proxy startup. A 45-second run
 only covers startup queries; 360 seconds includes normal query intervals and
 extends past the default 260-second membership timer. No timers are accelerated.
@@ -150,7 +184,7 @@ initialization; `DAC_OVERRIDE` permits writing the sole host bind mount, the
 artifacts directory, when its owner is the CI runner user. No host namespaces, devices or network mounts are
 used. Build-time package/source/image downloads need internet; test traffic does not.
 
-Docker shares its Linux host kernel. Neither mode boots a UniFi kernel, models a
+Docker shares its Linux host kernel. None of the modes boots a UniFi kernel, models a
 switch ASIC, duplicates receiver firmware, or establishes the reporter's cause of
 failure. All capture clocks come from the same host.
 

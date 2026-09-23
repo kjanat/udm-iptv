@@ -223,6 +223,8 @@ def proxy_command(output, version):
         "kernel": platform.uname()._asdict(),
         "elf": command("readelf", "-h", "-l", "-d", "-n", str(binary)),
     }
+    if implementation == "patched":
+        metadata["build_metadata"] = Path("/opt/proxy/build-metadata.txt").read_text()
     config = output / "proxy.conf"
     config.write_text(
         f"igmp enable version {version}\nmld disable\nquickleave disable\nupstream wan\ndownstream lan\n"
@@ -280,6 +282,45 @@ def proxy_command(output, version):
         "-p",
         "/tmp/improxy.pid",
     ]
+
+
+def election_result(scenario, proxy_queries, other_queries, finish):
+    """Judge captured queries, including refresh and recovery at real timer values."""
+    if scenario == "baseline":
+        return {"status": "not_applicable"}
+    if not other_queries:
+        return {"status": "inconclusive", "reason": "no second querier captured"}
+    first = other_queries[0]["time"]
+    late = [event for event in proxy_queries if event["time"] > first + 1]
+    if scenario == "lower":
+        return {"status": "fail" if late else "pass"}
+    if scenario == "higher":
+        return {"status": "pass" if late else "fail"}
+    # Recovery stimulus is exactly two default General Queries, separated by
+    # the normal startup interval. The second query must refresh the deadline.
+    if len(other_queries) != 2 or not 30 <= other_queries[1]["time"] - first <= 33:
+        return {"status": "inconclusive", "reason": "expected two startup queries"}
+    if any(
+        event["max_response_code"] != 100
+        or (event["version"] == 3 and (event["qrv"] != 2 or event["qqic"] != 125))
+        for event in other_queries
+    ):
+        return {"status": "inconclusive", "reason": "unexpected query timers"}
+    deadline = other_queries[-1]["time"] + 255
+    if finish < deadline + 10:
+        return {"status": "inconclusive", "reason": "observation ends before recovery"}
+    # Allow only capture/scheduler granularity at expiry, not early takeover at
+    # the first query's deadline or a full query-interval delay after expiry.
+    early = [event for event in late if event["time"] < deadline - 0.25]
+    recovered = [
+        event for event in late if deadline - 0.25 <= event["time"] <= deadline + 3
+    ]
+    return {
+        "status": "pass" if not early and recovered else "fail",
+        "expected_recovery_at": deadline,
+        "early_query_count": len(early),
+        "recovery_queries": recovered,
+    }
 
 
 def analyze(output, args, start, finish, query_start):
@@ -346,29 +387,13 @@ def analyze(output, args, start, finish, query_start):
         checks[interface + "_capture_no_kernel_drops"] = (
             "\n0 packets dropped by kernel" in capture_log
         )
-    election = "not_evaluated"
+    election = {"status": "not_evaluated"}
     if args.mode == "scenario":
-        if args.scenario == "lower" and other_queries:
-            late = [
-                event
-                for event in proxy_queries
-                if event["time"] > other_queries[0]["time"] + 1
-            ]
-            election = "fail" if late else "pass"
-        elif args.scenario == "higher" and other_queries:
-            late = [
-                event
-                for event in proxy_queries
-                if event["time"] > other_queries[0]["time"] + 1
-            ]
-            election = "pass" if late else "fail"
-        elif args.scenario == "baseline":
-            election = "not_applicable"
-        else:
-            election = "inconclusive"
+        election = election_result(args.scenario, proxy_queries, other_queries, finish)
     return {
         "checks": checks,
-        "election": election,
+        "election": election["status"],
+        "election_details": election,
         "receiver": received,
         "mfc_packet_counts": mfc_packets,
         "proxy_queries": proxy_queries,
@@ -385,6 +410,8 @@ def analyze(output, args, start, finish, query_start):
 def experiment(args):
     if args.mode == "scenario" and not 45 <= args.duration <= 900:
         raise ValueError("scenario duration must be 45..900 seconds")
+    if args.mode == "scenario" and args.scenario == "recovery" and args.duration < 320:
+        raise ValueError("recovery needs at least 320 seconds at the default timers")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = Path("/artifacts") / (stamp + "-" + uuid.uuid4().hex[:8])
     output.mkdir(parents=True)
@@ -467,6 +494,10 @@ def experiment(args):
                     address,
                     "--version",
                     str(args.query_version),
+                    "--query-limit",
+                    "2"
+                    if args.mode == "scenario" and args.scenario == "recovery"
+                    else "0",
                 )
                 query_start = time.time()
             if elapsed >= next_snapshot:
@@ -509,7 +540,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["smoke", "scenario", "configure"])
     parser.add_argument(
-        "--scenario", choices=["baseline", "lower", "higher"], default="baseline"
+        "--scenario",
+        choices=["baseline", "lower", "higher", "recovery"],
+        default="baseline",
     )
     parser.add_argument("--duration", type=int, default=360)
     parser.add_argument("--proxy-version", type=int, choices=[2, 3], default=3)
