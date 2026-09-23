@@ -18,7 +18,7 @@ if [ "${1:-}" = purge ]; then
 		# Match installer.ownedStateFiles/ownedStateDirectories. dpkg already
 		# removed its binary; unknown files, directories and .lock survive.
 		rm -f -- bin/udhcpc-hook bin/.udm-iptv.previous bin/.udm-iptv.previous-*
-		rm -f -- config.json config.json.rejected legacy.conf udm-iptv.conf \
+		rm -f -- config.json config.json.rejected legacy.conf legacy-network.pending udm-iptv.conf \
 			udm-iptv.deb udm-iptv-restore debconf.preseed \
 			telemetry-research.json telemetry-research.lock
 		for kind in errors logs metrics traces presets network; do

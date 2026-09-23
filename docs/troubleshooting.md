@@ -28,13 +28,36 @@ VLAN ID, and explains any mismatch. Confirm which physical port carries your pro
 IPTV connection before correcting settings with `udm-iptv configure`.
 
 Existing VLANs without the `udm-iptv` ownership marker are also refused, even when
-the parent and VLAN ID match. This includes VLANs created by older releases.
+the parent and VLAN ID match. Debian upgrades from v4 transfer the matching legacy
+VLAN as part of installation; other existing interfaces are not adopted.
 Choose an unused IPTV interface name, or establish who owns the existing interface
 before migrating it. Untagged interfaces retain unrelated addresses and DHCP routes;
 collisions with resources absent from the recorded lease are refused.
 
+## Upgrade from v4
+
+On v4.3.2:
+
+```sh
+udm-iptv upgrade --prerelease
+```
+
+On an older v4 version, first run `udm-iptv upgrade` to obtain the current v4
+installer, then run the command above.
+
+The package upgrade saves the old configuration and stops the v4 service before
+replacing its files, allowing v4 to remove its NAT rules. v5 imports the settings
+and takes over the old IPTV VLAN only when its name, parent and VLAN ID match both
+the saved v4 configuration and the imported v5 configuration. No manual VLAN
+deletion or ownership marking is needed for that matching configuration.
+
+If those values differ, installation reports the mismatch and leaves that
+interface unchanged. Check `udm-iptv diagnose` and the configured WAN interface
+before retrying. The saved handover configuration is retained until installation
+passes its health check.
+
 ## Preview upgrades
 
-On `5.0.0-preview.5`, use `udm-iptv upgrade --prerelease`. Current source selects that
-channel automatically. These fixes require a newer published preview; legacy stable
-packages are not upgrade targets for the Go preview.
+On `5.0.0-preview.5`, use `udm-iptv upgrade --prerelease`. Newer previews select that
+channel automatically. Legacy stable packages are not upgrade targets for the Go
+preview.
