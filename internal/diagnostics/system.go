@@ -73,22 +73,30 @@ func collectSystemdEvidence(ctx context.Context, connection *systemd.Conn, statu
 	}
 }
 
-func renderSystemEvidence(value Snapshot) string {
+func (r reportRenderer) systemEvidence(value Snapshot) string {
 	var output strings.Builder
 	fmt.Fprintf(&output, "Board: %s, system ID: %s\nFirmware: %s\nFirmware discovery: %s\nRaw firmware version: %s\nKernel: %s\nSystem state: %s\n",
-		fallbackText(value.System.Board), fallbackText(value.System.SysID), fallbackText(value.System.Firmware), fallbackText(value.System.Discovery), fallbackText(value.System.Version), fallbackText(value.System.Kernel), fallbackText(value.Service.SystemState))
-	output.WriteString(renderCollectionErrors("system", value.System.Errors))
+		fallbackText(value.System.Board), fallbackText(value.System.SysID), fallbackText(value.System.Firmware), fallbackText(value.System.Discovery), fallbackText(value.System.Version), fallbackText(value.System.Kernel), r.systemState(value.Service))
+	output.WriteString(r.collectionErrors("system", value.System.Errors))
 	for _, unit := range value.Service.Units {
 		fmt.Fprintf(&output, "Unit %s:\n", unit.Name)
 		for _, key := range slices.Sorted(maps.Keys(unit.Properties)) {
 			fmt.Fprintf(&output, "  %s=%s\n", key, unit.Properties[key])
 		}
-		output.WriteString(renderCollectionErrors(unit.Name, unit.Errors))
+		output.WriteString(r.collectionErrors(unit.Name, unit.Errors))
 	}
 	if value.ProxyConfig == nil {
-		output.WriteString("Generated proxy configuration: unavailable\n")
+		output.WriteString(r.field("Generated proxy configuration", r.text(ReportWarning, "unavailable")))
 	} else {
 		fmt.Fprintf(&output, "Generated proxy configuration:\n%s\n", *value.ProxyConfig)
 	}
 	return output.String()
+}
+
+func (r reportRenderer) systemState(value serviceStatus) string {
+	role := ReportWarning
+	if value.SystemState == "running" && value.Errors["systemState"] == "" && value.Errors["systemd"] == "" {
+		role = ReportGood
+	}
+	return r.text(role, fallbackText(value.SystemState))
 }

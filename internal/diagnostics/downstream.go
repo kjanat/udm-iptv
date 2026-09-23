@@ -17,11 +17,13 @@ import (
 )
 
 const (
-	sysfsValueLimit = 64
-	valueUnknown    = "unknown"
+	sysfsValueLimit    = 64
+	valueUnknown       = "unknown"
+	linkDown           = "down"
+	linkLowerLayerDown = "lowerlayerdown"
 )
 
-var linkOperStates = map[string]string{"up": "up", "down": "down", valueUnknown: valueUnknown, "lowerlayerdown": "lowerlayerdown", "dormant": "dormant"}
+var linkOperStates = map[string]string{"up": "up", linkDown: linkDown, valueUnknown: valueUnknown, linkLowerLayerDown: linkLowerLayerDown, "dormant": "dormant"}
 
 type downstreamStatus struct {
 	Interface string `json:"interface"`
@@ -47,11 +49,11 @@ func inspectDownstream(system fs.FS, interfaces []string) []downstreamStatus {
 	return result
 }
 
-func renderDownstream(value Snapshot) string {
+func (r reportRenderer) downstream(value Snapshot) string {
 	var output strings.Builder
-	output.WriteString("\nDownstream checks\n")
+	output.WriteString("\n" + r.text(ReportHeading, "Downstream checks") + "\n")
 	for _, link := range value.Downstream {
-		output.WriteString(formatDownstream(link))
+		output.WriteString(r.downstreamLink(link))
 		output.WriteByte('\n')
 	}
 	fmt.Fprintf(&output, "Switch: %s\n", fallbackText(value.Switches))
@@ -233,10 +235,10 @@ func igmpGroup(token string) (netip.Addr, bool) {
 	return netip.AddrFrom4(raw), true
 }
 
-func formatDownstream(link downstreamStatus) string {
+func (r reportRenderer) downstreamLink(link downstreamStatus) string {
 	var parts []string
 	if link.Link != "" {
-		parts = append(parts, "link="+link.Link)
+		parts = append(parts, "link="+r.text(linkRole(link.Link), link.Link))
 	}
 	if link.Snooping != "" {
 		parts = append(parts, "snooping="+link.Snooping)

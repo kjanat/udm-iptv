@@ -26,7 +26,7 @@ func (application *Application) statusCommand() *cobra.Command {
 				return encoder.Encode(value)
 			}
 
-			return writeString(application.Out, ui.StatusText(diagnostics.RenderSnapshot(value)))
+			return writeString(application.Out, ui.Status(value))
 		},
 	}
 	command.Flags().BoolVar(&outputJSON, "json", false, "write structured JSON")

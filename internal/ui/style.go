@@ -8,6 +8,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
+
+	"github.com/kjanat/udm-iptv/internal/diagnostics"
 )
 
 var (
@@ -37,53 +39,32 @@ func Terminal(out io.Writer) io.Writer {
 }
 
 var (
-	labelledLine = regexp.MustCompile(`^([A-Za-z][^:\n]*): (.*)$`)
-	helpCommand  = regexp.MustCompile(`^(  )([a-z][a-z0-9-]*)( {2,}.*)$`)
-	helpFlag     = regexp.MustCompile(`(^|[ ,])(-[a-zA-Z]|--[a-z][a-z0-9-]*)`)
-	goodTokens   = regexp.MustCompile(`\b(active/running|applied|routed|enabled|up|managed|yes|healthy|completed)\b`)
-	warnTokens   = regexp.MustCompile(`\b(unmanaged|unavailable|not checked|none recorded|none configured|no route via \S+|disabled)\b`)
-	badTokens    = regexp.MustCompile(`\b(not applied|failed|inactive|recorded by dpkg while|unhealthy|timed out)\b`)
+	helpCommand = regexp.MustCompile(`^(  )([a-z][a-z0-9-]*)( {2,}.*)$`)
+	helpFlag    = regexp.MustCompile(`(^|[ ,])(-[a-zA-Z]|--[a-z][a-z0-9-]*)`)
 )
 
-// StatusText colours the text form of a status report or a capture for a
-// terminal: labels bold, section headings accented, and the words that say
-// whether something works in green, yellow or red.
-func StatusText(text string) string {
-	lines := strings.Split(text, "\n")
-	for index, line := range lines {
-		lines[index] = statusLine(line, index == 0)
-	}
-
-	return strings.Join(lines, "\n")
+// Status renders semantic report fragments without inspecting their text.
+func Status(value diagnostics.Snapshot) string {
+	return diagnostics.RenderSnapshotStyled(value, reportText)
 }
 
-func statusLine(line string, first bool) string {
-	switch {
-	case first && strings.HasPrefix(line, "udm-iptv "):
-		return headingStyle.Render(line)
-	case line == "":
-		return line
-	case !strings.HasPrefix(line, " ") && strings.HasSuffix(line, ":"):
-		return headingStyle.Render(line)
-	case !strings.HasPrefix(line, " ") && !strings.Contains(line, ": "):
-		return headingStyle.Render(line)
+func reportText(role diagnostics.ReportRole, text string) string {
+	switch role {
+	case diagnostics.ReportPlain:
+		return text
+	case diagnostics.ReportHeading:
+		return headingStyle.Render(text)
+	case diagnostics.ReportLabel:
+		return labelStyle.Render(text)
+	case diagnostics.ReportGood:
+		return goodStyle.Render(text)
+	case diagnostics.ReportWarning:
+		return warnStyle.Render(text)
+	case diagnostics.ReportBad:
+		return badStyle.Render(text)
+	default:
+		return text
 	}
-	if match := labelledLine.FindStringSubmatch(line); match != nil && !strings.HasPrefix(line, " ") {
-		return labelStyle.Render(match[1]) + ": " + verdictTokens(match[2])
-	}
-
-	return verdictTokens(line)
-}
-
-func verdictTokens(text string) string {
-	text = badTokens.ReplaceAllStringFunc(text, render(badStyle))
-	text = warnTokens.ReplaceAllStringFunc(text, render(warnStyle))
-
-	return goodTokens.ReplaceAllStringFunc(text, render(goodStyle))
-}
-
-func render(style lipgloss.Style) func(string) string {
-	return func(text string) string { return style.Render(text) }
 }
 
 // HelpText colours Cobra's help output: section headings, command names in

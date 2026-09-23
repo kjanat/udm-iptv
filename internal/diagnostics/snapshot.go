@@ -323,14 +323,16 @@ func renderIPv6(network networkStatus) string {
 	return output.String()
 }
 
-func renderLease(lease *service.LeaseState) string {
+func (r reportRenderer) lease(lease *service.LeaseState) string {
 	if lease == nil {
 		return "DHCP lease: none recorded\n"
 	}
 	var output strings.Builder
-	outcome := "applied"
-	if !lease.Applied {
-		outcome = "not applied: " + lease.Failure
+	var outcome string
+	if lease.Applied {
+		outcome = r.text(ReportGood, "applied")
+	} else {
+		outcome = r.text(ReportBad, "not applied") + ": " + lease.Failure
 	}
 	fmt.Fprintf(&output, "DHCP lease: %s at %s, address %s/%s, routers %s, static routes %s, %s\n",
 		lease.Lease.Action, lease.Received.Format(time.RFC3339Nano), lease.Lease.Address, lease.Lease.Mask,
@@ -593,48 +595,17 @@ func inspectLink(target string) networkStatus {
 // RenderSnapshot returns a human-readable string representation of a snapshot.
 // Configured settings and observed state are labelled apart.
 func RenderSnapshot(value Snapshot) string {
-	return renderVLANCheck(value.Network.VLAN) + fmt.Sprintf(`udm-iptv %s
-Snapshot time: %s
-Installation: %s
-Profile: %s
-WAN: %s, VLAN %d (%s), DHCP: %t
-Custom VLAN MAC: %t, static address: %t, DHCP options: %t
-Configured VLAN MAC: %s
-Configured static address: %s
-Configured DHCP options: %q
-Configured proxy: %s
-DHCP route policy: %s
-NAT destinations: %s
-Active NAT rules: %s
-Proxy source ranges: %s
-LAN interfaces: %s
-Service: %s/%s (%s, restarts: %s)%s
-Service load state: %s
-Proxy: %s (PID %s)
-IGMP version: %d, MLD: %s, quickleave enabled: %t, proxy debug logging: %t
-IPTV interface: %s (%s, %s IPv4 addresses)
-Addresses: %s
-Routes: %s
-Default route observed on %s: %s
-Multicast routes: %s
-`, value.Version, value.Timestamp.Format(time.RFC3339Nano), observedText(value.Service.Errors, renderInstallation(value.Version, value.Service.Package), "package"), value.Config.Profile, value.Config.WANInterface, value.Config.VLAN, value.Config.IPTVInterface, value.Config.DHCP,
-		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, value.Config.MACAddress, value.Config.StaticCIDR, value.Config.DHCPOptionValues, value.Config.Proxy, fallbackText(value.Config.DHCPRoutes),
-		strings.Join(value.Config.NATDestinations, ", "), natRuleCount(value.NAT), renderSourceRanges(value.Config), strings.Join(value.Config.LANInterfaces, ", "),
-		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), observedText(value.Service.Errors, strconv.FormatUint(value.Service.Restarts, 10), "systemd"), renderResume(value.Service), fallbackText(value.Service.LoadState),
-		fallbackText(value.Service.Proxy), observedText(value.Service.Errors, strconv.Itoa(value.Service.ProxyPID), "runtime"), value.Config.IGMPVersion, mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug,
-		value.Network.Target, fallbackText(value.Network.LinkState), observedText(value.Network.Errors, strconv.Itoa(value.Network.AddressCount), "link", "addresses4"), observedText(value.Network.Errors, strings.Join(value.Network.Addresses, ", "), "link", "addresses4"),
-		observedText(value.Network.Errors, strings.Join(value.Network.Routes, ", "), "link", "routes"), value.Network.Target, observedText(value.Network.Errors, presence(value.Network.DefaultRoute), "link", "routes"), multicastSummary(value.Multicast)) +
-		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderNATEvidence(value.NATEvidence, value.Network.Target) +
-		renderIPv6(value.Network) + renderMemberships(value.Memberships) + renderSnapshotLease(value) + renderDownstream(value) +
-		renderSystemEvidence(value) + renderRecentJournal(value.RecentLogs) +
-		renderCollectionErrors("snapshot", value.Errors) + renderCollectionErrors("service", value.Service.Errors) + renderCollectionErrors("network", value.Network.Errors)
+	return RenderSnapshotStyled(value, nil)
 }
 
-func renderSnapshotLease(value Snapshot) string {
-	if value.Lease == nil && value.Errors["lease"] != "" {
-		return "DHCP lease: unavailable\n"
+func (r reportRenderer) snapshotLease(value Snapshot) string {
+	if value.Lease == nil {
+		if value.Errors["lease"] != "" {
+			return r.field("DHCP lease", r.text(ReportWarning, "unavailable"))
+		}
+		return r.field("DHCP lease", r.available(!value.Config.DHCP, "none recorded"))
 	}
-	return renderLease(value.Lease)
+	return r.lease(value.Lease)
 }
 
 func observedText(failures map[string]string, value string, dependencies ...string) string {
@@ -646,10 +617,10 @@ func observedText(failures map[string]string, value string, dependencies ...stri
 	return value
 }
 
-func renderCollectionErrors(section string, failures map[string]string) string {
+func (r reportRenderer) collectionErrors(section string, failures map[string]string) string {
 	var output strings.Builder
 	for _, name := range slices.Sorted(maps.Keys(failures)) {
-		fmt.Fprintf(&output, "Collection error (%s.%s): %s\n", section, name, failures[name])
+		output.WriteString(r.text(ReportBad, "Collection error ("+section+"."+name+")") + ": " + failures[name] + "\n")
 	}
 	return output.String()
 }
@@ -689,15 +660,15 @@ func presence(observed bool) string {
 	return "none"
 }
 
-// renderSourceRanges says whether the configured ranges reach the proxy:
+// sourceRanges says whether the configured ranges reach the proxy:
 // igmpproxy takes them as altnet entries, improxy has no source filter.
-func renderSourceRanges(summary configSummary) string {
+func (r reportRenderer) sourceRanges(summary configSummary) string {
 	if len(summary.ProxySourceRanges) == 0 {
 		return "none configured"
 	}
 	ranges := strings.Join(summary.ProxySourceRanges, ", ")
 	if summary.Proxy == config.ProxyImproxy {
-		return ranges + " (configured; improxy has no source filter, so nothing is applied)"
+		return ranges + " (" + r.text(ReportWarning, "configured; improxy has no source filter, so nothing is applied") + ")"
 	}
 
 	return ranges + " (applied as igmpproxy altnet)"
@@ -716,16 +687,18 @@ func renderNAT(rules *[]network.NATRule) string {
 	return output.String()
 }
 
-func renderNATEvidence(evidence *[]NATEvidence, target string) string {
+func (r reportRenderer) natEvidence(evidence *[]NATEvidence, target string) string {
 	if evidence == nil || len(*evidence) == 0 {
 		return ""
 	}
 	var output strings.Builder
-	output.WriteString("NAT evidence per destination:\n")
+	output.WriteString(r.text(ReportHeading, "NAT evidence per destination:") + "\n")
 	for _, entry := range *evidence {
-		reach := "no route via " + target
+		var reach string
 		if len(entry.Routes) > 0 {
-			reach = "routed (" + strings.Join(entry.Routes, ", ") + ")"
+			reach = r.text(ReportGood, "routed") + " (" + strings.Join(entry.Routes, ", ") + ")"
+		} else {
+			reach = r.text(ReportWarning, "no route via "+target)
 		}
 		fmt.Fprintf(&output, "  %s: %s, %d packets, %s", entry.Destination, reach, entry.Packets, formatBytes(entry.Bytes))
 		if entry.UnmanagedRules > 0 {
