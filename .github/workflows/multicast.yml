@@ -1,6 +1,7 @@
 # yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
 ---
 name: Multicast fixture
+run-name: Multicast ${{ inputs.scenario || 'smoke' }} (${{ github.ref_name }})
 on:
   push:
     branches: ["**"]
@@ -8,13 +9,20 @@ on:
   pull_request:
     paths: [tests/multicast/**, .github/workflows/multicast.yml]
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: Experiment to run after the five-second smoke test
+        type: choice
+        required: true
+        default: smoke
+        options: [smoke, baseline, lower, higher]
 concurrency:
-  group: multicast-${{ github.event.pull_request.number || github.ref }}
+  group: multicast-${{ github.event.pull_request.number || github.ref }}-${{ inputs.scenario || 'smoke' }}
   cancel-in-progress: true
 permissions: { contents: read }
 jobs:
   smoke:
-    name: Smoke (${{ matrix.name }}, ARM64)
+    name: ${{ inputs.scenario || 'smoke' }} (${{ matrix.name }}, ARM64)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     strategy:
@@ -60,18 +68,28 @@ jobs:
           } | tee tests/multicast/artifacts/runner.txt
       - name: Build fixture and run fixture checks
         run: docker compose -f tests/multicast/compose.yaml build 2>&1 | tee tests/multicast/artifacts/build.log
-      # Only the five-second forwarding check; longer querier scenarios are manual.
+      # Automatic runs stop after smoke; scenarios require an explicit dispatch.
       - name: Run five-second multicast smoke test
         timeout-minutes: 2
         run: |
           python3 tests/multicast/run.py smoke \
             --implementation "${PROXY_IMPLEMENTATION}" \
             --firmware-image "${FIRMWARE_IMAGE}"
+      - name: Run six-minute querier experiment
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario != 'smoke' }}
+        timeout-minutes: 8
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          python3 tests/multicast/run.py scenario \
+            --scenario "${SCENARIO}" --duration 360 \
+            --implementation "${PROXY_IMPLEMENTATION}" \
+            --firmware-image "${FIRMWARE_IMAGE}"
       - name: Upload fixture evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: multicast-${{ matrix.name }}-${{ github.run_attempt }}
+          name: multicast-${{ inputs.scenario || 'smoke' }}-${{ matrix.name }}-${{ github.run_attempt }}
           path: tests/multicast/artifacts/
           if-no-files-found: warn
           retention-days: 14

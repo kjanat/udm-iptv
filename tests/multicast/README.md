@@ -93,6 +93,20 @@ python3 tests/multicast/run.py scenario --scenario higher --duration 360
 Add `--implementation firmware` to use the firmware image already built.
 Each invocation creates fresh namespaces, processes and membership state.
 
+To run the same six-minute experiments on the three native ARM64 CI implementations:
+
+```sh
+gh workflow run multicast.yml -R kjanat/udm-iptv --ref go -f scenario=baseline
+gh workflow run multicast.yml -R kjanat/udm-iptv --ref go -f scenario=lower
+gh workflow run multicast.yml -R kjanat/udm-iptv --ref go -f scenario=higher
+```
+
+Each manual run first builds and passes smoke for its selected implementation.
+The scenario then runs for 360 seconds; assertion failures fail the job and retain
+the evidence. Separate scenarios can run concurrently without cancelling each
+other. Repeating the same scenario on the same ref replaces its in-progress run.
+Pushes, pull requests and manual dispatches with `scenario=smoke` run only smoke.
+
 The second querier starts after ten seconds. `.10` should win against proxy `.20`;
 `.30` should yield. The query source implements that election response with the
 default 255-second other-querier interval. It uses TTL 1, Router Alert, valid IGMP
