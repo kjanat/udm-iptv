@@ -31,6 +31,18 @@ Configuration: `/data/udm-iptv/config.json`. Legacy settings migrate automatical
 
 Missing system proxies use preserved binaries and libraries offline.
 
+### Upgrade from v4
+
+On v4.3.2, upgrade to the Go preview with:
+
+```sh
+udm-iptv upgrade --prerelease
+```
+
+Older v4 versions should first run `udm-iptv upgrade` to update their installer.
+The package imports existing settings and transfers the matching v4 IPTV VLAN.
+See [v4 upgrade details](docs/troubleshooting.md#upgrade-from-v4).
+
 ## Commands
 
 ```sh

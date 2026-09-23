@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/vishvananda/netlink"
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
@@ -106,7 +107,10 @@ func (backend SystemBackend) WriteFiles(ctx context.Context, plan Plan) error {
 }
 
 // Activate reloads systemd, enables the unit and restarts the service.
-func (backend SystemBackend) Activate(ctx context.Context, _ Plan) error {
+func (backend SystemBackend) Activate(ctx context.Context, plan Plan) error {
+	if err := migrateLegacyNetwork(plan, legacyNetworkLinks{find: netlink.LinkByName, setAlias: netlink.LinkSetAlias}); err != nil {
+		return err
+	}
 	err := activateService(ctx)
 	if err != nil && backend.Failure != nil {
 		// Capture the failed unit before the installation transaction rolls back.
@@ -144,6 +148,7 @@ func removeObsoleteLegacyFiles(stateDir string) error {
 		filepath.Join(stateDir, "debconf.preseed"),
 		filepath.Join(stateDir, "udm-iptv.conf"),
 		filepath.Join(stateDir, "legacy.conf"),
+		filepath.Join(stateDir, legacyNetworkPending),
 	} {
 		err := os.Remove(obsolete)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
