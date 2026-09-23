@@ -56,11 +56,15 @@ Uninstall retains `/data/udm-iptv/.lock`, protecting later installations from co
 
 Unrelated files survive package purge.
 
-`uninstall` or `uninstall --purge` removes persisted installation data. Use
-`uninstall --keep-data` to retain generated data, including diagnostic captures, or
-`uninstall --keep-config` to retain configuration while removing diagnostics.
-These retention options cannot be combined. Package removal still removes the
-executable shipped by dpkg.
+`uninstall` or `uninstall --purge` removes persisted installation data.
+
+`--keep-data` preserves generated data, including diagnostic captures.
+
+`--keep-config` retains configuration while removing diagnostics.
+
+Retention options cannot be combined.
+
+dpkg still removes its packaged executable.
 
 Pauses end at reboot; automatic startup still applies.
 
@@ -84,9 +88,13 @@ Record diagnostics for 30 minutes:
 udm-iptv diagnose --capture 30m --format both --follow
 ```
 
-Captures default to both text and JSON Lines; a one-time diagnosis defaults to
-text. `diag` remains an alias for `diagnose`, and `--format json` remains an alias
-for JSON Lines. An explicit `--format text` or `--format jsonl` selects one format.
+Captures default to text and JSON Lines.
+
+One-shot diagnosis defaults to text.
+
+`diag` aliases `diagnose`; `--format json` aliases `--format jsonl`.
+
+`--format text` or `--format jsonl` selects one capture format.
 
 `q` or Ctrl-C closes the viewer; capture continues.
 
