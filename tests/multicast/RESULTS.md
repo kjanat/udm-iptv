@@ -75,3 +75,16 @@ because GitHub's upload action excludes hidden files by default. Its binary,
 patch, source archive and captures were present and hash-verified; the workflow
 now includes hidden files within the dedicated evidence directory so the exported
 bundle can satisfy its entire checksum manifest.
+
+The [follow-up run at `e29e973`](https://github.com/kjanat/udm-iptv/actions/runs/35810519259)
+passed all eight scenarios with unchanged protocol code and tests. Its complete
+artifact audit verified **333 files**, including both hidden files, reparsed every
+capture, confirmed the configured query/report versions on the wire, and matched
+the exported binary to the same SHA-256 above. Recovery occurred after
+255.030793s (v2) and 255.006423s (v3); the largest observed UDP gap was 23.60ms.
+
+[Download the complete ARM64 evidence artifact](https://github.com/kjanat/udm-iptv/actions/runs/35810519259/artifacts/10729548173).
+Its `binary-patched-arm64/` directory contains the tested executable, original
+source archive, patch/test sources, build metadata and checksum manifest.
+Artifacts expire after fourteen days; a verified local copy is retained under
+`tests/multicast/artifacts/ci-35810519259/`.
