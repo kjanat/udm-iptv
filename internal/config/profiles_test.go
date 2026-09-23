@@ -246,13 +246,30 @@ func TestApplyKeepsProviderDictatedWAN(t *testing.T) {
 	current.WAN.Interface = "eth9"
 	current.LAN.Interfaces = []string{"br20"}
 	current.Telemetry.Enabled = false
-	for profile, want := range map[string]string{"magentatv": "ppp0", "posttv": "eth8.35"} {
+	for profile, want := range map[string]string{"magentatv": "ppp0", "posttv": "eth9.35"} {
 		applied, err := DefaultCatalog().Apply(profile, current)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if applied.WAN.Interface != want || !slices.Equal(applied.LAN.Interfaces, current.LAN.Interfaces) || applied.Telemetry.Enabled {
 			t.Errorf("%s applied settings = %+v", profile, applied)
+		}
+	}
+}
+
+func TestPostTVUsesTheSelectedWANPort(t *testing.T) {
+	t.Parallel()
+	for currentWAN, want := range map[string]string{
+		"eth4": "eth4.35", "eth9": "eth9.35", "eth9.6": "eth9.35", "eth9.35": "eth9.35",
+	} {
+		current := DefaultKPN()
+		current.WAN.Interface = currentWAN
+		applied, err := DefaultCatalog().Apply("posttv", current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if applied.WAN.Interface != want || applied.WAN.VLAN != 0 || applied.WAN.StaticAddress != "10.10.10.10/32" {
+			t.Errorf("PostTV on %s = %+v, want existing %s", currentWAN, applied.WAN, want)
 		}
 	}
 }

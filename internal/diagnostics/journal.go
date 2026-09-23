@@ -17,6 +17,7 @@ const (
 	// failureLogLines is how many recent lines a failure report attaches.
 	failureLogLines = 100
 	serviceUnit     = "udm-iptv.service"
+	restoreUnit     = "udm-iptv-restore.service"
 	// udapiUnit is the UniFi configuration server. It logs every iptables
 	// rule it finds that it did not write, which includes the NAT rules here.
 	udapiUnit = "ubios-udapi-server.service"

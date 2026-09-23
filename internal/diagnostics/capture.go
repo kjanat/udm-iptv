@@ -89,7 +89,7 @@ func (application *Collector) Capture(ctx context.Context, options Options) (res
 	write := output.writer.write
 	started := startedAt.UTC()
 	ends := endsAt.UTC()
-	policy := fmt.Sprintf("\nLive journal: %s and messages containing udm-iptv from %s; limits %d records, %d input bytes, %d bytes per record. Limit/read failures are recorded.", serviceUnit, udapiUnit, journalLineLimit, journalOutputLimit, journalRecordLimit)
+	policy := fmt.Sprintf("\nLive journal: %s, %s and messages containing udm-iptv from %s; limits %d records, %d input bytes, %d bytes per record. Limit/read failures are recorded.", serviceUnit, restoreUnit, udapiUnit, journalLineLimit, journalOutputLimit, journalRecordLimit)
 	if err := write(Event{Time: started, Deadline: ends, Type: EventStarted, Message: "Capture started; expected completion " + ends.Format(time.RFC3339) + policy}); err != nil {
 		return err
 	}

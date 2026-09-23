@@ -35,7 +35,7 @@ func followJournal(parent context.Context) (<-chan Event, context.CancelFunc) {
 	go func() {
 		defer close(events)
 		defer cancel()
-		command := exec.CommandContext(ctx, "journalctl", "--follow", "--since", "now", "--no-pager", "-o", "json", "-u", serviceUnit, "-u", udapiUnit)
+		command := exec.CommandContext(ctx, "journalctl", "--follow", "--since", "now", "--no-pager", "-o", "json", "-u", serviceUnit, "-u", restoreUnit, "-u", udapiUnit)
 		stderr := &boundedJournal{limit: journalRecordLimit}
 		command.Stderr = stderr
 		command.WaitDelay = time.Second

@@ -20,9 +20,11 @@ import (
 	"time"
 
 	"github.com/moby/moby/client"
+
+	"github.com/kjanat/udm-iptv/internal/diagnostics"
 )
 
-const binary = "/data/udm-iptv/bin/udm-iptv"
+const binary = firmwareBinary
 
 type firmwareHarness struct {
 	t                                    *testing.T
@@ -30,6 +32,9 @@ type firmwareHarness struct {
 	containers                           []string
 	engine                               *client.Client
 	artifact                             [sha256.Size]byte
+	evidence                             string
+	evidenceSequence                     int
+	commandSequence                      int
 }
 
 func firmwareImages(t *testing.T) (string, string) {
@@ -71,6 +76,11 @@ func newFirmwareHarness(t *testing.T) *firmwareHarness {
 		t.Fatal(err)
 	}
 	h.id = fmt.Sprintf("udm-iptv-firmware-%d-%d", os.Getpid(), time.Now().UnixNano())
+	h.evidence = os.Getenv("UDM_IPTV_FIRMWARE_EVIDENCE")
+	if h.evidence == "" {
+		h.evidence = filepath.Join(root, "dist", "firmware-evidence")
+	}
+	h.evidence = filepath.Join(h.evidence, h.t.Name(), h.id)
 	h.data, h.overlay = h.id+"-data", h.id+"-etc"
 	t.Cleanup(h.cleanup)
 	h.docker("volume", "create", h.data)
@@ -246,14 +256,17 @@ printf '%s\n' "${COMPREPLY[@]}" | grep -qx configure
 func (h *firmwareHarness) requireFailedServiceBlocksInstall(name string) {
 	h.t.Helper()
 	h.inside(name, "sh", "-ec", `mkdir -p /run/systemd/system/udm-iptv.service.d
-printf '[Service]\nExecStart=\nExecStart=/bin/false\n' > /run/systemd/system/udm-iptv.service.d/failure.conf
+printf '[Service]\nExecStart=\nExecStart=/bin/false\nRestart=no\n' > /run/systemd/system/udm-iptv.service.d/failure.conf
 systemctl daemon-reload`)
-	h.inside(name, "sh", "-ec", `if "$1" install --force --non-interactive > /run/install-failure.log 2>&1; then
+	report := h.inside(name, "sh", "-ec", `if "$1" install --force --non-interactive > /run/install-failure.log 2>&1; then
  cat /run/install-failure.log
  exit 1
 fi
 cat /run/install-failure.log
 if grep -q 'Automatic startup enabled' /run/install-failure.log; then exit 1; fi`, "failure-check", binary)
+	if err := checkFailureReport(report); err != nil {
+		h.t.Fatal(err)
+	}
 	h.inside(name, "rm", "/run/systemd/system/udm-iptv.service.d/failure.conf")
 	h.inside(name, "systemctl", "daemon-reload")
 	h.inside(name, "systemctl", "reset-failed", "udm-iptv.service")
@@ -263,9 +276,15 @@ if grep -q 'Automatic startup enabled' /run/install-failure.log; then exit 1; fi
 
 func (h *firmwareHarness) reboot(name string) {
 	h.t.Helper()
-	h.docker("stop", name)
+	h.stop(name)
 	h.docker("start", name)
 	h.waitBoot(name)
+}
+
+func (h *firmwareHarness) stop(name string) {
+	h.t.Helper()
+	h.retainEvidence(name, "before-stop")
+	h.docker("stop", name)
 }
 
 func (h *firmwareHarness) bootReplacement(name, image, version string, config []byte) {
@@ -294,6 +313,7 @@ func (h *firmwareHarness) bootReplacement(name, image, version string, config []
 
 func (h *firmwareHarness) removeKeepingConfig(name string) {
 	h.t.Helper()
+	h.retainEvidence(name, "before-uninstall")
 	h.inside(name, binary, "uninstall", "--keep-config")
 	h.inside(name, "test", "-f", "/data/udm-iptv/config.json")
 	h.reboot(name)
@@ -306,6 +326,7 @@ func (h *firmwareHarness) reinstallAndPurge(name string) {
 	h.inside(name, "dpkg-deb", "-x", "/package.deb", "/run/package")
 	h.inside(name, "/run/package"+binary, "install", "--non-interactive")
 	h.healthy(name)
+	h.retainEvidence(name, "before-purge")
 	h.inside(name, binary, "uninstall")
 	h.reboot(name)
 	h.inside(name, "sh", "-ec", `test "$(ls -A /data/udm-iptv)" = .lock`)
@@ -333,7 +354,7 @@ func TestFirmwareLifecycle(t *testing.T) {
 	h.assertPackageRecord(first, version)
 
 	t.Log("Swap firmware rootfs offline; erase the firmware proxy")
-	h.docker("stop", first)
+	h.stop(first)
 	h.bootReplacement(second, to, version, originalConfig)
 
 	t.Log("Reboot the replacement firmware offline")
@@ -538,7 +559,17 @@ func (h *firmwareHarness) tryDocker(args ...string) (string, error) {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(h.t.Context(), 3*time.Minute)
 	defer cancel()
+	result := evidenceResult{Command: evidenceCommand{File: "output.log", Args: args}, Started: time.Now().UTC()}
 	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	result.Finished = time.Now().UTC()
+	if err != nil {
+		result.Error = err.Error()
+	}
+	h.commandSequence++
+	directory := filepath.Join(h.evidence, "commands", fmt.Sprintf("%04d", h.commandSequence))
+	if saveErr := saveFirmwareCommand(directory, result, output); saveErr != nil {
+		h.t.Logf("Save command evidence (%s): %v", directory, saveErr)
+	}
 
 	return string(output), err
 }
@@ -630,8 +661,16 @@ type routerStatus struct {
 
 func (h *firmwareHarness) status(name string) routerStatus {
 	h.t.Helper()
+	output := h.inside(name, binary, "status", "--json")
+	var snapshot diagnostics.Snapshot
+	if err := json.Unmarshal([]byte(output), &snapshot); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := checkRunningUnit(snapshot); err != nil {
+		h.t.Fatal(err)
+	}
 	var state routerStatus
-	err := json.Unmarshal([]byte(h.inside(name, binary, "status", "--json")), &state)
+	err := json.Unmarshal([]byte(output), &state)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -699,25 +738,91 @@ func capturePaths(output string) (string, string) {
 	return textPath, jsonPath
 }
 
-func (h *firmwareHarness) assertCaptureCompleted(name, jsonPath string) {
+func (h *firmwareHarness) assertCaptureCompleted(name, jsonPath string, expected diagnosticExpectation) {
 	h.t.Helper()
 	lines := strings.Split(strings.TrimSpace(h.inside(name, "cat", jsonPath)), "\n")
-	var last struct {
-		Type string `json:"type"`
-	}
+	var last diagnostics.Event
+	var initial, final bool
 	for _, line := range lines {
-		err := json.Unmarshal([]byte(line), &last)
-		if err != nil {
+		if err := json.Unmarshal([]byte(line), &last); err != nil {
 			h.t.Fatal(err)
 		}
+		if last.Type == diagnostics.EventInitial || last.Type == diagnostics.EventFinal {
+			h.assertSnapshot(last.Snapshot, expected)
+			initial = initial || last.Type == diagnostics.EventInitial
+			final = final || last.Type == diagnostics.EventFinal
+		}
 	}
-	if last.Type != "completed" {
-		h.t.Fatalf("incomplete capture: %s", last.Type)
+	if last.Type != diagnostics.EventCompleted || !initial || !final {
+		h.t.Fatalf("incomplete capture: last=%s initial=%t final=%t", last.Type, initial, final)
+	}
+}
+
+func (h *firmwareHarness) assertSnapshot(snapshot *diagnostics.Snapshot, expected diagnosticExpectation) {
+	h.t.Helper()
+	if snapshot == nil {
+		h.t.Fatal("snapshot record has no snapshot")
+	}
+	if err := checkFirmwareSnapshot(*snapshot, expected); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *firmwareHarness) diagnosticExpectation(name string) diagnosticExpectation {
+	h.t.Helper()
+	raw := h.inside(name, "cat", "/usr/lib/version")
+	version := strings.TrimSpace(raw)
+	if _, suffix, found := strings.Cut(version, ".v"); found {
+		parts := strings.Split(suffix, ".")
+		if len(parts) < 3 {
+			h.t.Fatalf("unexpected firmware version source: %q", raw)
+		}
+		version = strings.Join(parts[:3], ".")
+	}
+	expected := diagnosticExpectation{
+		firmware: version, rawVersion: raw,
+		kernel:      strings.TrimSpace(h.inside(name, "uname", "-srvm")),
+		proxyConfig: h.inside(name, "cat", "/run/udm-iptv/proxy.conf"),
+	}
+	for _, source := range []struct{ path, key string }{
+		{"/etc/board.info", "board.shortname"}, {"/proc/ubnthal/system.info", "shortname"},
+	} {
+		data, err := h.tryDocker("exec", name, "cat", source.path)
+		if err != nil {
+			continue
+		}
+		for line := range strings.SplitSeq(data, "\n") {
+			key, value, _ := strings.Cut(line, "=")
+			if strings.TrimSpace(key) == source.key {
+				expected.board = strings.Trim(strings.TrimSpace(value), `"'`)
+			}
+		}
+		if expected.board != "" {
+			break
+		}
+	}
+	return expected
+}
+
+func (h *firmwareHarness) assertDiagnosticReport(name string, expected diagnosticExpectation) {
+	h.t.Helper()
+	var event diagnostics.Event
+	if err := json.Unmarshal([]byte(h.inside(name, binary, "diagnose", "--format", "json")), &event); err != nil {
+		h.t.Fatal(err)
+	}
+	if event.Type != "snapshot" {
+		h.t.Fatalf("one-shot diagnostic report type = %q", event.Type)
+	}
+	h.assertSnapshot(event.Snapshot, expected)
+	if event.Snapshot.RecentLogs == nil || len(event.Snapshot.RecentLogs.Events) == 0 {
+		h.t.Fatal("one-shot diagnostic report lost current-boot service logs")
 	}
 }
 
 func (h *firmwareHarness) capture(name string) {
 	h.t.Helper()
+	expected := h.diagnosticExpectation(name)
+	h.assertDiagnosticReport(name, expected)
 	output := h.inside(name, binary, "diagnose", "--capture", "5s", "--format", "both")
 	textPath, jsonPath := capturePaths(output)
 	if textPath == "" || jsonPath == "" || !strings.Contains(output, "Expected completion:") {
@@ -734,20 +839,50 @@ exit 1`, "capture", textPath)
 			h.t.Fatalf("capture mode: %s", mode)
 		}
 	}
-	h.assertCaptureCompleted(name, jsonPath)
+	h.assertCaptureCompleted(name, jsonPath, expected)
+	if err := checkCaptureText(h.inside(name, "cat", textPath), expected); err != nil {
+		h.t.Fatal(err)
+	}
+	h.retainEvidence(name, "capture-completed")
+}
+
+func runEvidenceCommand(ctx context.Context, args []string) ([]byte, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	command := exec.CommandContext(ctx, "docker", args...)
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	if err != nil {
+		err = fmt.Errorf("docker %v: %w", args, err)
+	}
+	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+func (h *firmwareHarness) retainEvidence(name, phase string) {
+	h.t.Helper()
+	// A failed or cancelled test still needs its output saved. Evidence has
+	// its own deadline and never consumes the later container cleanup budget.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	h.evidenceSequence++
+	directory := filepath.Join(h.evidence, fmt.Sprintf("%03d-%s-%s", h.evidenceSequence, name, phase))
+	if err := collectFirmwareEvidence(ctx, directory, name, runEvidenceCommand); err != nil {
+		h.t.Logf("Evidence collection warnings (%s): %v", directory, err)
+	}
+	h.t.Logf("Firmware evidence: %s", directory)
 }
 
 func (h *firmwareHarness) cleanup() {
+	// Save success and failure evidence before deleting any containers or
+	// volumes. Earlier snapshots also preserve journals across reboots.
+	for _, name := range h.containers {
+		h.retainEvidence(name, "cleanup")
+	}
 	// Test contexts are cancelled before Cleanup. Cleanup owns a fresh deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	for _, name := range h.containers {
-		if h.t.Failed() {
-			for _, args := range [][]string{{"logs", name}, {"exec", name, "systemctl", "list-jobs", "--no-pager"}, {"exec", name, "journalctl", "-u", "udm-iptv.service", "-n", "200", "--no-pager"}} {
-				output, _ := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-				h.t.Logf("%v\n%s", args, output)
-			}
-		}
 		if output, err := exec.CommandContext(ctx, "docker", "rm", "-f", name).CombinedOutput(); err != nil {
 			h.t.Logf("cleanup %s: %v: %s", name, err, output)
 		}

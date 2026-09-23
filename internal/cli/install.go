@@ -25,6 +25,8 @@ const (
 	restartHealthStable  = 6 * time.Second
 )
 
+var errDisabledPurge = errors.New("use --keep-config or --keep-data instead of --purge=false")
+
 func (application *Application) installCommand() *cobra.Command {
 	return application.installCommandWith(installDependencies{
 		load: func() (config.Config, error) { return config.Load(application.ConfigPath) },
@@ -205,17 +207,24 @@ func (application *Application) applyInstall(command *cobra.Command, deps instal
 }
 
 func (application *Application) uninstallCommand() *cobra.Command {
-	var keepConfig, fromPackage bool
+	options := installer.UninstallOptions{}
+	var purge bool
 	command := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove udm-iptv from this console",
 		Args:  cobra.NoArgs,
+		PreRunE: func(command *cobra.Command, _ []string) error {
+			if command.Flags().Changed("purge") && !purge {
+				return errDisabledPurge
+			}
+			return nil
+		},
 		RunE: application.reporting("uninstall", func(command *cobra.Command, _ []string) error {
 			if err := requireRoot(); err != nil {
 				return err
 			}
-			if !fromPackage {
-				delegated, err := installer.DelegateRemoval(command.Context(), keepConfig, application.Out, application.Err)
+			if !options.FromPackage {
+				delegated, err := installer.DelegateRemoval(command.Context(), options, application.Out, application.Err)
 				if err != nil {
 					return fmt.Errorf("remove the udm-iptv package: %w", err)
 				}
@@ -224,11 +233,14 @@ func (application *Application) uninstallCommand() *cobra.Command {
 				}
 			}
 
-			return application.removeInstallation(command, installer.UninstallOptions{KeepConfig: keepConfig, FromPackage: fromPackage})
+			return application.removeInstallation(command, options)
 		}),
 	}
-	command.Flags().BoolVar(&keepConfig, "keep-config", false, "retain the configuration in /data")
-	command.Flags().BoolVar(&fromPackage, "from-package", false, "remove the installation without calling the package manager")
+	command.Flags().BoolVar(&options.KeepConfig, "keep-config", false, "retain the configuration in /data")
+	command.Flags().BoolVar(&options.KeepData, "keep-data", false, "retain configuration, diagnostics and other generated data in /data")
+	command.Flags().BoolVar(&purge, "purge", false, "remove the installation and its persisted data (default)")
+	command.Flags().BoolVar(&options.FromPackage, "from-package", false, "remove the installation without calling the package manager")
+	command.MarkFlagsMutuallyExclusive("keep-config", "keep-data", "purge")
 	_ = command.Flags().MarkHidden("from-package")
 
 	return command

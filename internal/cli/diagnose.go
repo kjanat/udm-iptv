@@ -26,6 +26,7 @@ import (
 
 const (
 	formatText  = "text"
+	formatJSON  = "json"
 	formatJSONL = "jsonl"
 	formatBoth  = "both"
 )
@@ -150,8 +151,14 @@ func checkDiagnoseOptions(command *cobra.Command, options diagnostics.Options) e
 func (application *Application) diagnoseCommand() *cobra.Command {
 	options := diagnostics.Options{Format: formatText, Verbosity: "normal"}
 	command := &cobra.Command{
-		Use: "diagnose", Short: "Collect IPTV diagnostics", Args: cobra.NoArgs,
+		Use: "diagnose", Aliases: []string{"diag"}, Short: "Collect IPTV diagnostics", Args: cobra.NoArgs,
 		PreRunE: func(command *cobra.Command, _ []string) error {
+			if options.Capture > 0 && !command.Flags().Changed("format") {
+				options.Format = formatBoth
+			}
+			if options.Format == formatJSON {
+				options.Format = formatJSONL
+			}
 			return checkDiagnoseOptions(command, options)
 		},
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -159,7 +166,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 			case options.FollowFile != "":
 				return followCapture(options.FollowFile, time.Time{}, 0)
 			case options.Capture == 0:
-				return application.reportSnapshot(command.Context(), options.Format)
+				return application.reportSnapshot(command.Context(), options)
 			default:
 				return application.startCapture(command.Context(), options)
 			}
@@ -167,24 +174,24 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 	}
 	flags := command.Flags()
 	flags.DurationVar(&options.Capture, "capture", 0, "capture a bounded timeline, for example 15m or 2h")
-	flags.StringVar(&options.Format, "format", options.Format, "output format: text, jsonl, or both")
-	flags.StringVar(&options.Verbosity, "verbosity", options.Verbosity, "sample frequency: summary, normal, or debug")
+	flags.StringVar(&options.Format, "format", options.Format, "output format: text, jsonl (or json), or both")
+	flags.StringVar(&options.Verbosity, "verbosity", options.Verbosity, "report detail or capture sample frequency: summary, normal, or debug")
 	flags.BoolVar(&options.Follow, "follow", false, "follow the capture in an interactive terminal view")
 	flags.StringVar(&options.FollowFile, "follow-file", "", "follow an existing text capture")
 	_ = flags.MarkHidden("follow-file")
-	_ = command.RegisterFlagCompletionFunc("format", completeValues("text\treadable report", "jsonl\tstructured events", "both\tcapture formats"))
+	_ = command.RegisterFlagCompletionFunc("format", completeValues("text\treadable report", "json\tstructured events", "jsonl\tstructured events", "both\tcapture formats"))
 	_ = command.RegisterFlagCompletionFunc("verbosity", completeValues("summary\tsample every 2 minutes", "normal\tsample every 15 seconds", "debug\tsample every 5 seconds"))
 	command.AddCommand(application.diagnoseExportCommand())
 
 	return command
 }
 
-func (application *Application) reportSnapshot(ctx context.Context, format string) error {
-	value, err := application.collector().Snapshot(ctx)
+func (application *Application) reportSnapshot(ctx context.Context, options diagnostics.Options) error {
+	value, err := application.collector().ReportSnapshot(ctx, options.Verbosity)
 	if err != nil {
 		return fmt.Errorf("collect diagnostics: %w", err)
 	}
-	if format == formatJSONL {
+	if options.Format == formatJSONL {
 		event := diagnostics.Event{Time: value.Timestamp, Type: "snapshot", Snapshot: &value, Privacy: diagnostics.PrivacyPrivate}
 		if err := json.NewEncoder(application.Out).Encode(event); err != nil {
 			return fmt.Errorf("encode snapshot: %w", err)

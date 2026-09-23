@@ -84,7 +84,16 @@ jobs:
         env: { CACHE: "${{ runner.temp }}/unifi-os" }
         run: go run ./cmd/firmware --track "${TRACK}" build
       - name: Test installation, reboot and offline recovery
+        env: { UDM_IPTV_FIRMWARE_EVIDENCE: "${{ runner.temp }}/firmware-evidence" }
         run: go test -tags firmware -v -count=1 -timeout=20m ./tests/firmware
       - name: Publish and verify image aliases
         env: { GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}" }
         run: go run ./cmd/firmware --track "${TRACK}" publish
+      - name: Upload firmware evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: firmware-publish-evidence-${{ matrix.model }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/firmware-evidence
+          include-hidden-files: true
+          if-no-files-found: error

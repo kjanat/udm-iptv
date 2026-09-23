@@ -130,7 +130,13 @@ func TestPublishAliasesAndRemoteVerification(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := []string{model.Name + "-5.1.9", model.Board + "-5.1.9", model.Name + "-5.1.10", model.Board + "-5.1.10", model.Name + "-latest", model.Board + "-latest"}
+			var want []string
+			for _, suffix := range []string{"-5.1.9", "-5.1.10", "-latest"} {
+				want = append(want, model.Name+suffix, model.Board+suffix)
+				if legacy := strings.ToLower(model.Board); legacy != model.Name {
+					want = append(want, legacy+suffix)
+				}
+			}
 			if model.Name == "udmpro" {
 				want = append(want, "latest")
 			}

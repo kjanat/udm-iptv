@@ -34,6 +34,9 @@ type Snapshot struct {
 	Errors      map[string]string   `json:"errors,omitempty"`
 	Timestamp   time.Time           `json:"timestamp"`
 	Version     string              `json:"version"`
+	System      systemInfo          `json:"system"`
+	ProxyConfig *string             `json:"proxyConfig"`
+	RecentLogs  *recentJournal      `json:"recentLogs,omitempty"`
 	Config      configSummary       `json:"config"`
 	Service     serviceStatus       `json:"service"`
 	Network     networkStatus       `json:"network"`
@@ -73,6 +76,8 @@ type configSummary struct {
 
 type serviceStatus struct {
 	Errors      map[string]string `json:"errors,omitempty"`
+	SystemState string            `json:"systemState"`
+	Units       []unitEvidence    `json:"units,omitempty"`
 	ResumeAt    *time.Time        `json:"resumeAt,omitempty"`
 	ResumeError string            `json:"resumeError,omitempty"`
 	Package     string            `json:"package,omitempty"`
@@ -140,9 +145,11 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load configuration for snapshot: %w", err)
 	}
+	hardware := device.Inspect(ctx)
 	result := Snapshot{
 		Timestamp:  time.Now().UTC(),
 		Version:    application.Version,
+		System:     inspectSystem(os.DirFS("/"), hardware),
 		Config:     summarizeConfig(value),
 		Service:    inspectService(ctx),
 		Network:    inspectLink(network.Target(value)),
@@ -153,7 +160,12 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		result.Network.IPv6Knobs = network.IPv6MulticastState(value)
 	}
 	collectSnapshotTables(ctx, value, &result)
-	result.Switches = inspectSwitch(os.DirFS("/sys"), device.Inspect(ctx).Firmware)
+	if generated, err := service.ReadProxyConfig(); err == nil {
+		result.ProxyConfig = &generated
+	} else {
+		recordCollectionError(&result.Errors, "proxyConfig", err)
+	}
+	result.Switches = inspectSwitch(os.DirFS("/sys"), hardware.Firmware)
 	result.NativeProxy = inspectNativeProxy(ctx, result.Service.ProxyPID)
 	result.Playback = inspectReceivers(result.Multicast, value.LAN.Interfaces)
 
@@ -465,6 +477,7 @@ func inspectService(ctx context.Context) serviceStatus {
 	}
 	defer connection.Close()
 	lifecycle := service.Lifecycle{Connection: connection, Unit: service.Unit}
+	collectSystemdEvidence(ctx, connection, &status)
 	if resumeAt, err := lifecycle.ResumeAt(ctx); err != nil {
 		status.ResumeError = err.Error()
 	} else if !resumeAt.IsZero() {
@@ -613,6 +626,7 @@ Multicast routes: %s
 		observedText(value.Network.Errors, strings.Join(value.Network.Routes, ", "), "link", "routes"), value.Network.Target, observedText(value.Network.Errors, presence(value.Network.DefaultRoute), "link", "routes"), multicastSummary(value.Multicast)) +
 		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderNATEvidence(value.NATEvidence, value.Network.Target) +
 		renderIPv6(value.Network) + renderMemberships(value.Memberships) + renderSnapshotLease(value) + renderDownstream(value) +
+		renderSystemEvidence(value) + renderRecentJournal(value.RecentLogs) +
 		renderCollectionErrors("snapshot", value.Errors) + renderCollectionErrors("service", value.Service.Errors) + renderCollectionErrors("network", value.Network.Errors)
 }
 

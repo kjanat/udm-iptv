@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"time"
 )
 
@@ -21,19 +20,9 @@ func (application *Collector) ReportFailure(parent context.Context, output io.Wr
 	if err := application.writeFailureSnapshot(ctx, output); err != nil {
 		return err
 	}
-	logs, collectErr := journalOutput(ctx, journalOutputLimit, "-n", strconv.Itoa(failureLogLines), "--no-pager", "-o", "json", "-u", serviceUnit)
-	if err := writef(output, "--- recent service logs (last %d records; output limit %d bytes) ---\n", failureLogLines, journalOutputLimit); err != nil {
-		return fmt.Errorf("write journal header: %w", err)
-	}
-	for _, entry := range parseJournal(logs.data) {
-		if err := writeString(output, RenderEvent(entry.event())); err != nil {
-			return errors.Join(collectErr, fmt.Errorf("write failure journal: %w", err))
-		}
-	}
-	if len(logs.stderr) > 0 {
-		if err := writef(output, "journalctl stderr: %s\n", logs.stderr); err != nil {
-			return errors.Join(collectErr, err)
-		}
+	logs, collectErr := collectRecentJournal(ctx, failureLogLines)
+	if err := writeString(output, renderRecentJournal(&logs)); err != nil {
+		return errors.Join(collectErr, fmt.Errorf("write failure journal: %w", err))
 	}
 	if collectErr != nil {
 		return errors.Join(fmt.Errorf("collect failure journal: %w", collectErr), writef(output, "Journal collection incomplete: %v\n", collectErr))
