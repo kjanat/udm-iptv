@@ -25,6 +25,7 @@ type SystemBackend struct {
 	Out, Err       io.Writer
 	Completion     func(context.Context) ([]byte, error)
 	Health         func(context.Context) error
+	Failure        func(context.Context) error
 	Saved, Healthy func(config.Config)
 }
 
@@ -106,7 +107,12 @@ func (backend SystemBackend) WriteFiles(ctx context.Context, plan Plan) error {
 
 // Activate reloads systemd, enables the unit and restarts the service.
 func (backend SystemBackend) Activate(ctx context.Context, _ Plan) error {
-	return activateService(ctx)
+	err := activateService(ctx)
+	if err != nil && backend.Failure != nil {
+		// Capture the failed unit before the installation transaction rolls back.
+		return errors.Join(err, backend.Failure(ctx))
+	}
+	return err
 }
 
 // CheckHealth waits for readiness. Reporting waits until cleanup also succeeds.
