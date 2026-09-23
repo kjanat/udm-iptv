@@ -39,8 +39,10 @@ On v4.3.2, upgrade to the Go preview with:
 udm-iptv upgrade --prerelease
 ```
 
-Older v4 versions should first run `udm-iptv upgrade` to update their installer.
-The package imports existing settings and transfers the matching v4 IPTV VLAN.
+Older v4: run `udm-iptv upgrade` first.
+
+Existing settings and matching v4 IPTV VLANs migrate automatically.
+
 See [v4 upgrade details](docs/troubleshooting.md#upgrade-from-v4).
 
 ## Commands
