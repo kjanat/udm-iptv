@@ -281,11 +281,11 @@ func (application *Application) restart(ctx context.Context, verify bool) error 
 	return nil
 }
 
-// reportHealthFailure prints the diagnostics and attaches the same text to
-// the failure report of the operation running in ctx.
+// reportHealthFailure prints private diagnostics locally and attaches only
+// the sanitized export to the reported operation.
 func (application *Application) reportHealthFailure(ctx context.Context, err error) error {
 	var diagnostics bytes.Buffer
-	reportErr := application.collector().ReportFailure(ctx, io.MultiWriter(application.Err, &diagnostics))
+	reportErr := application.collector().ReportFailureWithExport(ctx, application.Err, &diagnostics)
 	telemetry.Attach(ctx, diagnostics.Bytes())
 
 	return errors.Join(err, reportErr)

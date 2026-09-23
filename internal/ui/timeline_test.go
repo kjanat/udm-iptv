@@ -32,7 +32,7 @@ func TestTimelineShowsWhatChanged(t *testing.T) {
 	lines := timeline(events)
 	want := []string{
 		"20:00:00 started: Capture started; expected completion 2026-09-18T20:15:00Z",
-		"20:00:01 service active/running, proxy improxy pid 1745611; 0 forwarding routes, 3 unresolved",
+		"20:00:01 service active/running, proxy improxy pid 1745611; multicast on iptv: 0 forwarding (0 packets), 0 other routes, 3 system unresolved",
 		"20:00:06 >>> TV switched on",
 		"20:00:11 + 224.0.250.64 from 195.121.94.212 iptv -> br0",
 		"20:00:11 + member br0 switch0.1 224.0.250.64",
@@ -70,7 +70,7 @@ func TestChangesCoverServiceNetworkAndRoutesGoingAway(t *testing.T) {
 	if got := status(nil); got[0] != "waiting for the first snapshot" {
 		t.Fatal(got)
 	}
-	if lines := status(after); len(lines) != 3 || lines[2] != "multicast 0 forwarding (0 packets), 0 unresolved" {
+	if lines := status(after); len(lines) != 3 || lines[2] != "multicast on iptv: 0 forwarding (0 packets), 0 other routes, 0 system unresolved" {
 		t.Fatalf("status = %q", lines)
 	}
 }
@@ -90,4 +90,54 @@ func snapshotMulticast(routes ...mroute.Route) *diagnostics.MulticastInfo {
 	}
 
 	return usage
+}
+
+func TestTimelineCounterResetDoesNotUnderflow(t *testing.T) {
+	t.Parallel()
+	earlier := mroute.Route{Group: netip.MustParseAddr("239.1.1.1"), Source: netip.MustParseAddr("192.0.2.1"), Input: "iptv", Outputs: []string{"br0"}, Packets: 100, Bytes: 10000}
+	for name, current := range map[string]mroute.Route{
+		"packet counter":    {Group: earlier.Group, Source: earlier.Source, Input: earlier.Input, Outputs: earlier.Outputs, Packets: 1, Bytes: 100},
+		"byte counter only": {Group: earlier.Group, Source: earlier.Source, Input: earlier.Input, Outputs: earlier.Outputs, Packets: 101, Bytes: 100},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lines := routeChanges(map[string]mroute.Route{earlier.Key(): earlier}, []mroute.Route{current}, time.Second)
+			if len(lines) != 1 || !strings.Contains(lines[0], "counters reset") || strings.Contains(lines[0], "Mbit/s") {
+				t.Fatalf("reset represented as a traffic rate: %v", lines)
+			}
+		})
+	}
+}
+
+func TestTimelineScopesTrafficToConfiguredPath(t *testing.T) {
+	t.Parallel()
+	relevant := mroute.Route{Group: netip.MustParseAddr("239.1.1.1"), Source: netip.MustParseAddr("192.0.2.1"), Input: "iptv", Outputs: []string{"br10"}, Packets: 3, Bytes: 300}
+	unrelated := relevant
+	unrelated.Input, unrelated.Packets = "br0", 900
+	wrongLAN := relevant
+	wrongLAN.Outputs, wrongLAN.Packets = []string{"br30"}, 800
+	before := &diagnostics.Snapshot{}
+	before.Network.Target = "iptv"
+	before.Config.LANInterfaces = []string{"br10"}
+	before.Multicast = snapshotMulticast()
+	after := *before
+	after.Multicast = snapshotMulticast(relevant, unrelated, wrongLAN)
+	lines := multicastChanges(before, &after, time.Second)
+	if len(lines) != 1 || !strings.Contains(lines[0], "iptv -> br10") {
+		t.Fatalf("unrelated multicast counted as IPTV path: %v", lines)
+	}
+	rendered := strings.Join(status(&after), "\n")
+	if !strings.Contains(rendered, "1 forwarding (3 packets)") || !strings.Contains(rendered, "2 other routes") {
+		t.Fatalf("status mixed system and configured path: %s", rendered)
+	}
+}
+
+func TestTimelineDetectsOutputChangeWithStableCounters(t *testing.T) {
+	t.Parallel()
+	earlier := mroute.Route{Group: netip.MustParseAddr("239.1.1.1"), Source: netip.MustParseAddr("192.0.2.1"), Input: "iptv", Outputs: []string{"br0"}, Packets: 1, Bytes: 100}
+	current := earlier
+	current.Outputs = []string{"br10"}
+	lines := routeChanges(map[string]mroute.Route{earlier.Key(): earlier}, []mroute.Route{current}, time.Second)
+	if len(lines) != 1 || !strings.Contains(lines[0], "outputs br0 -> br10") {
+		t.Fatalf("output change disappeared: %v", lines)
+	}
 }

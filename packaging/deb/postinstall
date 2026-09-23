@@ -8,6 +8,12 @@ command=/usr/local/bin/udm-iptv
 
 db_get udm-iptv/profile
 profile=${RET:-kpn}
+db_get udm-iptv/telemetry
+telemetry=${RET:-false}
+db_fget udm-iptv/telemetry seen
+if [ "${RET}" != true ] || [ "${telemetry}" != true ]; then
+	telemetry=false
+fi
 db_stop
 
 # Exit status 3 means no saved or importable configuration.
@@ -34,7 +40,11 @@ if [ "${configured}" = false ] && [ "${profile}" = custom ]; then
 fi
 
 if [ "${configured}" = false ]; then
-	"${binary}" configure set --profile "${profile}"
+	"${binary}" configure set --profile "${profile}" --telemetry="${telemetry}"
+elif [ ! -f /data/udm-iptv/config.json ]; then
+	# A shell configuration imports with enabled defaults; persist the explicit
+	# package consent before install can report or start the service.
+	"${binary}" configure set --telemetry="${telemetry}"
 fi
 
 exec "${binary}" install --force --non-interactive

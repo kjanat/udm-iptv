@@ -331,6 +331,75 @@ IPTV_IGMPPROXY_IGMP_VERSION='3'
 	}
 }
 
+func TestImportLegacyTrailingComments(t *testing.T) {
+	t.Parallel()
+	legacy := filepath.Join(t.TempDir(), "udm-iptv.conf")
+	content := `IPTV_WAN_INTERFACE="eth8" # selected WAN
+IPTV_WAN_VLAN=4 # IPTV VLAN
+IPTV_LAN_INTERFACES='br0' # home LAN
+IPTV_WAN_DHCP_OPTIONS="-V IPTV#RG" # hash belongs to the vendor ID
+IPTV_IGMPPROXY_PROGRAM=improxy # selected daemon
+`
+	if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := ImportLegacy(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.WAN.Interface != "eth8" || value.WAN.VLAN != 4 || !value.WAN.DHCP || !slices.Equal(value.LAN.Interfaces, []string{"br0"}) {
+		t.Fatalf("comments changed imported network settings: %+v", value)
+	}
+	if !slices.Equal(value.WAN.DHCPOptions, []string{"-V", "IPTV#RG"}) {
+		t.Fatalf("quoted hash changed: %q", value.WAN.DHCPOptions)
+	}
+}
+
+func TestLegacyCommentsPreserveQuotedAndEscapedHashes(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]string{
+		`4 # comment`:                "4",
+		`'inside # value' # comment`: "inside # value",
+		`"inside # value" # comment`: "inside # value",
+		`prefix#value # comment`:     "prefix#value",
+		`#value`:                     "#value",
+		`prefix\ #value # comment`:   `prefix\ #value`,
+	} {
+		values, err := parseLegacyAssignments("IPTV_VALUE=" + raw)
+		if err != nil || values["IPTV_VALUE"] != want {
+			t.Errorf("%q: got %q, %v; want %q", raw, values["IPTV_VALUE"], err, want)
+		}
+	}
+}
+
+func TestImportLegacyCustomSeparatesMulticastDestinations(t *testing.T) {
+	t.Parallel()
+	legacy := filepath.Join(t.TempDir(), "udm-iptv.conf")
+	content := `IPTV_WAN_INTERFACE=eth8
+IPTV_WAN_VLAN=4
+IPTV_LAN_INTERFACES=br0
+IPTV_WAN_RANGES="198.51.100.0/24 224.0.0.0/4"
+IPTV_LAN_RANGES="192.0.2.10 239.1.2.3"
+IPTV_IGMPPROXY_PROGRAM=igmpproxy
+`
+	if err := atomicfile.Write(legacy, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := ImportLegacy(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Profile != "legacy" || !slices.Equal(value.Proxy.SourceRanges, []string{"198.51.100.0/24", "192.0.2.10/32"}) {
+		t.Fatalf("custom source ranges = %+v", value)
+	}
+	if !slices.Equal(value.WAN.NATDestinations, []string{"198.51.100.0/24", "224.0.0.0/4"}) {
+		t.Fatalf("multicast NAT destination lost: %q", value.WAN.NATDestinations)
+	}
+	if err := value.Validate(); err != nil {
+		t.Fatalf("custom import is unusable: %v", err)
+	}
+}
+
 func TestImportLegacyHonorsVLANGatewayOptOut(t *testing.T) {
 	t.Parallel()
 	for noGateway, want := range map[string]RoutePolicy{

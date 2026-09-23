@@ -174,6 +174,7 @@ func (application *Application) diagnoseCommand() *cobra.Command {
 	_ = flags.MarkHidden("follow-file")
 	_ = command.RegisterFlagCompletionFunc("format", completeValues("text\treadable report", "jsonl\tstructured events", "both\tcapture formats"))
 	_ = command.RegisterFlagCompletionFunc("verbosity", completeValues("summary\tsample every 2 minutes", "normal\tsample every 15 seconds", "debug\tsample every 5 seconds"))
+	command.AddCommand(application.diagnoseExportCommand())
 
 	return command
 }
@@ -184,7 +185,7 @@ func (application *Application) reportSnapshot(ctx context.Context, format strin
 		return fmt.Errorf("collect diagnostics: %w", err)
 	}
 	if format == formatJSONL {
-		event := diagnostics.Event{Time: value.Timestamp, Type: "snapshot", Snapshot: &value}
+		event := diagnostics.Event{Time: value.Timestamp, Type: "snapshot", Snapshot: &value, Privacy: diagnostics.PrivacyPrivate}
 		if err := json.NewEncoder(application.Out).Encode(event); err != nil {
 			return fmt.Errorf("encode snapshot: %w", err)
 		}
@@ -192,7 +193,7 @@ func (application *Application) reportSnapshot(ctx context.Context, format strin
 		return nil
 	}
 
-	return writeString(application.Out, ui.StatusText(diagnostics.RenderSnapshot(value)))
+	return writeString(application.Out, "Private local diagnostics; use diagnose export for a sanitized capture.\n"+ui.StatusText(diagnostics.RenderSnapshot(value)))
 }
 
 func followCapture(path string, completion time.Time, pid int) error {
@@ -371,6 +372,7 @@ func captureWorkerFailure(cause error, errorLogPath string) error {
 
 func (application *Application) reportCaptureStarted(options diagnostics.Options, pid int, logPath string, status diagnostics.Event) error {
 	lines := []string{
+		"Private local capture: contains network identities and raw logs.\n",
 		fmt.Sprintf("Diagnostics capture %s (PID %d).\n", status.Type, pid),
 		fmt.Sprintf("Local worker errors: %s\n", logPath),
 	}

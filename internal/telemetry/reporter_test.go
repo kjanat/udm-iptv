@@ -410,7 +410,12 @@ func TestAllProductsDelivered(t *testing.T) {
 	defer transport.mu.Unlock()
 	failures := failureEvents(transport.events)
 	assertEqual(t, "failures", len(failures), 1)
-	assertEqual(t, "exception value", failures[0].Exception[0].Value, errLeakyPayload.Error())
+	assertEqual(t, "exception value", failures[0].Exception[0].Value, "")
+	for _, exception := range failures[0].Exception {
+		if exception.Value != "" || exception.Type == "" {
+			t.Fatalf("exception must retain its type without a message: %#v", exception)
+		}
+	}
 	assertEqual(t, "delivered products", countProducts(transport.events), productCounts{failures: 1, traces: 1, logs: 2, metrics: 4})
 }
 
@@ -438,7 +443,7 @@ func assertEventFiltered(t *testing.T, r *Reporter) {
 	if clean == nil {
 		t.Fatal("event dropped")
 	}
-	assertEqual(t, "exception message", clean.Exception[0].Value, "open /data/udm-iptv/config.json: permission denied")
+	assertEqual(t, "exception message", clean.Exception[0].Value, "")
 	assertEqual(t, "message", clean.Message, "lease bound on eth8.4")
 	assertEqual(t, "environment", clean.Environment, "production")
 	assertEqual(t, "dist", clean.Dist, r.dist)

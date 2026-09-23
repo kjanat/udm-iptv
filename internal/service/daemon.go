@@ -402,7 +402,7 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 	client := exec.CommandContext(ctx, binary, arguments...)
 	dhcpLog := application.Monitor.LineWriter(ctx, "udhcpc")
 	client.Stdout, client.Stderr = io.MultiWriter(application.Out, dhcpLog), io.MultiWriter(application.Err, dhcpLog)
-	client.Env = append(os.Environ(), "UDM_IPTV_CONFIG="+application.ConfigPath)
+	client.Env = dhcpEnvironment(application.ConfigPath, application.StateDir)
 	client.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(client)
 	// Keep ownership from the previous client; readiness rejects records older than since.
@@ -415,6 +415,21 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 		return nil, errors.Join(err, process.stop())
 	}
 	return process, nil
+}
+
+// The hook records udhcpc's lower-case environment as lease options. A clean
+// child environment prevents inherited credentials or even stale option names
+// from being mistaken for data supplied by the DHCP server.
+func dhcpEnvironment(configPath, stateDir string) []string {
+	environment := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"UDM_IPTV_CONFIG=" + configPath,
+		"UDM_IPTV_STATE_DIR=" + stateDir,
+	}
+	if metric, ok := os.LookupEnv("IF_METRIC"); ok {
+		environment = append(environment, "IF_METRIC="+metric)
+	}
+	return environment
 }
 
 // dhcpArguments makes the retry policy explicit. User options come last so

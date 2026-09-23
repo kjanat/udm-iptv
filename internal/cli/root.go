@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -48,7 +50,13 @@ func Execute(version string) error {
 		Err:             ui.Styled(os.Stderr),
 		networkIdentity: telemetry.LookupNetwork,
 	}
-	executed, err := application.root().ExecuteC()
+	return executeRoot(application.root())
+}
+
+func executeRoot(command *cobra.Command) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	executed, err := command.ExecuteContextC(ctx)
 	if err != nil {
 		return fmt.Errorf("%s: %w", executed.CommandPath(), err)
 	}

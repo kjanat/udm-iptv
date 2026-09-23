@@ -219,7 +219,7 @@ func TestProviderByPointerNameMatchesLabelBoundaries(t *testing.T) {
 	}
 }
 
-// A provider profile carries no opinion about which ports a console uses.
+// Providers without a dictated WAN keep the console's selected interfaces.
 func TestApplyKeepsTheConsoleInterfaces(t *testing.T) {
 	t.Parallel()
 	catalog := DefaultCatalog()
@@ -237,5 +237,22 @@ func TestApplyKeepsTheConsoleInterfaces(t *testing.T) {
 	tweak, _ := catalog.Profile("tweak")
 	if applied.WAN.VLAN != tweak.Config.WAN.VLAN {
 		t.Fatalf("VLAN %d, want the profile's %d", applied.WAN.VLAN, tweak.Config.WAN.VLAN)
+	}
+}
+
+func TestApplyKeepsProviderDictatedWAN(t *testing.T) {
+	t.Parallel()
+	current := DefaultKPN()
+	current.WAN.Interface = "eth9"
+	current.LAN.Interfaces = []string{"br20"}
+	current.Telemetry.Enabled = false
+	for profile, want := range map[string]string{"magentatv": "ppp0", "posttv": "eth8.35"} {
+		applied, err := DefaultCatalog().Apply(profile, current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if applied.WAN.Interface != want || !slices.Equal(applied.LAN.Interfaces, current.LAN.Interfaces) || applied.Telemetry.Enabled {
+			t.Errorf("%s applied settings = %+v", profile, applied)
+		}
 	}
 }

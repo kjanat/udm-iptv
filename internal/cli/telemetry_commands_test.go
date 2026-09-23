@@ -3,15 +3,19 @@ package cli
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/spf13/cobra"
 
 	"github.com/kjanat/udm-iptv/internal/config"
@@ -88,6 +92,7 @@ func commandInvocationCases() []commandInvocationCase {
 	return []commandInvocationCase{
 		{name: "install/completed", invocation: "install", command: commandInstall, saveConfig: true, telemetryEnabled: true, wantLogs: []string{"install started", "install completed"}},
 		{name: "install/failed", invocation: "install", command: commandInstall, saveConfig: true, telemetryEnabled: true, result: errPrivateFailure, wantLogs: []string{"install started", "install failed"}},
+		{name: "install/wrapped-failure", invocation: "install", command: commandInstall, saveConfig: true, telemetryEnabled: true, result: fmt.Errorf("private wrapper: %w", errPrivateFailure), wantLogs: []string{"install started", "install failed"}},
 		{name: "install/cancelled", invocation: "install", command: commandInstall, saveConfig: true, telemetryEnabled: true, result: context.Canceled, wantLogs: []string{"install started", "install cancelled"}},
 		{name: "install/opt-out", invocation: "install", command: commandInstall, saveConfig: true, telemetryEnabled: false},
 		{name: "install/missing-consent", invocation: "install", command: commandInstall, saveConfig: false, telemetryEnabled: true},
@@ -109,10 +114,100 @@ func commandInvocationCases() []commandInvocationCase {
 	}
 }
 
-func assertFailureReported(t *testing.T, output string) {
+type invocationFailure struct {
+	Transaction string             `json:"transaction"`
+	Fingerprint []string           `json:"fingerprint"`
+	Exception   []sentry.Exception `json:"exception"`
+}
+
+func assertFailureReported(t *testing.T, output, operation string, cause error) {
 	t.Helper()
-	if !strings.Contains(output, privateFailureDetail) {
-		t.Fatalf("failure text missing: %s", output)
+	if strings.Contains(output, privateFailureDetail) || strings.Contains(output, "private wrapper") {
+		t.Fatalf("remote failure leaked private error text: %s", output)
+	}
+	failures := invocationFailures(t, output)
+	if len(failures) != 1 {
+		t.Fatalf("expected one structured failure, got %d", len(failures))
+	}
+	failure := failures[0]
+	if failure.Transaction != operation || !slices.Contains(failure.Fingerprint, operation) {
+		t.Fatalf("failure lost operation identity: %+v", failure)
+	}
+	wantExceptions := 0
+	for current := cause; current != nil; current = errors.Unwrap(current) {
+		wantExceptions++
+	}
+	if len(failure.Exception) != wantExceptions {
+		t.Fatalf("failure lost wrappers: got %d exceptions, want %d", len(failure.Exception), wantExceptions)
+	}
+	assertInvocationExceptionRelationships(t, failure.Exception)
+}
+
+func invocationFailures(t *testing.T, output string) []invocationFailure {
+	t.Helper()
+	var failures []invocationFailure
+	decoder := json.NewDecoder(strings.NewReader(output))
+	for {
+		var item invocationFailure
+		if err := decoder.Decode(&item); err != nil {
+			if errors.Is(err, io.EOF) {
+				return failures
+			}
+			t.Fatalf("decode telemetry envelope: %v", err)
+		}
+		if len(item.Exception) > 0 {
+			failures = append(failures, item)
+		}
+	}
+}
+
+func assertInvocationExceptionRelationships(t *testing.T, exceptions []sentry.Exception) {
+	t.Helper()
+	foundCause := false
+	for _, exception := range exceptions {
+		if exception.Value != "" || exception.Type == "" {
+			t.Fatalf("failure lost its type or retained a message: %+v", exception)
+		}
+		foundCause = foundCause || exception.Type == fmt.Sprintf("%T", errPrivateFailure)
+	}
+	if !foundCause {
+		t.Fatal("failure lost its original error type")
+	}
+	if len(exceptions) == 1 {
+		return // A leaf error has no parent relationship to encode.
+	}
+	ids := invocationExceptionIDs(t, exceptions)
+	assertInvocationExceptionParents(t, exceptions, ids)
+}
+
+func invocationExceptionIDs(t *testing.T, exceptions []sentry.Exception) map[int]bool {
+	t.Helper()
+	ids := make(map[int]bool)
+	for _, exception := range exceptions {
+		if exception.Mechanism == nil {
+			t.Fatal("wrapped exception lost relationship metadata")
+		}
+		ids[exception.Mechanism.ExceptionID] = true
+	}
+	if len(ids) != len(exceptions) {
+		t.Fatal("exception identities are not distinct")
+	}
+	return ids
+}
+
+func assertInvocationExceptionParents(t *testing.T, exceptions []sentry.Exception, ids map[int]bool) {
+	t.Helper()
+	parents := 0
+	for _, exception := range exceptions {
+		if parent := exception.Mechanism.ParentID; parent != nil {
+			parents++
+			if !ids[*parent] {
+				t.Fatal("exception parent points outside the reported chain")
+			}
+		}
+	}
+	if parents != len(exceptions)-1 {
+		t.Fatalf("exception chain relationships lost: %d parents for %d errors", parents, len(exceptions))
 	}
 }
 
@@ -136,7 +231,7 @@ func TestReportRunUsesSavedConfigWhenInstallHadNoMonitor(t *testing.T) {
 	if !strings.Contains(output, "service.health failed") {
 		t.Fatalf("missing health failure: %s", output)
 	}
-	assertFailureReported(t, output)
+	assertFailureReported(t, output, "service.health", errPrivateFailure)
 }
 
 func TestCommandInvocationTelemetry(t *testing.T) {
@@ -193,7 +288,7 @@ func runCommandInvocationCase(t *testing.T, testCase commandInvocationCase) {
 func assertInvocationReport(t *testing.T, testCase commandInvocationCase, output string) {
 	t.Helper()
 	if errors.Is(testCase.result, errPrivateFailure) {
-		assertFailureReported(t, output)
+		assertFailureReported(t, output, testCase.command, testCase.result)
 	}
 	if len(testCase.wantLogs) == 0 {
 		if output != "" {

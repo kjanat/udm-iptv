@@ -31,6 +31,10 @@ func (b *recordingBackend) Preflight(context.Context, Plan) error {
 	return b.record("Check installation prerequisites")
 }
 
+func (b *recordingBackend) Begin(context.Context, Plan) (InstallationTransaction, error) {
+	return InstallationTransaction{}, nil
+}
+
 func (b *recordingBackend) PreserveRuntime(context.Context, Plan) error {
 	return b.record("Preserve the proxy and shared libraries offline")
 }

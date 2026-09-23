@@ -2,6 +2,7 @@ package ui
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -142,12 +143,64 @@ func TestPortAddressLabels(t *testing.T) {
 		port Port
 		want string
 	}{
-		{Port{Name: "eth8", AddressesKnown: true}, "eth8 (no assigned IP)"},
-		{Port{Name: "eth9"}, "eth9 (addresses unavailable)"},
+		{Port{Name: "eth8", AddressesKnown: true, Description: "link status unknown"}, "eth8"},
+		{Port{Name: "eth9"}, "eth9"},
 		{Port{Name: "br0", AddressesKnown: true, Addresses: []string{"192.168.1.1/24", "2001:db8::1/64"}}, "br0 (192.168.1.1/24, 2001:db8::1/64)"},
 	} {
 		if got := test.port.label(); got != test.want {
 			t.Fatalf("got %q, want %q", got, test.want)
 		}
+	}
+}
+
+func TestWANPortsOrderedByPublicAddressLinkNameAndVLAN(t *testing.T) {
+	ports := []Port{
+		{Name: "eth0.100", Description: "connected"},
+		{Name: "eth0.20", Description: "connected"},
+		{Name: "eth1", Description: "disconnected"},
+		{Name: "eth2", Description: "connected", Addresses: []string{"192.168.1.1/24"}},
+		{Name: "eth3", Description: "link status unknown"},
+		{Name: "ppp1", Description: "disconnected", Addresses: []string{"198.51.100.2/32"}},
+		{Name: "ppp0", Description: "connected", Addresses: []string{"2001:db8::2/64"}},
+	}
+	names := make([]string, 0, len(ports))
+	for _, port := range orderedWANPorts(ports) {
+		names = append(names, port.Name)
+	}
+	want := []string{"ppp0", "ppp1", "eth0.20", "eth0.100", "eth2", "eth1", "eth3"}
+	if !slices.Equal(names, want) || ports[0].Name != "eth0.100" {
+		t.Fatalf("port ordering = %q; want %q; input = %+v", names, want, ports)
+	}
+}
+
+func TestWANPublicFilterShortcut(t *testing.T) {
+	current := "eth8"
+	groups, selected := wanGroups(&current, []Port{
+		{Name: "eth8", Addresses: []string{"192.168.1.2/24"}},
+		{Name: "ppp0", Addresses: []string{"198.51.100.2/32"}},
+	})
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	frame.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	view := frame.View().Content
+	if strings.Contains(view, "eth8") || !strings.Contains(view, "ppp0") || *selected != "ppp0" || current != "eth8" {
+		t.Fatalf("public filter changed saved value or kept private port: %q, %q\n%s", current, *selected, view)
+	}
+	frame.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if view = frame.View().Content; !strings.Contains(view, "eth8") || !strings.Contains(view, "ppp0") {
+		t.Fatalf("toggle did not restore interfaces:\n%s", view)
+	}
+}
+
+func TestWANPublicFilterWithoutPublicAddresses(t *testing.T) {
+	current := "eth8"
+	groups, selected := wanGroups(&current, []Port{{Name: "eth8", Addresses: []string{"192.168.1.2/24", "fe80::1/64", "fd00::1/64"}}})
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	frame.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if *selected != "eth8" || !strings.Contains(frame.View().Content, "eth8") {
+		t.Fatal("public filter hid the only available interface")
 	}
 }

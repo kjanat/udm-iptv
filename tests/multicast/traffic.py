@@ -39,7 +39,8 @@ def sender():
 
 def receiver():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.bind(("", PORT))
+        # Only the fixture group counts as multicast delivery, not same-port unicast.
+        sock.bind((GROUP, PORT))
         sock.setsockopt(
             socket.IPPROTO_IP,
             socket.IP_ADD_MEMBERSHIP,

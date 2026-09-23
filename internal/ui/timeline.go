@@ -81,8 +81,8 @@ func logSource(source string) string {
 func summarize(value *diagnostics.Snapshot) string {
 	parts := []string{fmt.Sprintf("service %s/%s, proxy %s pid %d", value.Service.ActiveState, value.Service.SubState, value.Service.Proxy, value.Service.ProxyPID)}
 	if value.Multicast != nil {
-		parts = append(parts, fmt.Sprintf("%d forwarding routes, %d unresolved", value.Multicast.Routes, value.Multicast.Unresolved))
-		for _, route := range value.Multicast.Entries {
+		parts = append(parts, multicastStatus(value))
+		for _, route := range scopedMulticastRoutes(value) {
 			parts = append(parts, describeRoute(route.Group.String(), route.Source.String(), route.Input, route.Outputs))
 		}
 	}
@@ -162,12 +162,12 @@ func multicastChanges(before, after *diagnostics.Snapshot, interval time.Duratio
 		return nil
 	}
 	previous := map[string]mroute.Route{}
-	for _, route := range before.Multicast.Entries {
+	for _, route := range scopedMulticastRoutes(before) {
 		previous[route.Key()] = route
 	}
-	lines := routeChanges(previous, after.Multicast.Entries, interval)
+	lines := routeChanges(previous, scopedMulticastRoutes(after), interval)
 	if before.Multicast.Unresolved != after.Multicast.Unresolved {
-		lines = append(lines, fmt.Sprintf("unresolved multicast entries %d -> %d", before.Multicast.Unresolved, after.Multicast.Unresolved))
+		lines = append(lines, fmt.Sprintf("system unresolved multicast entries %d -> %d", before.Multicast.Unresolved, after.Multicast.Unresolved))
 	}
 
 	return lines
@@ -180,11 +180,10 @@ func routeChanges(previous map[string]mroute.Route, current []mroute.Route, inte
 		seen[route.Key()] = true
 		description := describeRoute(route.Group.String(), route.Source.String(), route.Input, route.Outputs)
 		earlier, known := previous[route.Key()]
-		switch {
-		case !known:
+		if !known {
 			lines = append(lines, "+ "+description)
-		case route.Packets > earlier.Packets:
-			lines = append(lines, fmt.Sprintf("%s: +%d packets (%s)", description, route.Packets-earlier.Packets, rate(route.Packets-earlier.Packets, route.Bytes-earlier.Bytes, interval)))
+		} else {
+			lines = append(lines, changedRoute(earlier, route, interval)...)
 		}
 	}
 	for key, route := range previous {
@@ -194,6 +193,57 @@ func routeChanges(previous map[string]mroute.Route, current []mroute.Route, inte
 	}
 
 	return lines
+}
+
+func changedRoute(before, after mroute.Route, interval time.Duration) []string {
+	description := describeRoute(after.Group.String(), after.Source.String(), after.Input, after.Outputs)
+	var lines []string
+	if !slices.Equal(slices.Sorted(slices.Values(before.Outputs)), slices.Sorted(slices.Values(after.Outputs))) {
+		lines = append(lines, fmt.Sprintf("%s: outputs %s -> %s", description, strings.Join(before.Outputs, ","), strings.Join(after.Outputs, ",")))
+	}
+	if after.Packets < before.Packets || after.Bytes < before.Bytes {
+		return append(lines, fmt.Sprintf("%s: counters reset (packets %d -> %d, bytes %d -> %d)", description, before.Packets, after.Packets, before.Bytes, after.Bytes))
+	}
+	if after.Packets > before.Packets || after.Bytes > before.Bytes {
+		lines = append(lines, fmt.Sprintf("%s: +%d packets (%s)", description, after.Packets-before.Packets, rate(after.Packets-before.Packets, after.Bytes-before.Bytes, interval)))
+	}
+	return lines
+}
+
+// The forwarding cache belongs to the whole kernel. Only entries entering the
+// configured IPTV interface and reaching a configured LAN belong to this path;
+// they are evidence of forwarding, not proof that a television rendered video.
+func scopedMulticastRoutes(value *diagnostics.Snapshot) []mroute.Route {
+	if value.Multicast == nil {
+		return nil
+	}
+	if value.Network.Target == "" {
+		return value.Multicast.Entries
+	}
+	var routes []mroute.Route
+	for _, route := range value.Multicast.Entries {
+		if route.Input != value.Network.Target {
+			continue
+		}
+		if len(value.Config.LANInterfaces) != 0 && !slices.ContainsFunc(route.Outputs, func(output string) bool { return slices.Contains(value.Config.LANInterfaces, output) }) {
+			continue
+		}
+		routes = append(routes, route)
+	}
+	return routes
+}
+
+func multicastStatus(value *diagnostics.Snapshot) string {
+	scope := "system multicast (path unknown)"
+	if value.Network.Target != "" {
+		scope = "multicast on " + value.Network.Target
+	}
+	routes := scopedMulticastRoutes(value)
+	var packets uint64
+	for _, route := range routes {
+		packets += route.Packets
+	}
+	return fmt.Sprintf("%s: %d forwarding (%d packets), %d other routes, %d system unresolved", scope, len(routes), packets, len(value.Multicast.Entries)-len(routes), value.Multicast.Unresolved)
 }
 
 func rate(packets, bytes uint64, interval time.Duration) string {
@@ -238,7 +288,7 @@ func status(value *diagnostics.Snapshot) []string {
 		fmt.Sprintf("%s %s  %s  routes %d  default %t", value.Network.Target, value.Network.LinkState, strings.Join(value.Network.Addresses, " "), len(value.Network.Routes), value.Network.DefaultRoute),
 	}
 	if value.Multicast != nil {
-		lines = append(lines, fmt.Sprintf("multicast %d forwarding (%d packets), %d unresolved", value.Multicast.Routes, value.Multicast.Packets, value.Multicast.Unresolved))
+		lines = append(lines, multicastStatus(value))
 	} else {
 		lines = append(lines, "multicast table unavailable")
 	}

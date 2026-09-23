@@ -266,6 +266,7 @@ func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, as
 		value.WAN.DHCPOptions = strings.Fields(fields.dhcpOptions)
 		value.Proxy.SourceRanges = splitList(fields.sources)
 		value.LAN.Interfaces = resolveLAN(*selectedLAN)
+		config.NormalizeAddressing(value)
 
 		return value.Validate()
 	}

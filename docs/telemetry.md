@@ -6,6 +6,7 @@ I do not share this data with ISPs, Ubiquiti, or anyone else. It stays in my Sen
 
 - All reporting categories default on for new configurations, imported legacy files, and saved files that omit a telemetry block.
 - The setup wizard offers “Help improve udm-iptv?”.
+- A fresh Debian installation or legacy migration asks separately before enabling reporting. Unattended package installations leave it disabled unless consent was explicitly preseeded; upgrades preserve saved choices.
 - Existing opt-outs remain.
 - Reports reach the maintainer's Sentry project through HTTPS.
 - Sentry uses an EU ingest endpoint.

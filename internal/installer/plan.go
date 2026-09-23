@@ -33,6 +33,7 @@ type step struct {
 // Backend is the host-specific implementation of each installation stage.
 type Backend interface {
 	Preflight(context.Context, Plan) error
+	Begin(context.Context, Plan) (InstallationTransaction, error)
 	PreserveRuntime(context.Context, Plan) error
 	SaveConfig(context.Context, Plan) error
 	RemoveLegacy(context.Context, Plan) error
@@ -100,12 +101,12 @@ func (p Plan) Preview(out io.Writer) error {
 }
 
 // Execute stops at the first failure. Cleanup is reached only after health passes.
-func (p Plan) Execute(ctx context.Context, backend Backend) error {
+func (p Plan) Execute(ctx context.Context, backend Backend) (result error) {
 	err := p.Validate()
 	if err != nil {
 		return err
 	}
-	for _, stage := range p.steps() {
+	for index, stage := range p.steps() {
 		err := ctx.Err()
 		if err != nil {
 			return fmt.Errorf("installation cancelled before %q: %w", stage.name, err)
@@ -115,6 +116,15 @@ func (p Plan) Execute(ctx context.Context, backend Backend) error {
 		finish(err)
 		if err != nil {
 			return fmt.Errorf("%s: %w", stage.name, err)
+		}
+		if index == 0 {
+			transaction, err := backend.Begin(ctx, p)
+			if err != nil {
+				return fmt.Errorf("prepare installation recovery: %w", err)
+			}
+			if transaction.finish != nil {
+				defer func() { result = transaction.finish(ctx, result) }()
+			}
 		}
 	}
 

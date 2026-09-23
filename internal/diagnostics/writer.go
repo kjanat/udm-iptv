@@ -18,6 +18,9 @@ type diagnosticWriter struct {
 }
 
 func (writer diagnosticWriter) write(event Event) error {
+	if event.Privacy == "" {
+		event.Privacy = PrivacyPrivate
+	}
 	if writer.json != nil {
 		err := json.NewEncoder(writer.json).Encode(event)
 		if err != nil {
@@ -29,8 +32,8 @@ func (writer diagnosticWriter) write(event Event) error {
 			return fmt.Errorf("write text diagnostic event: %w", err)
 		}
 	}
-	// Logs are a bounded final batch. The terminal record (or deferred flush)
-	// commits them together; snapshots remain immediately available to followers.
+	// Logs are visible immediately; snapshots and terminal records sync preceding
+	// log writes together instead of forcing one flash flush per journal line.
 	if event.Type == EventLog {
 		return nil
 	}

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/godbus/dbus/v5"
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/network"
@@ -79,10 +80,18 @@ func (u uninstaller) stopService(ctx context.Context) error {
 }
 
 func (u uninstaller) disableService(ctx context.Context) error {
-	if _, err := u.connection.DisableUnitFilesContext(ctx, []string{"udm-iptv.service"}, false); err != nil {
+	if _, err := u.connection.DisableUnitFilesContext(ctx, []string{"udm-iptv.service"}, false); err != nil && !missingUnitFile(err) {
 		return fmt.Errorf("systemd kept udm-iptv.service enabled: %w", err)
 	}
 	return nil
+}
+
+func missingUnitFile(err error) bool {
+	var pointer *dbus.Error
+	var value dbus.Error
+	const missing = "org.freedesktop.DBus.Error.FileNotFound"
+	return service.NoSuchUnit(err) || errors.Is(err, os.ErrNotExist) ||
+		errors.As(err, &pointer) && pointer.Name == missing || errors.As(err, &value) && value.Name == missing
 }
 
 func (u uninstaller) removeNAT(context.Context) error {

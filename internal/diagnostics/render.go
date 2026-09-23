@@ -3,15 +3,27 @@ package diagnostics
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
 // RenderEvent returns a human-readable text-capture line for event.
 func RenderEvent(event Event) string {
+	output := renderEvent(event)
+	if event.Privacy == PrivacySanitized {
+		output = "[sanitized export]\n" + output
+		if len(event.AddressOrder) > 0 {
+			output += "IPv4 aliases in original numerical order: " + strings.Join(event.AddressOrder, " < ") + "\n"
+		}
+	}
+	return output
+}
+
+func renderEvent(event Event) string {
 	switch event.Type {
 	case EventStarted:
-		return "udm-iptv diagnostics\n" + event.Message + "\n\n"
-	case EventInitial:
+		return "udm-iptv diagnostics [" + event.Privacy + "]\n" + event.Message + "\n\n"
+	case EventInitial, "snapshot":
 		return "=== Initial snapshot ===\n" + RenderSnapshot(*event.Snapshot) + "\n"
 	case EventSample:
 		return renderSample(event)
