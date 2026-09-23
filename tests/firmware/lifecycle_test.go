@@ -560,7 +560,13 @@ func (h *firmwareHarness) assertConfig(container string, expected []byte) {
 
 func (h *firmwareHarness) tryDocker(args ...string) (string, error) {
 	h.t.Helper()
-	ctx, cancel := context.WithTimeout(h.t.Context(), 3*time.Minute)
+	timeout := 3 * time.Minute
+	if len(args) > 0 && args[0] == "pull" {
+		// Firmware layers need download and extraction time on ARM runners.
+		// Keep the shorter bound for service and installation commands.
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(h.t.Context(), timeout)
 	defer cancel()
 	result := evidenceResult{Command: evidenceCommand{File: "output.log", Args: args}, Started: time.Now().UTC()}
 	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
