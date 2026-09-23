@@ -253,19 +253,22 @@ printf '%s\n' "${COMPREPLY[@]}" | grep -qx configure
 `)
 }
 
-func (h *firmwareHarness) requireFailedServiceBlocksInstall(name string) {
+func (h *firmwareHarness) requireFailedServiceReports(name string) {
 	h.t.Helper()
 	h.inside(name, "sh", "-ec", `mkdir -p /run/systemd/system/udm-iptv.service.d
 printf '[Service]\nExecStart=\nExecStart=/bin/false\nRestart=no\n' > /run/systemd/system/udm-iptv.service.d/failure.conf
 systemctl daemon-reload`)
-	report := h.inside(name, "sh", "-ec", `if "$1" install --force --non-interactive > /run/install-failure.log 2>&1; then
- cat /run/install-failure.log
+	for _, command := range [][]string{{"install", "--force", "--non-interactive"}, {"start"}, {"restart"}} {
+		h.inside(name, "systemctl", "reset-failed", "udm-iptv.service")
+		args := append([]string{"sh", "-ec", `if "$@" > /run/service-failure.log 2>&1; then
+ cat /run/service-failure.log
  exit 1
 fi
-cat /run/install-failure.log
-if grep -q 'Automatic startup enabled' /run/install-failure.log; then exit 1; fi`, "failure-check", binary)
-	if err := checkFailureReport(report); err != nil {
-		h.t.Fatal(err)
+cat /run/service-failure.log
+if grep -q 'Automatic startup enabled' /run/service-failure.log; then exit 1; fi`, "failure-check", binary}, command...)
+		if err := checkFailureReport(h.inside(name, args...)); err != nil {
+			h.t.Fatalf("%s: %v", command[0], err)
+		}
 	}
 	h.inside(name, "rm", "/run/systemd/system/udm-iptv.service.d/failure.conf")
 	h.inside(name, "systemctl", "daemon-reload")
@@ -343,8 +346,8 @@ func TestFirmwareLifecycle(t *testing.T) {
 	h.installPreviousPackage(first, from)
 	t.Log("Upgrade to the current Debian package")
 	version, originalConfig := h.upgradePackage(first)
-	t.Log("A failed service must fail installation")
-	h.requireFailedServiceBlocksInstall(first)
+	t.Log("A failed service must report diagnostics for install, start and restart")
+	h.requireFailedServiceReports(first)
 
 	t.Log("Reboot without reinstalling or manually starting the service")
 	h.reboot(first)

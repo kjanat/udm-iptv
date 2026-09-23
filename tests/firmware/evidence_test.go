@@ -48,12 +48,13 @@ func firmwareEvidenceCommands(name string) []evidenceCommand {
 		{"routes.txt", []string{"exec", name, "ip", "route", "show", "table", "all"}},
 		{"nat.txt", []string{"exec", name, "iptables-save", "-c", "-t", "nat"}},
 		{"diagnostics.tar", []string{"cp", name + ":/data/udm-iptv/diagnostics", "-"}},
-		{"runtime.tar", []string{"cp", name + ":/run/udm-iptv", "-"}},
+		// /run is a tmpfs mount, outside docker cp's container archive view.
+		{"runtime.tar", []string{"exec", name, "tar", "-C", "/run", "-cf", "-", "udm-iptv"}},
 		{"dhcp.log", []string{"exec", name, "cat", "/run/udm-iptv-test/dnsmasq.log"}},
 	}
 }
 
-// Keep command streams separate: docker cp emits binary archives on stdout,
+// Keep command streams separate: archive commands emit binary data on stdout,
 // while stderr and a failing exit status still carry useful partial evidence.
 // A missing source must not prevent subsequent collectors or container cleanup.
 func collectFirmwareEvidence(ctx context.Context, directory, name string, run evidenceRunner) error {
@@ -128,7 +129,7 @@ func TestFirmwareEvidenceRetainsCompleteAndPartialOutput(t *testing.T) {
 		if slices.Contains(args, "journalctl") {
 			return journal, []byte("journal warning"), errEvidencePartial
 		}
-		if args[0] == "cp" {
+		if args[0] == "cp" || slices.Contains(args, "tar") {
 			return archive, []byte("copy warning"), nil
 		}
 		return []byte("complete output\n"), nil, nil

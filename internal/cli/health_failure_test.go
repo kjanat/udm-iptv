@@ -15,6 +15,7 @@ import (
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/diagnostics"
+	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
@@ -25,6 +26,41 @@ var errHealthFailureOutput = errors.New("diagnostic terminal closed")
 type healthFailureOutput struct{}
 
 func (healthFailureOutput) Write([]byte) (int, error) { return 0, errHealthFailureOutput }
+
+func TestActivationFailureRetainsLocalAndReportedDiagnostics(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*Application, context.Context) error
+	}{
+		{"install", func(application *Application, ctx context.Context) error {
+			return application.installBackend().Activate(ctx, installer.Plan{})
+		}},
+		{"start", (*Application).start},
+		{"restart", func(application *Application, ctx context.Context) error {
+			return application.restart(ctx, true)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installFailureJournal(t)
+			t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(t.TempDir(), "missing-bus"))
+			capture := captureTelemetry(t)
+			var local bytes.Buffer
+			application := &Application{ConfigPath: filepath.Join(t.TempDir(), "missing.json"), Err: &local}
+			err := runHealthFailureReport(t, config.Telemetry{Enabled: true, Errors: true}, func(ctx context.Context) error {
+				return test.run(application, ctx)
+			})
+			if err == nil || !strings.Contains(err.Error(), "connect to systemd") {
+				t.Fatalf("lost activation failure: %v", err)
+			}
+			if strings.Count(local.String(), "=== udm-iptv failure diagnostics ===") != 1 || !strings.Contains(local.String(), failureJournalMessage) {
+				t.Fatalf("activation failure omitted or duplicated diagnostics: %s", local.String())
+			}
+			if !bytes.Equal(healthFailureAttachment(t, capture.output()), local.Bytes()) {
+				t.Fatal("reported activation failure lost diagnostic evidence")
+			}
+		})
+	}
+}
 
 func TestHealthFailurePreservesSnapshotLeaseOptions(t *testing.T) {
 	capture := captureTelemetry(t)
