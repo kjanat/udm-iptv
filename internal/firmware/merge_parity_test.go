@@ -138,6 +138,61 @@ func TestPinnedCatalogPreservesMetadataAndCutoff(t *testing.T) {
 	}
 }
 
+func TestPinnedCatalogAllowsKnownModelWithoutPins(t *testing.T) {
+	t.Parallel()
+	cutoff := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
+	encoded := parityCatalog(t, "UCGMAX", cutoff)
+	matrix, err := PinnedTrack().SelectCatalog(strings.NewReader(encoded), testImage, "ucgmax", cutoff)
+	if err != nil || matrix.Include == nil || len(matrix.Include) != 0 {
+		t.Fatalf("known unpinned model should produce an empty matrix: %+v, %v", matrix, err)
+	}
+	if _, err := PinnedTrack().SelectCatalog(strings.NewReader(encoded), testImage, "unknown", cutoff); err == nil {
+		t.Fatal("unknown model was silently accepted")
+	}
+}
+
+func TestPinnedCatalogOmitsPinsReachedByReleases(t *testing.T) {
+	t.Parallel()
+	cutoff := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
+	for _, version := range []string{"6.0.7", "6.0.8"} {
+		encoded := strings.ReplaceAll(parityCatalog(t, "UDMPRO", cutoff), "5.1.33", version)
+		matrix, err := PinnedTrack().SelectCatalog(strings.NewReader(encoded), testImage, "udmpro", cutoff)
+		if err != nil || len(matrix.Include) != 0 {
+			t.Fatalf("release %s should make pin obsolete: %+v, %v", version, matrix, err)
+		}
+	}
+}
+
+func TestPublishedIncompleteNewModelKeepsCompletePairs(t *testing.T) {
+	t.Parallel()
+	matrix, err := Published("udmpro-5.1.9\nudmpro-5.1.33\nucgmax-5.1.33", testImage)
+	if err != nil || len(matrix.Include) != 1 || matrix.Include[0].Model != "udmpro" {
+		t.Fatalf("incomplete new model blocked an available upgrade: %+v, %v", matrix, err)
+	}
+}
+
+func TestCatalogKeepsExistingVersionDeduplication(t *testing.T) {
+	t.Parallel()
+	cutoff := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
+	entries, err := decodeCatalog(strings.NewReader(parityCatalog(t, "UDMPRO", cutoff)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newerBuild := entries[1]
+	newerBuild.Version = "v5.1.33+new-build"
+	newerBuild.Created = cutoff.Add(-time.Minute)
+	newerBuild.SHA256 = strings.Repeat("b", 64)
+	entries = append(entries, newerBuild)
+	latest := newestPerVersion(entries, "UDMPRO", cutoff, ReleaseTrack())
+	pair, err := ReleaseTrack().catalogPair("udmpro", "UDMPRO", testImage, latest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 2 || pair.Firmwares[0].Version != "5.1.9" || pair.Firmwares[1].Version != "5.1.33" || pair.Firmwares[1].SHA256 != newerBuild.SHA256 {
+		t.Fatalf("existing per-version dedup changed: %+v", pair)
+	}
+}
+
 func TestPinnedPublishedReusesLegacyImages(t *testing.T) {
 	t.Parallel()
 	track := PinnedTrack()

@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -9,6 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
+	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/config/configtest"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
@@ -139,4 +146,40 @@ func handlerName(expr ast.Expr) string {
 	}
 
 	return selector.Sel.Name
+}
+
+func TestTelemetryInitializationFailureIsVisibleAndNonfatal(t *testing.T) {
+	previous := telemetry.DSN
+	telemetry.DSN = ""
+	t.Cleanup(func() { telemetry.DSN = previous })
+	for _, entry := range []string{"command", "operation"} {
+		t.Run(entry, func(t *testing.T) {
+			var output bytes.Buffer
+			application := &Application{ConfigPath: filepath.Join(t.TempDir(), "config.json"), Err: &output}
+			value := configtest.Custom()
+			value.Telemetry = config.Telemetry{Enabled: true, Errors: true}
+			if err := config.Save(application.ConfigPath, value); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			run := func(context.Context) error {
+				called = true
+				return errPrivateFailure
+			}
+			var err error
+			if entry == "operation" {
+				err = application.reportRun(t.Context(), "install", run)
+			} else {
+				command := &cobra.Command{Use: "install"}
+				command.SetContext(t.Context())
+				err = application.reporting("install", func(command *cobra.Command, _ []string) error { return run(command.Context()) })(command, nil)
+			}
+			if !called || !errors.Is(err, errPrivateFailure) {
+				t.Fatalf("telemetry failure replaced the operation: called=%v err=%v", called, err)
+			}
+			if !strings.Contains(output.String(), "Telemetry unavailable") || !strings.Contains(output.String(), "no telemetry endpoint") {
+				t.Fatalf("missing initialization diagnosis: %q", output.String())
+			}
+		})
+	}
 }

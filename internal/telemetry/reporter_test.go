@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -80,19 +79,6 @@ func assertNoSecrets(t *testing.T, data string, secrets ...string) {
 	for _, secret := range secrets {
 		if strings.Contains(data, secret) {
 			t.Fatalf("leaked %q: %s", secret, data)
-		}
-	}
-}
-
-func assertNoLeaks(t *testing.T, events []*sentry.Event, secrets ...string) {
-	t.Helper()
-	for _, event := range events {
-		for _, value := range []any{event, event.Logs, event.Metrics} {
-			data, err := json.Marshal(value)
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertNoSecrets(t, string(data), secrets...)
 		}
 	}
 }
@@ -329,7 +315,7 @@ func TestWrappedAndJoinedErrorsPreserveRelationships(t *testing.T) {
 	assertEqual(t, "exception relationships", relationsOf(t, failures[0].Exception), exceptionRelations{groups: 1, parents: 4})
 }
 
-func TestSetMetadataAllowlist(t *testing.T) {
+func TestSetMetadataPreservesPrintableEvidence(t *testing.T) {
 	t.Parallel()
 	r, _ := newRecordingReporter(t, testSettings())
 	r.SetMetadata("UDR7", "5.1.31", "UDMPRO.al324.v5.1.31.5acc35d.260819.1714", "0xea15", "improxy", "kpn")
@@ -338,8 +324,12 @@ func TestSetMetadataAllowlist(t *testing.T) {
 	assertEqual(t, "firmware_discovery", r.metadata["firmware_discovery"], "UDMPRO.al324.v5.1.31.5acc35d.260819.1714")
 	assertEqual(t, "sysid", r.metadata["sysid"], "ea15")
 	r.SetMetadata("UDM-Pro", "latest", "UDMPRO.al324.v5.1.31.5acc35d.260819.1714 extra", "78:45:58:f8:ed:4f", "dnsmasq", "nope")
+	if len(r.metadata) != 6 {
+		t.Fatalf("printable metadata missing: %+v", r.metadata)
+	}
+	r.SetMetadata("bad\nboard", "", "", "", "", "")
 	if len(r.metadata) != 0 {
-		t.Fatalf("rejected values kept: %+v", r.metadata)
+		t.Fatalf("control characters kept: %+v", r.metadata)
 	}
 }
 
@@ -522,13 +512,13 @@ func TestPersistentLimitsAndRevokedConsent(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	for range 5 {
-		if !allowPersisted(dir, "errors", 5, now) {
+		if allowPersistedReason(dir, "errors", 5, now) != nil {
 			t.Fatal("budget exhausted early")
 		}
 	}
-	assertEqual(t, "budget after exhaustion", allowPersisted(dir, "errors", 5, now), false)
-	assertEqual(t, "budget after clock rollback", allowPersisted(dir, "errors", 5, now.Add(-time.Hour)), false)
-	assertEqual(t, "budget in the next window", allowPersisted(dir, "errors", 5, now.Add(time.Minute)), true)
+	assertEqual(t, "budget after exhaustion", allowPersistedReason(dir, "errors", 5, now) == nil, false)
+	assertEqual(t, "budget after clock rollback", allowPersistedReason(dir, "errors", 5, now.Add(-time.Hour)) == nil, false)
+	assertEqual(t, "budget in the next window", allowPersistedReason(dir, "errors", 5, now.Add(time.Minute)) == nil, true)
 	path := filepath.Join(dir, "config.json")
 	value := configtest.Custom()
 	value.Telemetry = testSettings()
@@ -595,14 +585,15 @@ func assertUnhandledPanic(t *testing.T, event *sentry.Event) {
 	}
 }
 
-func TestPanicIsReportedWithoutSwallowingOrLeakingValue(t *testing.T) {
+func TestPanicIsReportedWithoutSwallowingOrLosingValue(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
 	runPanickingOperation(t, r)
 	r.Close()
 	failures := failureEvents(transport.events)
 	assertEqual(t, "panic reports", len(failures), 1)
 	assertUnhandledPanic(t, failures[0])
-	assertNoLeaks(t, failures, "secret panic")
+	assertEqual(t, "panic value", failures[0].Exception[0].Value, "secret panic")
+	assertEqual(t, "panic type", failures[0].Exception[0].Type, "panic(string)")
 }
 
 func TestZeroTraceRateSendsNoTraces(t *testing.T) {

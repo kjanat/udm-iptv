@@ -38,6 +38,8 @@ var (
 	errUnknownProvider       = errors.New("unknown provider; use a provider or profile ID")
 	errResearchUnavailable   = errors.New("preset research is disabled or unavailable")
 	errFeedbackNotQueued     = errors.New("feedback was not queued: reporting disabled or rate limit reached")
+	errResearchNotQueued     = errors.New("report was not queued: reporting disabled or rate limit reached")
+	errResearchNotFlushed    = errors.New("report queued but telemetry did not drain before the deadline")
 	errStateTooLarge         = errors.New("telemetry state exceeds size limit")
 	errInvalidIdentity       = errors.New("invalid telemetry identity")
 	errMissingStateDir       = errors.New("telemetry state directory is missing")
@@ -88,8 +90,11 @@ func (r *Reporter) researchEnabled() bool {
 		return true
 	}
 	value, err := config.Load(r.configPath)
-
-	return err == nil && value.Telemetry.Enabled && value.Telemetry.Presets
+	if err != nil {
+		r.deliveryIssue("presets", "read reporting settings: "+err.Error())
+		return false
+	}
+	return value.Telemetry.Enabled && value.Telemetry.Presets
 }
 
 // ResearchEnabled checks the saved master switch before each observation.
@@ -205,10 +210,30 @@ func (state *researchState) recordApply(fingerprint string) {
 }
 
 func (r *Reporter) attachNetwork(ctx context.Context, report *researchReport, lookup func(context.Context) NetworkIdentity) {
-	if lookup == nil || !r.networkEnabled() || !r.allow("network", 1) {
+	if lookup == nil || !r.networkEnabled() {
+		return
+	}
+	r.mu.Lock()
+	cached, observed := r.networkIdentity, r.networkIdentityAt
+	r.mu.Unlock()
+	if cached != nil && time.Since(observed) < time.Minute {
+		identity := *cached
+		report.Network = &identity
+		return
+	}
+	if !r.allow("network", 1) {
+		report.Network = &NetworkIdentity{Status: "rate-limited", LookupError: "network identity lookup budget unavailable"}
+		if cached != nil {
+			identity := *cached
+			report.Network = &identity
+		}
 		return
 	}
 	identity := lookup(ctx)
+	identity.ObservedAt = time.Now().UTC()
+	r.mu.Lock()
+	r.networkIdentity, r.networkIdentityAt = &identity, identity.ObservedAt
+	r.mu.Unlock()
 	report.Network = &identity
 }
 
@@ -241,9 +266,7 @@ func (r *Reporter) RecordConfiguration(ctx context.Context, value config.Config,
 		return err
 	}
 	r.attachNetwork(ctx, &report, lookup)
-	r.sendResearch(ctx, report)
-
-	return nil
+	return r.sendResearch(ctx, report)
 }
 
 func sorted(values []string) []string {
@@ -279,9 +302,7 @@ func (r *Reporter) RecordObservation(ctx context.Context, observation Observatio
 	if err != nil {
 		return err
 	}
-	r.sendResearch(ctx, report)
-
-	return nil
+	return r.sendResearch(ctx, report)
 }
 
 var feedbackAnswers = map[string]bool{"working": true, "problems": true, "not-using": true}
@@ -323,36 +344,39 @@ func (r *Reporter) Feedback(ctx context.Context, answer, provider string) error 
 	if err != nil {
 		return err
 	}
-	if !r.sendResearch(ctx, report) {
-		return errFeedbackNotQueued
+	if err := r.sendResearch(ctx, report); err != nil {
+		return errors.Join(errFeedbackNotQueued, err)
 	}
 
 	return nil
 }
 
-func (r *Reporter) sendResearch(ctx context.Context, report researchReport) bool {
+func (r *Reporter) sendResearch(ctx context.Context, report researchReport) error {
 	if r.client == nil || r.hub == nil || !r.researchEnabled() || !r.allow("presets", presetsPerMinute) {
-		return false
+		return fmt.Errorf("queue %s: %w", report.Kind, errResearchNotQueued)
 	}
 	payload, err := json.Marshal(report)
 	if err != nil {
-		return false
+		return fmt.Errorf("encode %s report: %w", report.Kind, err)
 	}
 	ctx = sentry.SetHubOnContext(ctx, r.hub)
 	sentry.NewLogger(ctx).Info().String("research.report", string(payload)).Emit("installation " + report.Kind)
-	r.client.Flush(sentryRequestTimeout)
-
-	return true
+	if !r.Flush() {
+		return errResearchNotFlushed
+	}
+	return nil
 }
 
 func (r *Reporter) filterResearchLog(log *sentry.Log) *sentry.Log {
 	raw, ok := log.Attributes["research.report"]
 	if !ok {
+		r.deliveryIssue("presets", "research log lacks its report payload")
 		return nil
 	}
 	text, _ := raw.AsInterface().(string)
 	var report researchReport
 	if err := json.Unmarshal([]byte(text), &report); err != nil {
+		r.deliveryIssue("presets", "decode research payload: "+err.Error())
 		return nil
 	}
 	if !r.networkEnabled() {
@@ -363,6 +387,7 @@ func (r *Reporter) filterResearchLog(log *sentry.Log) *sentry.Log {
 	}
 	payload, err := json.Marshal(report)
 	if err != nil {
+		r.deliveryIssue("presets", "encode research payload: "+err.Error())
 		return nil
 	}
 	attrs := r.attributes()
@@ -372,24 +397,61 @@ func (r *Reporter) filterResearchLog(log *sentry.Log) *sentry.Log {
 }
 
 func (r *Reporter) installationID() string {
-	if !r.researchEnabled() || r.stateDir == "" {
+	if !r.correlationEnabled() || r.stateDir == "" {
 		return ""
 	}
 	fd, err := unix.Open(filepath.Join(r.stateDir, "telemetry-research.json"), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return r.createInstallationID()
+	}
 	if err != nil {
+		r.deliveryIssue("identity", "open installation identity: "+err.Error())
 		return ""
 	}
 	file := os.NewFile(uintptr(fd), "research-state")
 	defer func() { _ = file.Close() }()
 	var state researchState
 	if err := json.NewDecoder(io.LimitReader(file, researchStateLimit)).Decode(&state); err != nil {
+		r.deliveryIssue("identity", "decode installation identity: "+err.Error())
 		return ""
 	}
 	if !validIdentity(state.ID) {
+		r.deliveryIssue("identity", errInvalidIdentity.Error())
 		return ""
 	}
 
 	return state.ID
+}
+
+func operationalReporting(value config.Telemetry) bool {
+	return value.Enabled && (value.Errors || value.Logs || value.Metrics || value.Tracing || value.Presets)
+}
+
+func (r *Reporter) correlationEnabled() bool {
+	if r == nil || r.client == nil || !operationalReporting(r.settings) {
+		return false
+	}
+	if r.configPath == "" {
+		return true
+	}
+	value, err := config.Load(r.configPath)
+	if err != nil {
+		r.deliveryIssue("identity", "read reporting settings: "+err.Error())
+		return false
+	}
+	return operationalReporting(value.Telemetry)
+}
+
+func (r *Reporter) createInstallationID() string {
+	var id string
+	if err := withResearchState(r.stateDir, func(state *researchState) error {
+		id = state.ID
+		return nil
+	}); err != nil {
+		r.deliveryIssue("identity", "persist installation identity: "+err.Error())
+		return ""
+	}
+	return id
 }
 
 func validIdentity(value string) bool {

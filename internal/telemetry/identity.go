@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,12 +17,14 @@ import (
 // NetworkIdentity is measured egress identity, not necessarily the IPTV provider
 // (VPNs, multi-WAN and wholesale networks can produce a different operator).
 type NetworkIdentity struct {
-	IP         string `json:"public_ip,omitempty"`
-	PTR        string `json:"ptr,omitempty"`
-	Provider   string `json:"detected_provider"`
-	Method     string `json:"detection_method"`
-	Confidence string `json:"confidence"`
-	Status     string `json:"lookup_status"`
+	IP          string    `json:"public_ip,omitempty"`
+	PTR         string    `json:"ptr,omitempty"`
+	Provider    string    `json:"detected_provider"`
+	Method      string    `json:"detection_method"`
+	Confidence  string    `json:"confidence"`
+	Status      string    `json:"lookup_status"`
+	LookupError string    `json:"lookup_error,omitempty"`
+	ObservedAt  time.Time `json:"observed_at,omitzero"`
 }
 
 const unknown = "unknown"
@@ -42,8 +45,11 @@ func (r *Reporter) networkEnabled() bool {
 		return true
 	}
 	value, err := config.Load(r.configPath)
-
-	return err == nil && value.Telemetry.Enabled && value.Telemetry.NetworkIdentity
+	if err != nil {
+		r.deliveryIssue("network", "read reporting settings: "+err.Error())
+		return false
+	}
+	return value.Telemetry.Enabled && value.Telemetry.NetworkIdentity
 }
 
 // LookupNetwork performs no request until explicitly invoked by the application.
@@ -60,29 +66,40 @@ func LookupNetwork(parent context.Context) NetworkIdentity {
 func lookupNetwork(parent context.Context, client *http.Client, endpoint string, ptr func(context.Context, string) ([]string, error)) NetworkIdentity {
 	ctx, cancel := context.WithTimeout(parent, ipLookupTimeout)
 	defer cancel()
-	result := NetworkIdentity{Status: "unavailable"}
+	result := NetworkIdentity{Status: "unavailable", ObservedAt: time.Now().UTC()}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
+		result.LookupError = "create IP lookup request: " + err.Error()
 		return cleanIdentity(result)
 	}
 	response, err := client.Do(request)
 	if err != nil {
+		result.LookupError = "request public IP: " + err.Error()
 		return cleanIdentity(result)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
+		result.LookupError = "public IP lookup returned " + response.Status
 		return cleanIdentity(result)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, ipv4TextLimit))
-	if err != nil || len(data) > ipv4TextLimit-1 {
+	if err != nil {
+		result.LookupError = "read public IP response: " + err.Error()
+		return cleanIdentity(result)
+	}
+	if len(data) > ipv4TextLimit-1 {
+		result.LookupError = "public IP response exceeds expected address length"
 		return cleanIdentity(result)
 	}
 	address, err := netip.ParseAddr(strings.TrimSpace(string(data)))
 	if err != nil || !publicAddress(address) {
+		result.LookupError = fmt.Sprintf("invalid public IP response: %q", data)
 		return cleanIdentity(result)
 	}
 	result.IP, result.Status = address.String(), "ip-only"
-	if names, err := ptr(ctx, result.IP); err == nil && len(names) != 0 {
+	if names, err := ptr(ctx, result.IP); err != nil {
+		result.LookupError = "reverse DNS lookup: " + err.Error()
+	} else if len(names) != 0 {
 		result.PTR = names[0]
 	}
 
@@ -113,13 +130,19 @@ func validPointerName(value string) bool {
 }
 
 func cleanIdentity(value NetworkIdentity) NetworkIdentity {
-	result := NetworkIdentity{Provider: unknown, Method: "none", Confidence: unknown, Status: "unavailable"}
+	result := NetworkIdentity{Provider: unknown, Method: "none", Confidence: unknown, Status: "unavailable", LookupError: value.LookupError, ObservedAt: value.ObservedAt}
+	if value.Status == "rate-limited" {
+		result.Status = value.Status
+	}
 	address, err := netip.ParseAddr(value.IP)
 	if err != nil || !publicAddress(address) {
 		return result
 	}
 	result.IP, result.Status = address.Unmap().String(), "ip-only"
 	if !validPointerName(value.PTR) {
+		if value.PTR != "" {
+			result.LookupError = fmt.Sprintf("invalid reverse DNS hostname: %q", value.PTR)
+		}
 		return result
 	}
 	result.PTR, result.Status = value.PTR, "ip-and-ptr"

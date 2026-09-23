@@ -46,7 +46,8 @@ func TestParseJournalKeepsSourceTimestamps(t *testing.T) {
 not json
 `
 	entries := parseJournal([]byte(records))
-	assertEqual(t, "entries", len(entries), 2)
+	assertEqual(t, "entries", len(entries), 3)
+	assertDiagnosticDetails(t, RenderEvent(entries[2].event()), "Malformed journal record", "not json")
 	assertEqual(t, "time", entries[0].Time, time.Date(2026, 9, 18, 0, 8, 47, 0, time.UTC))
 	assertEqual(t, "source", entries[0].Source, "udm-iptv[1745611]")
 	assertEqual(t, "message", entries[0].Message, "group 224.0.252.133 exclude mode")

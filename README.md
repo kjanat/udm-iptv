@@ -82,7 +82,7 @@ udm-iptv diagnose --capture 30m --format both --follow
 
 Private reports: `/data/udm-iptv/diagnostics` (0600), including addresses and raw logs.
 
-Export a sanitized copy locally; the original stays unchanged:
+Export complete capture evidence locally; the original stays unchanged:
 
 ```sh
 udm-iptv diagnose export /data/udm-iptv/diagnostics/CAPTURE.jsonl > share.jsonl

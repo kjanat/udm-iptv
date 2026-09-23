@@ -19,7 +19,7 @@ func TestDownstreamMissingDataIsNotHealthy(t *testing.T) {
 	links := inspectDownstream(system, []string{"br0", "br1", "eth0.10"})
 	want := []downstreamStatus{
 		{Interface: "br0", Link: "up", Snooping: "enabled", Querier: "disabled"},
-		{Interface: "br1", Link: "", Snooping: "unrecognized", Querier: ""},
+		{Interface: "br1", Link: "", Snooping: `unrecognized: "secret-unexpected-value"`, Querier: ""},
 		{Interface: "eth0.10", Link: "", Snooping: "", Querier: ""},
 	}
 	if !reflect.DeepEqual(links, want) {
@@ -41,9 +41,7 @@ func TestDownstreamMissingDataIsNotHealthy(t *testing.T) {
 	if strings.Contains(text, "not checked") {
 		t.Fatal(text)
 	}
-	if strings.Contains(text, "secret") {
-		t.Fatal("unexpected kernel data leaked")
-	}
+	assertDiagnosticDetails(t, text, "secret-unexpected-value")
 }
 
 func TestInspectSwitchListsLocalDSA(t *testing.T) {
@@ -65,10 +63,10 @@ func TestInspectSwitchSeparatesUnavailableFromEmpty(t *testing.T) {
 	if got := inspectSwitch(empty, "4.1.13"); got != "firmware 4.1.13, no local switch interfaces" {
 		t.Fatal(got)
 	}
-	if got := inspectSwitch(fstest.MapFS{}, "4.1.13"); got != "firmware 4.1.13, local switch interfaces unavailable" {
+	if got := inspectSwitch(fstest.MapFS{}, "4.1.13"); !strings.HasPrefix(got, "firmware 4.1.13, local switch interfaces unavailable: read class/net:") {
 		t.Fatal(got)
 	}
-	if got := inspectSwitch(fstest.MapFS{}, ""); got != "local switch interfaces unavailable" {
+	if got := inspectSwitch(fstest.MapFS{}, ""); !strings.HasPrefix(got, "local switch interfaces unavailable: read class/net:") {
 		t.Fatal(got)
 	}
 }
@@ -117,7 +115,7 @@ func TestFormatNativeProxy(t *testing.T) {
 	if got := formatNativeProxy(true, "active", []int{9, 11}, nil); got != "igmpproxy.service active, extra proxy pids 9 11" {
 		t.Fatal(got)
 	}
-	if got := formatNativeProxy(true, "active", nil, fs.ErrPermission); got != "igmpproxy.service active, extra proxy processes unavailable" {
+	if got := formatNativeProxy(true, "active", nil, fs.ErrPermission); got != "igmpproxy.service active, extra proxy processes unavailable: permission denied" {
 		t.Fatal(got)
 	}
 }

@@ -2,24 +2,24 @@
 package telemetry
 
 import (
-	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
+	"os"
 	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/getsentry/sentry-go"
 	"github.com/getsentry/sentry-go/attribute"
 	sentryhttpclient "github.com/getsentry/sentry-go/httpclient"
-	sentryslog "github.com/getsentry/sentry-go/slog"
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/device"
@@ -29,24 +29,22 @@ import (
 // have no telemetry destination, even when SENTRY_DSN is set at runtime.
 var DSN string
 
-var (
-	errNoTelemetryEndpoint = errors.New("this build has no telemetry endpoint")
-	errPanic               = errors.New("panic")
-)
+var errNoTelemetryEndpoint = errors.New("this build has no telemetry endpoint")
 
 const (
 	transportBufferSize = 32
 	// sentryRequestTimeout bounds both the HTTP transport and its client, so
 	// a stalled telemetry request never blocks daemon shutdown for long.
 	sentryRequestTimeout = 2 * time.Second
-	// maxTraceSpans bounds a transaction's recorded spans.
+	// maxTraceSpans configures this client. Sentry Go v0.49.0's span recorder
+	// instead reads the global hub's client, so this context hub does not enforce it.
 	maxTraceSpans = 32
-	// exceptionChainLimit bounds how many wrapped/joined errors an event keeps.
+	// exceptionChainLimit bounds unwrap depth, not the number of joined errors.
 	exceptionChainLimit = 16
 	// maxBreadcrumbs bounds the operation trail a failure carries.
 	maxBreadcrumbs = 50
-	// attachmentLimit bounds the diagnostics attached to a failure.
-	attachmentLimit = 256 << 10
+	// attachmentCompressionThreshold preserves large reports in a gzip attachment.
+	attachmentCompressionThreshold = 256 << 10
 	// lineLimit bounds a partial output line held back until its newline.
 	lineLimit = 4096
 )
@@ -116,20 +114,27 @@ func hasPreviewIdentifier(version string) bool {
 // Reporter sends bounded telemetry events to Sentry.
 // It is safe to call its methods concurrently.
 type Reporter struct {
-	client      *sentry.Client
-	hub         *sentry.Hub
-	settings    config.Telemetry
-	configPath  string
-	stateDir    string
-	release     string
-	environment string
-	dist        string
-	vcsModified string
-	goVersion   string
-	mu          sync.Mutex
-	window      time.Time
-	counts      map[string]int
-	metadata    map[string]string
+	client            *sentry.Client
+	hub               *sentry.Hub
+	settings          config.Telemetry
+	configPath        string
+	stateDir          string
+	release           string
+	environment       string
+	dist              string
+	vcsModified       string
+	goVersion         string
+	mu                sync.Mutex
+	window            time.Time
+	counts            map[string]int
+	breadcrumbCount   uint64
+	metadata          map[string]string
+	networkIdentity   *NetworkIdentity
+	networkIdentityAt time.Time
+	lineWriters       []*lineWriter
+	deliveryMu        sync.Mutex
+	deliveryOutput    io.Writer
+	deliveryCounts    map[string]uint64
 }
 
 // New returns a Reporter that sends events to Sentry, or
@@ -152,8 +157,9 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 		settings: settings, release: "udm-iptv@" + version, environment: environmentFor(version),
 		counts: make(map[string]int),
 		dist:   stamp.revision, vcsModified: stamp.modified, goVersion: stamp.toolchain,
+		deliveryOutput: os.Stderr, deliveryCounts: make(map[string]uint64),
 	}
-	if !settings.Enabled || (!settings.Errors && !settings.Logs && !settings.Metrics && !settings.Tracing && !settings.Presets && !settings.NetworkIdentity) {
+	if !reportingEnabled(settings) {
 		return r, nil
 	}
 	if dsn == "" {
@@ -161,7 +167,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 	}
 	client, err := sentry.NewClient(sentry.ClientOptions{
 		Dsn: dsn, Release: r.release, Dist: r.dist, Environment: r.environment, ServerName: "udm-iptv",
-		Transport: transport, HTTPClient: &http.Client{Timeout: sentryRequestTimeout},
+		Transport: transport, HTTPClient: &http.Client{Timeout: sentryRequestTimeout, Transport: deliveryTransport{reporter: r, base: http.DefaultTransport}},
 		EnableTracing: settings.Tracing, TracesSampleRate: settings.TraceRate,
 		DataCollection: &sentry.DataCollection{
 			UserInfo: sentry.Set(false), HTTPBodies: []sentry.BodyType{},
@@ -172,9 +178,10 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 				Response: &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
 			},
 		},
-		MaxBreadcrumbs: maxBreadcrumbs, MaxSpans: maxTraceSpans, DisableClientReports: true,
+		MaxBreadcrumbs: maxBreadcrumbs, MaxSpans: maxTraceSpans,
 		BeforeSend: r.filterEvent, BeforeSendTransaction: r.filterEvent,
-		BeforeSendLog: r.filterLog, BeforeSendMetric: r.filterMetric,
+		BeforeBreadcrumb: r.countBreadcrumb,
+		BeforeSendLog:    r.filterLog, BeforeSendMetric: r.filterMetric,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create telemetry client: %w", err)
@@ -184,13 +191,21 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 	return r, nil
 }
 
+func reportingEnabled(settings config.Telemetry) bool {
+	return settings.Enabled && (settings.Errors || settings.Logs || settings.Metrics || settings.Tracing || settings.Presets || settings.NetworkIdentity)
+}
+
 // allow bounds each signal independently; the key space is fixed by this package.
 func (r *Reporter) allow(kind string, maximum int) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.configPath != "" {
 		value, err := config.Load(r.configPath)
-		if err != nil || !value.Telemetry.Enabled {
+		if err != nil {
+			r.deliveryIssue(kind, "cannot read telemetry settings: "+err.Error())
+			return false
+		}
+		if !value.Telemetry.Enabled {
 			return false
 		}
 		permitted := map[string]bool{"errors": value.Telemetry.Errors, "logs": value.Telemetry.Logs, "metrics": value.Telemetry.Metrics, "traces": value.Telemetry.Tracing, "presets": value.Telemetry.Presets, "network": value.Telemetry.NetworkIdentity}
@@ -203,10 +218,14 @@ func (r *Reporter) allow(kind string, maximum int) bool {
 		clear(r.counts)
 	}
 	if r.counts[kind] >= maximum {
+		r.deliveryIssue(kind, "per-minute telemetry budget exhausted")
 		return false
 	}
-	if r.stateDir != "" && !allowPersisted(r.stateDir, kind, maximum, time.Now()) {
-		return false
+	if r.stateDir != "" {
+		if err := allowPersistedReason(r.stateDir, kind, maximum, time.Now()); err != nil {
+			r.deliveryIssue(kind, err.Error())
+			return false
+		}
 	}
 	r.counts[kind]++
 
@@ -218,8 +237,16 @@ func (r *Reporter) Close() {
 	if r == nil || r.client == nil {
 		return
 	}
-	r.client.Flush(sentryRequestTimeout)
+	r.mu.Lock()
+	writers := append([]*lineWriter(nil), r.lineWriters...)
+	r.lineWriters = nil
+	r.mu.Unlock()
+	for _, writer := range writers {
+		writer.Flush()
+	}
+	r.Flush()
 	r.client.Close()
+	r.deliverySummary()
 }
 
 var operations = map[string]bool{
@@ -229,26 +256,17 @@ var operations = map[string]bool{
 	"dhcp.acquire": true, "service.health": true,
 }
 
-// SetMetadata stores allowlisted board, firmware, proxy and profile tags.
+// SetMetadata retains printable hardware metadata, including newly released
+// boards and custom profiles that this executable does not yet recognize.
 func (r *Reporter) SetMetadata(model, firmware, discovery, sysid, proxy, profile string) {
 	r.metadata = make(map[string]string)
-	if device.KnownBoard(model) {
-		r.metadata["model"] = model
-	}
-	if device.ValidFirmware(firmware) {
-		r.metadata["firmware"] = firmware
-	}
-	if device.ValidDiscovery(discovery) {
-		r.metadata["firmware_discovery"] = discovery
-	}
 	if id := device.NormalizeSysID(sysid); id != "" {
-		r.metadata["sysid"] = id
+		sysid = id
 	}
-	if proxy == config.ProxyImproxy || proxy == config.ProxyIgmpproxy {
-		r.metadata["proxy"] = proxy
-	}
-	if _, ok := config.ProfileByID(profile); ok {
-		r.metadata["profile"] = profile
+	for key, value := range map[string]string{"model": model, "firmware": firmware, "firmware_discovery": discovery, "sysid": sysid, "proxy": proxy, "profile": profile} {
+		if value != "" && !strings.ContainsFunc(value, unicode.IsControl) {
+			r.metadata[key] = value
+		}
 	}
 }
 
@@ -259,7 +277,7 @@ const (
 	installationStale      = "package-stale"
 )
 
-var packageVersionPattern = regexp.MustCompile(`^[0-9][0-9A-Za-z.+~-]{0,63}$`)
+var packageVersionPattern = regexp.MustCompile(`^[0-9][0-9A-Za-z.+:~-]*$`)
 
 // SetInstallation tags every report with the installation kind and, on a
 // dpkg-tracked installation, the version dpkg holds. It reports whether that
@@ -303,8 +321,7 @@ func (r *Reporter) instruments(operation string) bool {
 	return r != nil && r.client != nil && operations[operation]
 }
 
-// Error text can include tokens, IP addresses and local file paths.
-// Report the error class and call stack; keep its text local.
+// reportOutcome preserves the error details for failed operations.
 func (r *Reporter) reportOutcome(ctx context.Context, operation string, err error, panicked bool) {
 	if panicked {
 		r.failure(ctx, operation, err, true)
@@ -341,6 +358,19 @@ func (r *Reporter) logOutcome(ctx context.Context, operation string, err error) 
 
 func (r *Reporter) breadcrumb(message string, level sentry.Level) {
 	r.hub.AddBreadcrumb(&sentry.Breadcrumb{Category: breadcrumbCategory, Message: message, Level: level, Timestamp: time.Now()}, nil)
+}
+
+// This reporter owns one scope and never clears it. Every accepted breadcrumb
+// beyond the SDK's FIFO size therefore evicts exactly one older entry.
+func (r *Reporter) countBreadcrumb(breadcrumb *sentry.Breadcrumb, _ *sentry.BreadcrumbHint) *sentry.Breadcrumb {
+	r.mu.Lock()
+	r.breadcrumbCount++
+	evicted := r.breadcrumbCount > maxBreadcrumbs
+	r.mu.Unlock()
+	if evicted {
+		r.deliveryIssue("breadcrumbs", "oldest breadcrumb evicted by SDK history limit")
+	}
+	return breadcrumb
 }
 
 func (r *Reporter) meterOutcome(ctx context.Context, operation string, err error, elapsed time.Duration) {
@@ -397,7 +427,7 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 	defer func() {
 		panicked := recover()
 		if panicked != nil {
-			err = errPanic
+			err = panicError{value: fmt.Sprint(panicked), typeName: fmt.Sprintf("%T", panicked)}
 		}
 		r.breadcrumb(outcomeMessage(operation, err))
 		failures.report(ctx, r, operation, err, panicked != nil)
@@ -437,7 +467,10 @@ func (r *Reporter) failure(ctx context.Context, operation string, err error, pan
 	}
 	event.Fingerprint = []string{"{{ default }}", operation}
 	if panicked {
-		event.Exception = []sentry.Exception{{Type: "panic", Stacktrace: sentry.NewStacktrace(), Mechanism: &sentry.Mechanism{Type: "generic"}}}
+		event.Exception = []sentry.Exception{{Type: "panic", Value: err.Error(), Stacktrace: sentry.NewStacktrace(), Mechanism: &sentry.Mechanism{Type: "generic"}}}
+		if recovered, ok := errors.AsType[panicError](err); ok {
+			event.Exception[0].Type = "panic(" + recovered.typeName + ")"
+		}
 		event.Exception[0].Mechanism.SetUnhandled()
 	}
 	r.hub.CaptureEvent(event)
@@ -481,8 +514,11 @@ func (r *Reporter) MetricsEnabled() bool {
 		return true
 	}
 	value, err := config.Load(r.configPath)
-
-	return err == nil && value.Telemetry.Enabled && value.Telemetry.Metrics
+	if err != nil {
+		r.deliveryIssue("metrics", "cannot read telemetry settings: "+err.Error())
+		return false
+	}
+	return value.Telemetry.Enabled && value.Telemetry.Metrics
 }
 
 func (r *Reporter) allowsEvent(event *sentry.Event) bool {
@@ -530,12 +566,21 @@ func Attach(ctx context.Context, diagnostics []byte) {
 	if !ok || len(diagnostics) == 0 {
 		return
 	}
-	if len(diagnostics) > attachmentLimit {
-		diagnostics = diagnostics[:attachmentLimit]
-	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.items = append(store.items, &sentry.Attachment{Filename: attachmentName, ContentType: "text/plain", Payload: diagnostics})
+	attachment := &sentry.Attachment{Filename: attachmentName, ContentType: "text/plain", Payload: append([]byte(nil), diagnostics...)}
+	if len(diagnostics) > attachmentCompressionThreshold {
+		var compressed strings.Builder
+		writer := gzip.NewWriter(&compressed)
+		_, writeErr := writer.Write(diagnostics)
+		closeErr := writer.Close()
+		if writeErr == nil && closeErr == nil {
+			attachment.Filename += ".gz"
+			attachment.ContentType = "application/gzip"
+			attachment.Payload = []byte(compressed.String())
+		}
+	}
+	store.items = append(store.items, attachment)
 }
 
 // HTTPTransport wraps base so every outgoing request becomes an http.client
@@ -543,45 +588,6 @@ func Attach(ctx context.Context, diagnostics []byte) {
 // trace headers Sentry needs to link it.
 func HTTPTransport(base http.RoundTripper) http.RoundTripper {
 	return sentryhttpclient.NewSentryRoundTripper(base)
-}
-
-// LineWriter returns a writer that records every complete line written to
-// it as a Sentry log tagged with source, through the slog integration.
-func (r *Reporter) LineWriter(ctx context.Context, source string) io.Writer {
-	if r == nil || r.client == nil || !r.settings.Logs {
-		return io.Discard
-	}
-	ctx = sentry.SetHubOnContext(ctx, r.hub)
-
-	return &lineWriter{logger: slog.New(sentryslog.Option{}.NewSentryHandler(ctx)).With("source", source)}
-}
-
-type lineWriter struct {
-	mu     sync.Mutex
-	logger *slog.Logger
-	buffer []byte
-}
-
-func (w *lineWriter) Write(data []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.buffer = append(w.buffer, data...)
-	for {
-		index := bytes.IndexByte(w.buffer, '\n')
-		if index < 0 {
-			break
-		}
-		line := strings.TrimSpace(string(w.buffer[:index]))
-		w.buffer = w.buffer[index+1:]
-		if line != "" {
-			w.logger.Info(line)
-		}
-	}
-	if len(w.buffer) > lineLimit {
-		w.buffer = w.buffer[len(w.buffer)-lineLimit:]
-	}
-
-	return len(data), nil
 }
 
 // Step times one named stage of the operation running in ctx as a child

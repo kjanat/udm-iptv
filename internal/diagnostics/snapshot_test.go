@@ -122,7 +122,7 @@ func TestSnapshotRendersEveryForwardedRouteAndTheLease(t *testing.T) {
 	for _, want := range []string{
 		"Addresses: 10.207.71.227/20",
 		"Routes: 10.207.64.0/20, 213.75.112.0/21 via 10.207.64.1",
-		"Multicast routes: 1 forwarding (182931 packets, 76.9 MB), 4 unresolved",
+		"Multicast routes: 1 forwarding (182931 packets, 76.9 MB (76894939 B)), 4 unresolved",
 		"  224.0.250.64 from 195.121.94.212: iptv -> br0, 182931 packets, 76.9 MB",
 		"Active NAT rules: 1",
 		"NAT rules on the IPTV interface:\n  managed 213.75.0.0/16: 187 packets, 27.5 kB",

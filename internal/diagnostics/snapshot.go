@@ -31,6 +31,7 @@ type Collector struct{ ConfigPath, Version string }
 // Snapshot represents a point-in-time summary of the router's
 // configuration and status.
 type Snapshot struct {
+	Errors      map[string]string   `json:"errors,omitempty"`
 	Timestamp   time.Time           `json:"timestamp"`
 	Version     string              `json:"version"`
 	Config      configSummary       `json:"config"`
@@ -48,6 +49,9 @@ type Snapshot struct {
 }
 
 type configSummary struct {
+	MACAddress        string   `json:"vlanMAC,omitempty"`
+	StaticCIDR        string   `json:"staticAddress,omitempty"`
+	DHCPOptionValues  []string `json:"dhcpOptions,omitempty"`
 	Profile           string   `json:"profile"`
 	WANInterface      string   `json:"wanInterface"`
 	VLAN              int      `json:"vlan"`
@@ -68,19 +72,21 @@ type configSummary struct {
 }
 
 type serviceStatus struct {
-	ResumeAt    *time.Time `json:"resumeAt,omitempty"`
-	ResumeError string     `json:"resumeError,omitempty"`
-	Package     string     `json:"package,omitempty"`
-	LoadState   string     `json:"loadState"`
-	ActiveState string     `json:"activeState"`
-	SubState    string     `json:"subState"`
-	UnitFile    string     `json:"unitFileState"`
-	Restarts    uint64     `json:"restarts"`
-	Proxy       string     `json:"proxy,omitempty"`
-	ProxyPID    int        `json:"proxyPID,omitempty"`
+	Errors      map[string]string `json:"errors,omitempty"`
+	ResumeAt    *time.Time        `json:"resumeAt,omitempty"`
+	ResumeError string            `json:"resumeError,omitempty"`
+	Package     string            `json:"package,omitempty"`
+	LoadState   string            `json:"loadState"`
+	ActiveState string            `json:"activeState"`
+	SubState    string            `json:"subState"`
+	UnitFile    string            `json:"unitFileState"`
+	Restarts    uint64            `json:"restarts"`
+	Proxy       string            `json:"proxy,omitempty"`
+	ProxyPID    int               `json:"proxyPID,omitempty"`
 }
 
 type networkStatus struct {
+	Errors       map[string]string `json:"errors,omitempty"`
 	VLAN         *vlanCheck        `json:"vlanCheck,omitempty"`
 	Target       string            `json:"target"`
 	LinkState    string            `json:"linkState"`
@@ -146,20 +152,7 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	if value.Proxy.MLDVersion != 0 {
 		result.Network.IPv6Knobs = network.IPv6MulticastState(value)
 	}
-	if usage, err := multicastUsage(); err == nil {
-		result.Multicast = &usage
-	}
-	if rules, err := network.ListNAT(value); err == nil {
-		result.NAT = &rules
-		evidence := natEvidence(value.WAN.NATDestinations, result.Network.Routes, rules)
-		result.NATEvidence = &evidence
-	}
-	if memberships, err := bridgeMemberships(ctx); err == nil {
-		result.Memberships = &memberships
-	}
-	if lease, err := service.ReadLeaseState(); err == nil {
-		result.Lease = &lease
-	}
+	collectSnapshotTables(ctx, value, &result)
 	result.Switches = inspectSwitch(os.DirFS("/sys"), device.Inspect(ctx).Firmware)
 	result.NativeProxy = inspectNativeProxy(ctx, result.Service.ProxyPID)
 	result.Playback = inspectReceivers(result.Multicast, value.LAN.Interfaces)
@@ -167,12 +160,56 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	return result, nil
 }
 
+func collectSnapshotTables(ctx context.Context, value config.Config, result *Snapshot) {
+	if usage, err := multicastUsage(); err == nil {
+		result.Multicast = &usage
+	} else {
+		recordCollectionError(&result.Errors, "multicast", err)
+	}
+	if rules, err := network.ListNAT(value); err == nil {
+		result.NAT = &rules
+		result.NATEvidence = observedNATEvidence(value.WAN.NATDestinations, result.Network, rules)
+	} else {
+		recordCollectionError(&result.Errors, "nat", err)
+	}
+	if memberships, err := bridgeMemberships(ctx); err == nil {
+		result.Memberships = &memberships
+	} else {
+		recordCollectionError(&result.Errors, "memberships", err)
+	}
+	if lease, err := service.ReadLeaseState(); err == nil {
+		result.Lease = &lease
+	} else {
+		recordCollectionError(&result.Errors, "lease", err)
+	}
+}
+
+func observedNATEvidence(destinations []string, observed networkStatus, rules []network.NATRule) *[]NATEvidence {
+	if observed.Errors["link"] != "" || observed.Errors["routes"] != "" {
+		return nil
+	}
+	evidence := natEvidence(destinations, observed.Routes, rules)
+	return &evidence
+}
+
+func recordCollectionError(target *map[string]string, collector string, err error) {
+	if err == nil {
+		return
+	}
+	if *target == nil {
+		*target = make(map[string]string)
+	}
+	(*target)[collector] = err.Error()
+}
+
 func inspectNativeProxy(ctx context.Context, ourPID int) string {
 	loaded, active := false, ""
 	connection, err := systemd.NewSystemConnectionContext(ctx)
+	unitErr := err
 	if err == nil {
 		defer connection.Close()
 		properties, err := connection.GetAllPropertiesContext(ctx, "igmpproxy.service")
+		unitErr = err
 		if err == nil {
 			loaded = true
 			active, _ = properties["ActiveState"].(string)
@@ -181,13 +218,17 @@ func inspectNativeProxy(ctx context.Context, ourPID int) string {
 
 	extra, scanned := extraProxyPIDs(ourPID)
 
-	return formatNativeProxy(loaded, active, extra, scanned)
+	text := formatNativeProxy(loaded, active, extra, scanned)
+	if unitErr != nil {
+		text = strings.Replace(text, "igmpproxy.service not loaded", "igmpproxy.service unavailable: "+unitErr.Error(), 1)
+	}
+	return text
 }
 
 func inspectReceivers(usage *MulticastInfo, lan []string) string {
 	data, err := os.ReadFile("/proc/net/igmp")
 	if err != nil {
-		return formatReceivers(usage, nil)
+		return formatReceivers(usage, nil) + ": " + err.Error()
 	}
 	groups := countLANIGMPGroups(string(data), lan)
 
@@ -210,11 +251,11 @@ func formatBytes(value uint64) string {
 	const unit = 1000
 	switch {
 	case value >= unit*unit*unit:
-		return fmt.Sprintf("%.1f GB", float64(value)/(unit*unit*unit))
+		return fmt.Sprintf("%.1f GB (%d B)", float64(value)/(unit*unit*unit), value)
 	case value >= unit*unit:
-		return fmt.Sprintf("%.1f MB", float64(value)/(unit*unit))
+		return fmt.Sprintf("%.1f MB (%d B)", float64(value)/(unit*unit), value)
 	case value >= unit:
-		return fmt.Sprintf("%.1f kB", float64(value)/unit)
+		return fmt.Sprintf("%.1f kB (%d B)", float64(value)/unit, value)
 	}
 
 	return fmt.Sprintf("%d B", value)
@@ -280,8 +321,21 @@ func renderLease(lease *service.LeaseState) string {
 		outcome = "not applied: " + lease.Failure
 	}
 	fmt.Fprintf(&output, "DHCP lease: %s at %s, address %s/%s, routers %s, static routes %s, %s\n",
-		lease.Lease.Action, lease.Received.Format(time.RFC3339), lease.Lease.Address, lease.Lease.Mask,
+		lease.Lease.Action, lease.Received.Format(time.RFC3339Nano), lease.Lease.Address, lease.Lease.Mask,
 		strings.Join(lease.Lease.Routers, " "), strings.Join(lease.Lease.StaticRoutes, " "), outcome)
+	fmt.Fprintf(&output, "Lease interface: %s, broadcast: %s, route metric: %d\n", lease.Lease.Interface, lease.Lease.Broadcast, lease.Lease.Metric)
+	if lease.Failure != "" {
+		fmt.Fprintf(&output, "Recorded lease failure: %s\n", lease.Failure)
+	}
+	managed, err := json.Marshal(struct {
+		Routes    []netlink.Route `json:"routes"`
+		Addresses []netlink.Addr  `json:"addresses"`
+	}{lease.Lease.ManagedRoutes, lease.Lease.ManagedAddresses})
+	if err != nil {
+		fmt.Fprintf(&output, "Lease managed state unavailable: %s\n", err)
+	} else {
+		fmt.Fprintf(&output, "Lease managed state: %s\n", managed)
+	}
 	keys := make([]string, 0, len(lease.Lease.Options))
 	for key := range lease.Lease.Options {
 		keys = append(keys, key)
@@ -382,6 +436,7 @@ func samePrefix(left, right string) bool {
 
 func summarizeConfig(value config.Config) configSummary {
 	return configSummary{
+		MACAddress: value.WAN.VLANMAC, StaticCIDR: value.WAN.StaticAddress, DHCPOptionValues: slices.Clone(value.WAN.DHCPOptions),
 		Profile: value.Profile, WANInterface: value.WAN.Interface, VLAN: value.WAN.VLAN, IPTVInterface: value.WAN.VLANInterface,
 		CustomMAC: value.WAN.VLANMAC != "", DHCP: value.WAN.DHCP, DHCPOptions: len(value.WAN.DHCPOptions) > 0, StaticAddress: value.WAN.StaticAddress != "",
 		DHCPRoutes: string(value.WAN.DHCPRoutes), NATDestinations: value.WAN.NATDestinations,
@@ -392,15 +447,20 @@ func summarizeConfig(value config.Config) configSummary {
 
 func inspectService(ctx context.Context) serviceStatus {
 	var status serviceStatus
-	if record, err := installer.QueryPackage(ctx); err == nil && record.Owned() {
+	record, err := installer.QueryPackage(ctx)
+	recordCollectionError(&status.Errors, "package", err)
+	if err == nil && record.Owned() {
 		status.Package = record.ReleaseVersion()
 	}
 	if state, err := service.ReadRuntimeState(); err == nil {
 		status.Proxy = state.Proxy
 		status.ProxyPID = state.ProxyPID
+	} else {
+		recordCollectionError(&status.Errors, "runtime", err)
 	}
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
+		recordCollectionError(&status.Errors, "systemd", err)
 		return status
 	}
 	defer connection.Close()
@@ -412,6 +472,7 @@ func inspectService(ctx context.Context) serviceStatus {
 	}
 	properties, err := connection.GetAllPropertiesContext(ctx, "udm-iptv.service")
 	if err != nil {
+		recordCollectionError(&status.Errors, "systemd", err)
 		return status
 	}
 	status.LoadState, _ = properties["LoadState"].(string)
@@ -465,33 +526,37 @@ func parseMemberships(data []byte) ([]Membership, error) {
 	return memberships, nil
 }
 
-func linkAddresses(link netlink.Link, family int) []string {
+func linkAddresses(link netlink.Link, family int) ([]string, error) {
 	addresses, err := netlink.AddrList(link, family)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("read interface addresses: %w", err)
 	}
 	result := make([]string, 0, len(addresses))
 	for _, address := range addresses {
 		result = append(result, address.IPNet.String())
 	}
 
-	return result
+	return result, nil
 }
 
 func inspectLink(target string) networkStatus {
 	result := networkStatus{Target: target}
 	link, err := netlink.LinkByName(target)
 	if err != nil {
+		recordCollectionError(&result.Errors, "link", err)
 		return result
 	}
 	result.LinkState = link.Attrs().OperState.String()
-	result.Addresses = linkAddresses(link, netlink.FAMILY_V4)
+	result.Addresses, err = linkAddresses(link, netlink.FAMILY_V4)
+	recordCollectionError(&result.Errors, "addresses4", err)
 	result.AddressCount = len(result.Addresses)
 	// A provider that carries IPTV over IPv6 shows up here first, so the
 	// addresses are collected even though the lease path is IPv4 only.
-	result.AddressesV6 = linkAddresses(link, netlink.FAMILY_V6)
+	result.AddressesV6, err = linkAddresses(link, netlink.FAMILY_V6)
+	recordCollectionError(&result.Errors, "addresses6", err)
 	routes, err := netlink.RouteList(link, netlink.FAMILY_V4)
 	if err != nil {
+		recordCollectionError(&result.Errors, "routes", err)
 		return result
 	}
 	for _, route := range routes {
@@ -516,32 +581,63 @@ func inspectLink(target string) networkStatus {
 // Configured settings and observed state are labelled apart.
 func RenderSnapshot(value Snapshot) string {
 	return renderVLANCheck(value.Network.VLAN) + fmt.Sprintf(`udm-iptv %s
+Snapshot time: %s
 Installation: %s
 Profile: %s
 WAN: %s, VLAN %d (%s), DHCP: %t
 Custom VLAN MAC: %t, static address: %t, DHCP options: %t
+Configured VLAN MAC: %s
+Configured static address: %s
+Configured DHCP options: %q
+Configured proxy: %s
 DHCP route policy: %s
 NAT destinations: %s
 Active NAT rules: %s
 Proxy source ranges: %s
 LAN interfaces: %s
-Service: %s/%s (%s, restarts: %d)%s
-Proxy: %s (PID %d)
+Service: %s/%s (%s, restarts: %s)%s
+Service load state: %s
+Proxy: %s (PID %s)
 IGMP version: %d, MLD: %s, quickleave enabled: %t, proxy debug logging: %t
-IPTV interface: %s (%s, %d IPv4 addresses)
+IPTV interface: %s (%s, %s IPv4 addresses)
 Addresses: %s
 Routes: %s
 Default route observed on %s: %s
 Multicast routes: %s
-`, value.Version, renderInstallation(value.Version, value.Service.Package), value.Config.Profile, value.Config.WANInterface, value.Config.VLAN, value.Config.IPTVInterface, value.Config.DHCP,
-		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, fallbackText(value.Config.DHCPRoutes),
+`, value.Version, value.Timestamp.Format(time.RFC3339Nano), observedText(value.Service.Errors, renderInstallation(value.Version, value.Service.Package), "package"), value.Config.Profile, value.Config.WANInterface, value.Config.VLAN, value.Config.IPTVInterface, value.Config.DHCP,
+		value.Config.CustomMAC, value.Config.StaticAddress, value.Config.DHCPOptions, value.Config.MACAddress, value.Config.StaticCIDR, value.Config.DHCPOptionValues, value.Config.Proxy, fallbackText(value.Config.DHCPRoutes),
 		strings.Join(value.Config.NATDestinations, ", "), natRuleCount(value.NAT), renderSourceRanges(value.Config), strings.Join(value.Config.LANInterfaces, ", "),
-		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), value.Service.Restarts, renderResume(value.Service),
-		fallbackText(value.Service.Proxy), value.Service.ProxyPID, value.Config.IGMPVersion, mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug,
-		value.Network.Target, fallbackText(value.Network.LinkState), value.Network.AddressCount, strings.Join(value.Network.Addresses, ", "),
-		strings.Join(value.Network.Routes, ", "), value.Network.Target, presence(value.Network.DefaultRoute), multicastSummary(value.Multicast)) +
+		fallbackText(value.Service.ActiveState), fallbackText(value.Service.SubState), fallbackText(value.Service.UnitFile), observedText(value.Service.Errors, strconv.FormatUint(value.Service.Restarts, 10), "systemd"), renderResume(value.Service), fallbackText(value.Service.LoadState),
+		fallbackText(value.Service.Proxy), observedText(value.Service.Errors, strconv.Itoa(value.Service.ProxyPID), "runtime"), value.Config.IGMPVersion, mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug,
+		value.Network.Target, fallbackText(value.Network.LinkState), observedText(value.Network.Errors, strconv.Itoa(value.Network.AddressCount), "link", "addresses4"), observedText(value.Network.Errors, strings.Join(value.Network.Addresses, ", "), "link", "addresses4"),
+		observedText(value.Network.Errors, strings.Join(value.Network.Routes, ", "), "link", "routes"), value.Network.Target, observedText(value.Network.Errors, presence(value.Network.DefaultRoute), "link", "routes"), multicastSummary(value.Multicast)) +
 		renderMulticast(value.Multicast) + renderNAT(value.NAT) + renderNATEvidence(value.NATEvidence, value.Network.Target) +
-		renderIPv6(value.Network) + renderMemberships(value.Memberships) + renderLease(value.Lease) + renderDownstream(value)
+		renderIPv6(value.Network) + renderMemberships(value.Memberships) + renderSnapshotLease(value) + renderDownstream(value) +
+		renderCollectionErrors("snapshot", value.Errors) + renderCollectionErrors("service", value.Service.Errors) + renderCollectionErrors("network", value.Network.Errors)
+}
+
+func renderSnapshotLease(value Snapshot) string {
+	if value.Lease == nil && value.Errors["lease"] != "" {
+		return "DHCP lease: unavailable\n"
+	}
+	return renderLease(value.Lease)
+}
+
+func observedText(failures map[string]string, value string, dependencies ...string) string {
+	for _, name := range dependencies {
+		if failures[name] != "" {
+			return counterUnavailable
+		}
+	}
+	return value
+}
+
+func renderCollectionErrors(section string, failures map[string]string) string {
+	var output strings.Builder
+	for _, name := range slices.Sorted(maps.Keys(failures)) {
+		fmt.Fprintf(&output, "Collection error (%s.%s): %s\n", section, name, failures[name])
+	}
+	return output.String()
 }
 
 func renderResume(status serviceStatus) string {

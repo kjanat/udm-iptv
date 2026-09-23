@@ -126,7 +126,9 @@ func (application *Daemon) logRemovedNAT(ctx context.Context, removed []network.
 	if len(removed) == 0 {
 		return
 	}
-	output := io.MultiWriter(application.Out, application.Monitor.LineWriter(ctx, "nat"))
+	log := application.Monitor.LineWriter(ctx, "nat")
+	defer telemetry.FlushLines(log)
+	output := io.MultiWriter(application.Out, log)
 	for _, rule := range removed {
 		_, _ = fmt.Fprintf(output, "NAT rule removed: %s\n", rule)
 	}
@@ -254,7 +256,9 @@ func (application *Daemon) proxyCommand(ctx context.Context, value config.Config
 	if err != nil {
 		_, _ = fmt.Fprintf(application.Err, "%s output through a pipe: %v\n", value.Proxy.Program, err)
 		proxy.Stdout = out
+		output = &processOutput{}
 	}
+	output.flush = func() { telemetry.FlushLines(proxyLog) }
 	proxy.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(proxy)
 
@@ -407,7 +411,7 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 	configureGracefulStop(client)
 	// Keep ownership from the previous client; readiness rejects records older than since.
 	since := time.Now().UTC()
-	process, err := startProcess(client)
+	process, err := startProcess(client, func() { telemetry.FlushLines(dhcpLog) })
 	if err != nil {
 		return nil, fmt.Errorf("start DHCP client: %w", err)
 	}

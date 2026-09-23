@@ -44,7 +44,7 @@ func awaitJournal(t *testing.T, done <-chan error) {
 	t.Helper()
 	select {
 	case err := <-done:
-		if err != nil {
+		if err != nil && !errors.Is(err, errJournalDelivery) {
 			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
@@ -122,7 +122,11 @@ func TestJournalDrainHonorsCaptureDeadline(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := drainJournal(ctx, make(chan Event), func(Event) error { t.Fatal("unexpected event"); return nil }); err != nil {
+	var notices []Event
+	if err := drainJournal(ctx, make(chan Event), func(event Event) error { notices = append(notices, event); return nil }); err != nil {
 		t.Fatal(err)
+	}
+	if len(notices) != 1 || notices[0].Type != EventError || !strings.Contains(notices[0].Message, "in-flight records may be missing") {
+		t.Fatalf("deadline lost the collection completeness notice: %+v", notices)
 	}
 }
