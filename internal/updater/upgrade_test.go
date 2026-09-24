@@ -1,4 +1,4 @@
-package installer
+package updater
 
 import (
 	"bytes"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/filemode"
+	"github.com/kjanat/udm-iptv/internal/installer"
 )
 
 func TestNewestPublishedReleaseSkipsDrafts(t *testing.T) {
@@ -299,23 +300,23 @@ func TestDecompressBundleRejectsInflatedBlock(t *testing.T) {
 // executable already is the candidate, and say why.
 func TestPlanUpgradeRepairsAPackageRecordBehindTheExecutable(t *testing.T) {
 	t.Parallel()
-	installed := PackageRecord{Status: "installed", Version: "5.0.0~preview.2"}
-	stale := PackageRecord{Status: "installed", Version: "5.0.0~preview.1"}
+	installed := installer.PackageRecord{Status: "installed", Version: "5.0.0~preview.2"}
+	stale := installer.PackageRecord{Status: "installed", Version: "5.0.0~preview.1"}
 	for name, test := range map[string]struct {
 		running, candidate string
-		record             PackageRecord
+		record             installer.PackageRecord
 		force              bool
 		want               upgradePlan
 	}{
-		"standalone up to date":     {"5.0.0", "5.0.0", PackageRecord{}, false, upgradePlan{note: "udm-iptv 5.0.0 is already installed. Use --force to reinstall."}},
-		"standalone forced":         {"5.0.0", "5.0.0", PackageRecord{}, true, upgradePlan{proceed: true}},
-		"standalone newer":          {"5.0.0", "5.0.1", PackageRecord{}, false, upgradePlan{proceed: true}},
+		"standalone up to date":     {"5.0.0", "5.0.0", installer.PackageRecord{}, false, upgradePlan{note: "udm-iptv 5.0.0 is already installed. Use --force to reinstall."}},
+		"standalone forced":         {"5.0.0", "5.0.0", installer.PackageRecord{}, true, upgradePlan{proceed: true}},
+		"standalone newer":          {"5.0.0", "5.0.1", installer.PackageRecord{}, false, upgradePlan{proceed: true}},
 		"package up to date":        {"5.0.0-preview.2", "5.0.0-preview.2", installed, false, upgradePlan{note: "udm-iptv 5.0.0-preview.2 is already installed. Use --force to reinstall."}},
 		"package forced":            {"5.0.0-preview.2", "5.0.0-preview.2", installed, true, upgradePlan{proceed: true, viaPackage: true}},
 		"package newer":             {"5.0.0-preview.1", "5.0.0-preview.2", installed, false, upgradePlan{proceed: true, viaPackage: true, note: "dpkg recorded udm-iptv 5.0.0-preview.2 while 5.0.0-preview.1 is running; the package is reinstalled to bring the two in line."}},
 		"record behind the binary":  {"5.0.0-preview.2", "5.0.0-preview.2", stale, false, upgradePlan{proceed: true, viaPackage: true, note: "dpkg recorded udm-iptv 5.0.0-preview.1 while 5.0.0-preview.2 is running; the package is reinstalled to bring the two in line."}},
-		"half configured, in line":  {"5.0.0-preview.2", "5.0.0-preview.2", PackageRecord{Status: "half-configured", Version: "5.0.0~preview.2"}, false, upgradePlan{note: "udm-iptv 5.0.0-preview.2 is already installed. Use --force to reinstall."}},
-		"config-files is not owned": {"5.0.0", "5.0.0", PackageRecord{Status: "config-files", Version: "4.3.1"}, false, upgradePlan{note: "udm-iptv 5.0.0 is already installed. Use --force to reinstall."}},
+		"half configured, in line":  {"5.0.0-preview.2", "5.0.0-preview.2", installer.PackageRecord{Status: "half-configured", Version: "5.0.0~preview.2"}, false, upgradePlan{note: "udm-iptv 5.0.0-preview.2 is already installed. Use --force to reinstall."}},
+		"config-files is not owned": {"5.0.0", "5.0.0", installer.PackageRecord{Status: "config-files", Version: "4.3.1"}, false, upgradePlan{note: "udm-iptv 5.0.0 is already installed. Use --force to reinstall."}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -346,8 +347,8 @@ func TestPackageManagedUpgradeInstallsThePackage(t *testing.T) {
 			return nil
 		},
 		packages: packageCommands{
-			record: func(context.Context) (PackageRecord, error) {
-				return PackageRecord{Status: "installed", Version: "5.0.1"}, nil
+			record: func(context.Context) (installer.PackageRecord, error) {
+				return installer.PackageRecord{Status: "installed", Version: "5.0.1"}, nil
 			},
 			install: func(_ context.Context, packagePath string, allowDowngrade bool, _, _ io.Writer) error {
 				if !allowDowngrade {
@@ -388,30 +389,10 @@ func TestPackageManagedUpgradeInstallsThePackage(t *testing.T) {
 	}
 }
 
-func TestAptAllowsDowngradesOnlyWhenRequested(t *testing.T) {
-	directory := t.TempDir()
-	if err := atomicfile.Write(filepath.Join(directory, "apt-get"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", directory)
-	for _, force := range []bool{false, true} {
-		var out bytes.Buffer
-		if err := aptInstall(t.Context(), "/tmp/udm-iptv.deb", force, &out, io.Discard); err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(out.String(), "--allow-downgrades\n") != force {
-			t.Fatalf("force=%t args=%q", force, out.String())
-		}
-		if !strings.HasSuffix(out.String(), "/tmp/udm-iptv.deb\n") {
-			t.Fatalf("missing package: %q", out.String())
-		}
-	}
-}
-
 func TestPackageManagedUpgradeNeedsThePackageAsset(t *testing.T) {
 	t.Parallel()
-	upgrader := &Upgrader{StateDir: "/data/udm-iptv", Out: io.Discard, Err: io.Discard, packages: packageCommands{record: func(context.Context) (PackageRecord, error) {
-		return PackageRecord{Status: "installed", Version: "5.0.0"}, nil
+	upgrader := &Upgrader{StateDir: "/data/udm-iptv", Out: io.Discard, Err: io.Discard, packages: packageCommands{record: func(context.Context) (installer.PackageRecord, error) {
+		return installer.PackageRecord{Status: "installed", Version: "5.0.0"}, nil
 	}}}
 	release := &github.RepositoryRelease{TagName: new("v5.0.0"), Assets: []*github.ReleaseAsset{{Name: new("udm-iptv-linux-arm64"), URL: new("https://api.github.com/1")}}}
 	err := upgrader.applyPackageRelease(context.Background(), upgradeCandidate{release: release, version: "5.0.0"}, false)
@@ -488,21 +469,21 @@ func TestFetchLatestReleaseFollowsTheChannel(t *testing.T) {
 
 func TestPlanUpgradeRefusesADowngrade(t *testing.T) {
 	t.Parallel()
-	installed := PackageRecord{Status: "installed", Version: "5.0.0~preview.5"}
+	installed := installer.PackageRecord{Status: "installed", Version: "5.0.0~preview.5"}
 	for name, test := range map[string]struct {
 		running, candidate string
-		record             PackageRecord
+		record             installer.PackageRecord
 		force              bool
 		refused            bool
 	}{
 		"the stable latest behind a preview":   {"5.0.0-preview.5", "4.3.1", installed, false, true},
 		"an older preview":                     {"5.0.0-preview.5", "5.0.0-preview.4", installed, false, true},
-		"an older standalone release":          {"5.0.1", "5.0.0", PackageRecord{}, false, true},
+		"an older standalone release":          {"5.0.1", "5.0.0", installer.PackageRecord{}, false, true},
 		"forced":                               {"5.0.0-preview.5", "4.3.1", installed, true, false},
 		"the release a preview leads to":       {"5.0.0-preview.5", "5.0.0", installed, false, false},
 		"a newer preview":                      {"5.0.0-preview.5", "5.0.0-preview.6", installed, false, false},
-		"a dev build has no order":             {"dev", "4.3.1", PackageRecord{}, false, false},
-		"a tag without a version has no order": {"5.0.0", "nightly", PackageRecord{}, false, false},
+		"a dev build has no order":             {"dev", "4.3.1", installer.PackageRecord{}, false, false},
+		"a tag without a version has no order": {"5.0.0", "nightly", installer.PackageRecord{}, false, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -542,12 +523,12 @@ func TestDryRunDescribesThePlanWithoutInstalling(t *testing.T) {
 	candidate := upgradeCandidate{release: release, version: "5.0.0-preview.6"}
 	for name, test := range map[string]struct {
 		running string
-		record  PackageRecord
+		record  installer.PackageRecord
 		want    string
 	}{
-		"package":    {"5.0.0-preview.5", PackageRecord{Status: "installed", Version: "5.0.0~preview.5"}, "Would download " + packageAssetName() + " and install it with apt-get.\n"},
-		"standalone": {"5.0.0-preview.5", PackageRecord{}, "Would download " + standaloneAssetName() + ", replace /data/udm-iptv/bin/udm-iptv and restart udm-iptv.service.\n"},
-		"up to date": {"5.0.0-preview.6", PackageRecord{}, "udm-iptv 5.0.0-preview.6 is already installed. Use --force to reinstall.\n"},
+		"package":    {"5.0.0-preview.5", installer.PackageRecord{Status: "installed", Version: "5.0.0~preview.5"}, "Would download " + packageAssetName() + " and install it with apt-get.\n"},
+		"standalone": {"5.0.0-preview.5", installer.PackageRecord{}, "Would download " + standaloneAssetName() + ", replace /data/udm-iptv/bin/udm-iptv and restart udm-iptv.service.\n"},
+		"up to date": {"5.0.0-preview.6", installer.PackageRecord{}, "udm-iptv 5.0.0-preview.6 is already installed. Use --force to reinstall.\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -563,7 +544,7 @@ func TestDryRunDescribesThePlanWithoutInstalling(t *testing.T) {
 				},
 				Restart: func(context.Context, bool) error { t.Fatal("dry run restarted service"); return nil },
 				packages: packageCommands{
-					record: func(context.Context) (PackageRecord, error) { return test.record, nil },
+					record: func(context.Context) (installer.PackageRecord, error) { return test.record, nil },
 					install: func(context.Context, string, bool, io.Writer, io.Writer) error {
 						t.Fatal("a dry run installed the package")
 

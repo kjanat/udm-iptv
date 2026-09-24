@@ -46,7 +46,7 @@ type Backend interface {
 
 // Validate reports whether the plan's config and paths are usable.
 func (p Plan) Validate() error {
-	if err := validateStatePath(p.StateDir); err != nil {
+	if err := ValidateStatePath(p.StateDir); err != nil {
 		return err
 	}
 	err := p.Config.Validate()

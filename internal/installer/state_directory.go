@@ -19,7 +19,9 @@ var (
 	errStateFileIsDirectory  = errors.New("installation file is unexpectedly a directory")
 )
 
-func validateStatePath(directory string) error {
+// ValidateStatePath rejects ambiguous paths and shared system directories before
+// installation or update operations use them as private application state.
+func ValidateStatePath(directory string) error {
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
 		return fmt.Errorf("%w: %q", errStatePathUnclean, directory)
 	}
@@ -37,7 +39,7 @@ func validateStatePath(directory string) error {
 
 // Pin the directory before stopping services; reject redirected installation roots.
 func openStateDirectory(directory string) (*os.Root, error) {
-	if err := validateStatePath(directory); err != nil {
+	if err := ValidateStatePath(directory); err != nil {
 		return nil, err
 	}
 	root, err := os.OpenRoot("/")

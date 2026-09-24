@@ -1,6 +1,6 @@
 //go:build integration
 
-package installer
+package updater
 
 import (
 	"os"

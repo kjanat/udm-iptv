@@ -3,11 +3,11 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/kjanat/udm-iptv/internal/installer"
+	"github.com/kjanat/udm-iptv/internal/updater"
 )
 
 func (application *Application) upgradeCommand() *cobra.Command {
-	options := installer.UpgradeOptions{Repository: "kjanat/udm-iptv"}
+	options := updater.UpgradeOptions{Repository: "kjanat/udm-iptv"}
 	command := &cobra.Command{
 		Use: "upgrade", Short: "Install the latest udm-iptv release", Args: cobra.NoArgs,
 		Long: "Install updates. Preview builds automatically follow prereleases.",
@@ -32,6 +32,6 @@ func (application *Application) upgradeCommand() *cobra.Command {
 	return command
 }
 
-func (application *Application) upgrader() *installer.Upgrader {
-	return &installer.Upgrader{Version: application.Version, StateDir: application.StateDir, Out: application.Out, Err: application.Err, Restart: application.restart}
+func (application *Application) upgrader() *updater.Upgrader {
+	return &updater.Upgrader{Version: application.Version, StateDir: application.StateDir, Out: application.Out, Err: application.Err, Restart: application.restart}
 }

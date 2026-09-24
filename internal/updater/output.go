@@ -1,8 +1,9 @@
-package installer
+package updater
 
 import (
 	"fmt"
 	"io"
+	"os"
 )
 
 func writef(writer io.Writer, format string, arguments ...any) error {
@@ -19,4 +20,16 @@ func writeString(writer io.Writer, value string) error {
 	}
 
 	return nil
+}
+
+func closeIgnoringError(closer io.Closer) {
+	_ = closer.Close()
+}
+
+func removeIgnoringError(path string) {
+	_ = os.Remove(path)
+}
+
+func removeAllIgnoringError(path string) {
+	_ = os.RemoveAll(path)
 }
