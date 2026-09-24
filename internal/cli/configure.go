@@ -242,7 +242,7 @@ func (f *configureFlags) bind(command *cobra.Command) {
 	flags.BoolVar(&f.debug, flagDebug, false, "enable verbose proxy logging")
 	flags.BoolVar(&f.telemetry.Enabled, flagTelemetry, false, "send diagnostic data")
 	flags.BoolVar(&f.telemetry.Errors, "telemetry-errors", true, "report software failures when telemetry is enabled")
-	flags.BoolVar(&f.telemetry.Logs, "telemetry-logs", true, "send lifecycle logs and DHCP/proxy output")
+	flags.BoolVar(&f.telemetry.Logs, "telemetry-logs", true, "send state changes, warnings and recent subprocess output on failures")
 	flags.BoolVar(&f.telemetry.Metrics, "telemetry-metrics", true, "send bounded operational counters")
 	flags.BoolVar(&f.telemetry.Tracing, "telemetry-tracing", true, "send sampled operation timings")
 	flags.BoolVar(&f.telemetry.Presets, "telemetry-presets", true, "share selected settings, changes and a random installation ID")

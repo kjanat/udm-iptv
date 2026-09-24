@@ -1,115 +1,100 @@
 package telemetry
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"io"
-	"log/slog"
 	"slices"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/getsentry/sentry-go"
-	sentryslog "github.com/getsentry/sentry-go/slog"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
-// LineWriter retains whitespace and splits oversized lines into numbered
-// fragments. line.end distinguishes a newline from an unterminated final line.
-func (r *Reporter) LineWriter(ctx context.Context, source string) io.Writer {
-	if r == nil || r.client == nil || !r.settings.Logs {
+const (
+	// Keep recent evidence without streaming normal subprocess output to Sentry.
+	outputTailLimit = 64 << 10
+	outputSources   = 8
+)
+
+// LineWriter retains the most recent output for an error attachment. The caller
+// still writes the complete stream to its normal local output independently.
+func (r *Reporter) LineWriter(_ context.Context, source string) io.Writer {
+	if r == nil || r.client == nil || !r.settings.Logs || !r.settings.Errors {
 		return io.Discard
 	}
-	ctx = sentry.SetHubOnContext(ctx, r.hub)
-	writer := &lineWriter{owner: r, logger: slog.New(sentryslog.Option{}.NewSentryHandler(ctx)).With("source", source)}
 	r.mu.Lock()
-	r.lineWriters = append(r.lineWriters, writer)
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if r.outputTails == nil {
+		r.outputTails = make(map[string]*outputTail)
+	}
+	if existing := r.outputTails[source]; existing != nil {
+		return existing
+	}
+	if len(r.outputTails) >= outputSources {
+		return io.Discard
+	}
+	writer := &outputTail{owner: r}
+	r.outputTails[source] = writer
 	return writer
 }
 
-type lineWriter struct {
-	mu     sync.Mutex
+type outputTail struct {
 	owner  *Reporter
-	logger *slog.Logger
+	mu     sync.Mutex
 	buffer []byte
-	line   uint64
-	part   uint64
 }
 
-func (w *lineWriter) emit(data []byte, end bool) {
-	text, encoding := string(data), "utf8"
-	if len(data) == 0 {
-		// Sentry's Logger drops an empty body before BeforeSendLog runs.
-		text = "\n"
+func (tail *outputTail) Write(data []byte) (int, error) {
+	tail.mu.Lock()
+	defer tail.mu.Unlock()
+	n := len(data)
+	if !tail.owner.logsEnabled() {
+		tail.buffer = nil
+		return n, nil
 	}
-	if !utf8.Valid(data) {
-		text, encoding = base64.StdEncoding.EncodeToString(data), "base64"
-	}
-	w.logger.Info(text, "line.number", w.line, "line.part", w.part, "line.end", end, "line.encoding", encoding, "line.empty", len(data) == 0)
-	if end {
-		w.line++
-		w.part = 0
+	if n >= outputTailLimit {
+		tail.buffer = append(tail.buffer[:0], data[n-outputTailLimit:]...)
 	} else {
-		w.part++
+		if discard := len(tail.buffer) + n - outputTailLimit; discard > 0 {
+			copy(tail.buffer, tail.buffer[discard:])
+			tail.buffer = tail.buffer[:len(tail.buffer)-discard]
+		}
+		tail.buffer = append(tail.buffer, data...)
 	}
+	return n, nil
 }
 
-func (w *lineWriter) Write(data []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	written := len(data)
-	for len(data) > 0 {
-		count := min(lineLimit-len(w.buffer), len(data))
-		w.buffer = append(w.buffer, data[:count]...)
-		data = data[count:]
-		w.emitBufferedLines()
-	}
-	return written, nil
+func (tail *outputTail) bytes() []byte {
+	tail.mu.Lock()
+	defer tail.mu.Unlock()
+	return slices.Clone(tail.buffer)
 }
 
-func (w *lineWriter) emitBufferedLines() {
-	for {
-		index := bytes.IndexByte(w.buffer, '\n')
-		if index < 0 {
-			break
-		}
-		w.emit(w.buffer[:index], true)
-		w.buffer = w.buffer[index+1:]
+func (r *Reporter) logsEnabled() bool {
+	if !r.settings.Logs {
+		return false
 	}
-	if len(w.buffer) == lineLimit {
-		count := len(w.buffer)
-		// Keep a split UTF-8 rune for the next fragment.
-		for count > 0 && !utf8.RuneStart(w.buffer[count-1]) {
-			count--
-		}
-		if count == 0 {
-			count = len(w.buffer)
-		} else if !utf8.FullRune(w.buffer[count-1:]) {
-			count--
-		}
-		w.emit(w.buffer[:count], false)
-		w.buffer = append(w.buffer[:0], w.buffer[count:]...)
+	if r.configPath == "" {
+		return true
 	}
+	value, err := config.Load(r.configPath)
+	return err == nil && value.Telemetry.Enabled && value.Telemetry.Logs
 }
 
-func (w *lineWriter) Flush() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if len(w.buffer) != 0 {
-		w.emit(w.buffer, false)
-		w.buffer = w.buffer[:0]
+func (r *Reporter) outputAttachments() []*sentry.Attachment {
+	if !r.logsEnabled() {
+		return nil
 	}
-}
-
-// FlushLines records an unterminated child-output line once its producer exits.
-func FlushLines(writer io.Writer) {
-	if stream, ok := writer.(*lineWriter); ok {
-		stream.Flush()
-		if stream.owner != nil {
-			stream.owner.mu.Lock()
-			stream.owner.lineWriters = slices.DeleteFunc(stream.owner.lineWriters, func(candidate *lineWriter) bool { return candidate == stream })
-			stream.owner.mu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var attachments []*sentry.Attachment
+	for source, tail := range r.outputTails {
+		if data := tail.bytes(); len(data) != 0 {
+			attachments = append(attachments, &sentry.Attachment{
+				Filename: "udm-iptv-" + source + "-tail.log", ContentType: "application/octet-stream", Payload: data,
+			})
 		}
 	}
+	return attachments
 }

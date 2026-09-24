@@ -6,10 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
+	"math"
 	"net/http"
-	"os"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -45,8 +44,6 @@ const (
 	maxBreadcrumbs = 50
 	// attachmentCompressionThreshold preserves large reports in a gzip attachment.
 	attachmentCompressionThreshold = 256 << 10
-	// lineLimit bounds a partial output line held back until its newline.
-	lineLimit = 4096
 )
 
 // OperationDaemon names the long-running service operation.
@@ -131,9 +128,9 @@ type Reporter struct {
 	metadata          map[string]string
 	networkIdentity   *NetworkIdentity
 	networkIdentityAt time.Time
-	lineWriters       []*lineWriter
+	outputTails       map[string]*outputTail
+	warnings          map[string]warningRecord
 	deliveryMu        sync.Mutex
-	deliveryOutput    io.Writer
 	deliveryCounts    map[string]uint64
 }
 
@@ -157,7 +154,7 @@ func newReporter(settings config.Telemetry, version string, transport sentry.Tra
 		settings: settings, release: "udm-iptv@" + version, environment: environmentFor(version),
 		counts: make(map[string]int),
 		dist:   stamp.revision, vcsModified: stamp.modified, goVersion: stamp.toolchain,
-		deliveryOutput: os.Stderr, deliveryCounts: make(map[string]uint64),
+		deliveryCounts: make(map[string]uint64),
 	}
 	if !reportingEnabled(settings) {
 		return r, nil
@@ -237,16 +234,8 @@ func (r *Reporter) Close() {
 	if r == nil || r.client == nil {
 		return
 	}
-	r.mu.Lock()
-	writers := append([]*lineWriter(nil), r.lineWriters...)
-	r.lineWriters = nil
-	r.mu.Unlock()
-	for _, writer := range writers {
-		writer.Flush()
-	}
 	r.Flush()
 	r.client.Close()
-	r.deliverySummary()
 }
 
 var operations = map[string]bool{
@@ -315,7 +304,13 @@ func (r *Reporter) Warn(ctx context.Context, message string) {
 	if r == nil || r.client == nil || !r.settings.Logs {
 		return
 	}
-	sentry.NewLogger(sentry.SetHubOnContext(ctx, r.hub)).Warn().Emit(message)
+	count := r.warningOccurrences(message, time.Now())
+	if count == 0 {
+		return
+	}
+	logger := sentry.NewLogger(sentry.SetHubOnContext(ctx, r.hub))
+	logger.SetAttributes(attribute.Int64("occurrences", int64(min(count, math.MaxInt64))))
+	logger.Warn().Emit(message)
 }
 
 func (r *Reporter) instruments(operation string) bool {
@@ -346,7 +341,7 @@ func outcomeMessage(operation string, err error) (string, sentry.Level) {
 }
 
 func (r *Reporter) logOutcome(ctx context.Context, operation string, err error) {
-	if !r.settings.Logs {
+	if !r.settings.Logs || (routineOperation(operation) && err == nil) {
 		return
 	}
 	message, level := outcomeMessage(operation, err)
@@ -375,7 +370,7 @@ func (r *Reporter) countBreadcrumb(breadcrumb *sentry.Breadcrumb, _ *sentry.Brea
 }
 
 func (r *Reporter) meterOutcome(ctx context.Context, operation string, err error, elapsed time.Duration) {
-	if !r.settings.Metrics {
+	if !r.settings.Metrics || (routineOperation(operation) && err == nil) {
 		return
 	}
 	meter := sentry.NewMeter(ctx)
@@ -422,7 +417,7 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 		ctx = span.Context() //nolint:contextcheck // Sentry derives this context from the supplied parent.
 	}
 	r.breadcrumb(operation+" started", sentry.LevelInfo)
-	if r.settings.Logs {
+	if r.settings.Logs && !routineOperation(operation) {
 		sentry.NewLogger(ctx).Info().Emit(operation + " started")
 	}
 	defer func() {
@@ -434,10 +429,7 @@ func (r *Reporter) Run(ctx context.Context, operation string, run func(context.C
 		failures.report(ctx, r, operation, err, panicked != nil)
 		r.logOutcome(ctx, operation, err)
 		r.meterOutcome(ctx, operation, err, time.Since(start))
-		if span != nil {
-			span.Status = spanStatus(err)
-			span.Finish()
-		}
+		finishOperationSpan(span, operation, err)
 		if panicked != nil {
 			panic(panicked)
 		}
@@ -459,6 +451,7 @@ func (r *Reporter) failure(ctx context.Context, operation string, err error, pan
 	if span := sentry.SpanFromContext(ctx); span != nil {
 		event.Contexts["trace"] = sentry.Context{"trace_id": span.TraceID, "span_id": span.SpanID, "parent_span_id": span.ParentSpanID}
 	}
+	event.Attachments = append(event.Attachments, r.outputAttachments()...)
 	event.SetException(err, exceptionChainLimit)
 	// The SDK synthesizes a stack at this reporting call for plain Go errors.
 	// That stack groups unrelated failures at Reporter.failure. Keep genuine

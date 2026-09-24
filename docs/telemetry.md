@@ -32,8 +32,8 @@ Individual categories can also be disabled:
 | Flag                           | Shared data                                                                   |
 | ------------------------------ | ----------------------------------------------------------------------------- |
 | `--telemetry-errors`           | Failures, with the operations that led up to them and the failure diagnostics |
-| `--telemetry-logs`             | Operation logs and the output of the DHCP client and the multicast proxy      |
-| `--telemetry-metrics`          | Durations, uptime, restarts and multicast counters                            |
+| `--telemetry-logs`             | State changes, coalesced warnings and recent subprocess output on failures    |
+| `--telemetry-metrics`          | Durations, uptime, restarts and aggregated multicast counters                 |
 | `--telemetry-tracing`          | Operation timings, including installation steps and outgoing requests         |
 | `--telemetry-presets`          | Selected settings, configuration history and hourly check-in                  |
 | `--telemetry-network-identity` | Public IP and reverse-DNS hostname (PTR)                                      |
@@ -49,7 +49,7 @@ A persistent installation ID correlates enabled operational reporting even when 
 - Which settings changed, configuration revisions and saved/applied change timestamps.
 - A random installation ID connects configuration history with failures.
 - Repeated configuration reports reuse the most recently observed network identity during the lookup interval and retain its observation timestamp. Lookup failures retain their cause.
-- Hourly service observations with a diagnostics snapshot: service and proxy state, the IPTV interface's addresses and routes, the multicast forwarding table with per-route counters, bridge group memberships, every MASQUERADE rule on the IPTV interface with its packet counters, whether each configured NAT destination has a route through that interface, and the last DHCP lease with every option the server sent. The service log records the counters of NAT rules it removes.
+- Hourly service observations carry uptime, restart count, active state and configuration revision. They do not repeat the configuration. Unhealthy observations and increases in the restart count include a diagnostics snapshot: service and proxy state, interface addresses and routes, per-route multicast counters, bridge memberships, NAT counters and the last DHCP lease. The local service log records counters of removed NAT rules.
 - Provider guesses remain separate from your selected provider profile.
 - Reports inform preset improvements; presets never change automatically.
 
@@ -67,13 +67,21 @@ The CLI cannot delete reports already received by Sentry.
 Disabling reporting stops new events; queued requests may finish.
 Reporting failures do not prevent IPTV operations.
 
+## Reporting priorities
+
+- Failures, panics, lease acquisition/deconfiguration and service readiness retain reporting. Successful DHCP renewals, recoverable DHCP hook callbacks and health checks retain breadcrumbs but do not emit routine logs, metrics or standalone traces. Failed operations still report.
+- Identical warnings are sent immediately once, then coalesced for 15 minutes across processes. The next occurrence after that window includes an `occurrences` count covering suppressed repeats and the new occurrence. Distinct warnings have independent windows. The bounded local warning file stores message hashes, timestamps and counts, not message text.
+- DHCP, proxy and NAT output remains complete in local output. Remote reporting buffers only the latest 64 KiB per source (at most eight sources) and attaches those bytes to failures when both logs and errors are enabled. Healthy output, including blank lines, consumes no log events. Attachments preserve binary bytes and unterminated lines; older bytes are discarded from the buffer.
+- Every five minutes, metrics report uptime, restarts and five multicast totals: routes, unresolved routes, packets, bytes and wrong-interface packets. Per-route metric series are not sent. This is at most 2,016 periodic metric samples per day, independent of route count; operation metrics are additional. Detailed per-route evidence remains in local diagnostics and failure snapshots.
+- Healthy hourly observations are compact; detailed snapshots are collected when unhealthy or after a restart increase.
+
 ## Delivery diagnostics
 
-Error messages, panic values and diagnostic attachments retain their content. Attachments larger than 256 KiB use gzip compression. Child-process logs preserve whitespace, blank lines and the last line without a newline. Long lines use ordered fragments; invalid UTF-8 fragments use base64 with an encoding attribute.
+Error messages, panic values and diagnostic attachments retain their content. Diagnostic reports larger than 256 KiB use gzip compression. Recent subprocess attachments have the separate tail limits described above.
 
-Reporting remains bounded per category. Exhausted budgets, inaccessible settings or rate files, queue flush timeouts, transport errors and server rejections are reported locally; repeated failures are counted. SDK client reports describe queue and backoff losses, but may remain unsent when a short invocation exits. A successful queue flush is not an acknowledgement from Sentry. Configuration and observation reporting return queue/encoding/flush failures to their callers; local configuration history remains intact.
+Reporting remains bounded per category. Existing minute/day budgets are backstops, separate from content selection. Exhausted budgets, inaccessible settings or rate files, queue flush timeouts, transport errors and server rejections do not print automatic delivery warnings to stderr. SDK client reports describe queue and backoff losses, but may remain unsent when a short invocation exits. A successful queue flush is not an acknowledgement from Sentry. Configuration and observation reporting return queue/encoding/flush failures to their callers; automatic configuration reporting is best effort and local configuration history remains intact.
 
-Breadcrumb history retains the newest 50 entries and reports local eviction counts. Sentry Go v0.49.0 reads its span recorder limit from the global SDK hub: the reporter's 32-span client option does not enforce that recorder limit, whose unconfigured global default is 1,000. Exception conversion stops at unwrap depth 16, allowing up to 17 entries on a simple chain; joined errors may have more entries. These SDK limits and delivery failures mean remote telemetry is not a complete archive.
+Breadcrumb history retains the newest 50 entries. Sentry Go v0.49.0 reads its span recorder limit from the global SDK hub: the reporter's 32-span client option does not enforce that recorder limit, whose unconfigured global default is 1,000. Exception conversion stops at unwrap depth 16, allowing up to 17 entries on a simple chain; joined errors may have more entries. These limits and deliberate content selection mean remote telemetry is not a complete archive.
 
 ## Feedback and identity
 
