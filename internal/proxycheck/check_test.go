@@ -8,8 +8,75 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/godbus/dbus/v5"
+
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 )
+
+func hostServiceGroup() (string, error) {
+	return "/system.slice/udm-iptv.service", nil
+}
+
+func TestManagerServiceOwnership(t *testing.T) {
+	t.Parallel()
+	const ours = "/system.slice/docker-ours.scope/system.slice/udm-iptv.service"
+	for _, test := range []struct {
+		name, process, manager string
+		lookupErr              error
+		allowed                bool
+	}{
+		{name: "nested firmware service", process: ours, manager: ours, allowed: true},
+		{name: "nested firmware child", process: ours + "/proxy", manager: ours, allowed: true},
+		{name: "other container", process: "/system.slice/docker-other.scope/system.slice/udm-iptv.service", manager: ours},
+		{name: "unit name prefix", process: ours + "-other", manager: ours},
+		{name: "inactive or missing unit", process: ours},
+		{name: "root is not a service", process: ours, manager: "/"},
+		{name: "bus socket missing", process: ours, lookupErr: os.ErrNotExist},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := fixtureRoot(t)
+			writeFixture(t, root, "proc/42/comm", "improxy\n")
+			writeFixture(t, root, "proc/42/cgroup", "0::"+test.process+"\n")
+			linkFixture(t, root, "proc/42/ns/net", "net:[1]")
+			err := check(t.Context(), root, func() (string, error) { return test.manager, test.lookupErr })
+			if test.allowed && err != nil {
+				t.Fatal(err)
+			}
+			if !test.allowed && !errors.Is(err, errCompeting) {
+				t.Fatalf("expected competing proxy, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNoProxyNeedsNoManager(t *testing.T) {
+	t.Parallel()
+	err := check(t.Context(), fixtureRoot(t), func() (string, error) {
+		t.Fatal("systemd lookup without a competing process")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMissingUnit(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{dbus.Error{Name: "org.freedesktop.systemd1.NoSuchUnit"}, true},
+		{&dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownObject"}, true},
+		{dbus.Error{Name: "org.freedesktop.DBus.Error.AccessDenied"}, false},
+		{os.ErrNotExist, false},
+	} {
+		if got := missingUnit(test.err); got != test.want {
+			t.Errorf("missingUnit(%v) = %v, want %v", test.err, got, test.want)
+		}
+	}
+}
 
 func TestNativeState(t *testing.T) {
 	t.Parallel()
@@ -68,7 +135,7 @@ func TestExitedProcessAndCancellation(t *testing.T) {
 	assertCheck(t, root, "")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := check(ctx, root); !errors.Is(err, context.Canceled) {
+	if err := check(ctx, root, hostServiceGroup); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation: %v", err)
 	}
 }
@@ -123,7 +190,7 @@ func linkFixture(t *testing.T, root, path, target string) {
 
 func assertCheck(t *testing.T, root, want string) {
 	t.Helper()
-	err := check(t.Context(), root)
+	err := check(t.Context(), root, hostServiceGroup)
 	if want == "" {
 		if err != nil {
 			t.Fatal(err)

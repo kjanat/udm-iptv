@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const statePath = "data/udapi-config/ubios-udapi-server/ubios-udapi-server.state"
@@ -23,10 +24,11 @@ var (
 // namespace. It never stops services or probes MRT_INIT, which would claim the
 // kernel's multicast routing socket. A later competing startup remains possible.
 func Check(ctx context.Context) error {
-	return check(ctx, "/")
+	group := sync.OnceValues(func() (string, error) { return serviceGroup(ctx) })
+	return check(ctx, "/", group)
 }
 
-func check(ctx context.Context, root string) error {
+func check(ctx context.Context, root string, group func() (string, error)) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("check multicast proxy availability: %w", err)
 	}
@@ -48,11 +50,18 @@ func check(ctx context.Context, root string) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("check multicast proxy availability: %w", err)
 		}
-		if err := checkProcess(root, entry.Name(), namespace); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := checkProcess(root, entry.Name(), namespace, group); err != nil {
+			if disappearedProcess(err) {
+				continue // The process disappeared while we inspected it.
+			}
 			return err
 		}
 	}
 	return nil
+}
+
+func disappearedProcess(err error) bool {
+	return errors.Is(err, os.ErrNotExist) && !errors.Is(err, errCompeting)
 }
 
 func checkNative(root string) error {
@@ -79,7 +88,7 @@ func checkNative(root string) error {
 	return nil
 }
 
-func checkProcess(root, pid, namespace string) error {
+func checkProcess(root, pid, namespace string, group func() (string, error)) error {
 	base := filepath.Join(root, "proc", pid)
 	comm, err := os.ReadFile(filepath.Join(base, "comm"))
 	if err != nil {
@@ -100,13 +109,20 @@ func checkProcess(root, pid, namespace string) error {
 	if err != nil {
 		return fmt.Errorf("read process %s service ownership: %w", pid, err)
 	}
-	if ownedService(string(cgroup)) {
+	unit, err := group()
+	if err != nil {
+		return fmt.Errorf("%w (%s, PID %s): %w", errCompeting, name, pid, err)
+	}
+	if ownedService(string(cgroup), unit) {
 		return nil // Both v4 migration and v5 restart must allow our running proxy.
 	}
 	return fmt.Errorf("%w (%s, PID %s)", errCompeting, name, pid)
 }
 
-func ownedService(cgroups string) bool {
+func ownedService(cgroups, unit string) bool {
+	if unit == "" || unit == "/" {
+		return false
+	}
 	for line := range strings.SplitSeq(cgroups, "\n") {
 		_, rest, ok := strings.Cut(line, ":")
 		if !ok {
@@ -116,7 +132,6 @@ func ownedService(cgroups string) bool {
 		if !ok || (controller != "" && controller != "name=systemd") {
 			continue
 		}
-		const unit = "/system.slice/udm-iptv.service"
 		if path == unit || strings.HasPrefix(path, unit+"/") {
 			return true
 		}
