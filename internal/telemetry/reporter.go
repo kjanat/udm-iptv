@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/device"
+	"github.com/kjanat/udm-iptv/internal/proxyinventory"
 )
 
 // DSN is injected into official releases using -ldflags -X. Unstamped builds
@@ -126,6 +128,7 @@ type Reporter struct {
 	counts            map[string]int
 	breadcrumbCount   uint64
 	metadata          map[string]string
+	proxies           proxyinventory.Inventory
 	networkIdentity   *NetworkIdentity
 	networkIdentityAt time.Time
 	outputTails       map[string]*outputTail
@@ -143,6 +146,9 @@ func New(settings config.Telemetry, version, configPath, stateDir string) (*Repo
 	r, err := newReporter(settings, version, transport, DSN)
 	if err == nil {
 		r.configPath, r.stateDir = configPath, stateDir
+		if r.client != nil {
+			r.proxies = proxyinventory.Discover(stateDir)
+		}
 	}
 
 	return r, err
@@ -625,6 +631,18 @@ func (r *Reporter) ObservationCheckIn(healthy bool) {
 func (r *Reporter) eventTags() map[string]string {
 	tags := make(map[string]string, len(r.metadata))
 	maps.Copy(tags, r.metadata)
+	for _, item := range r.proxyInventory() {
+		tags["proxy."+item.Name+".available"] = strconv.FormatBool(item.Available)
+		tags["proxy."+item.Name+".source"] = item.Source
+		for key, value := range map[string]string{"version": item.Version, "revision": item.Revision, "build_id": item.BuildID, "package": item.Package, "package_version": item.PackageVersion, "architecture": item.Architecture} {
+			if value != "" {
+				tags["proxy."+item.Name+"."+key] = value
+			}
+		}
+		for feature, value := range item.Features {
+			tags["proxy."+item.Name+"."+feature] = value.Status
+		}
+	}
 	if r.dist != "" {
 		tags["vcs.revision"] = r.dist
 	}
@@ -686,4 +704,24 @@ func (r *Reporter) filterMetric(metric *sentry.Metric) *sentry.Metric {
 	metric.Attributes = r.mergeAttributes(metric.Attributes)
 
 	return metric
+}
+
+func (r *Reporter) proxyInventory() proxyinventory.Inventory {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append(proxyinventory.Inventory(nil), r.proxies...)
+}
+
+// InspectProxies refreshes availability and queryable build metadata.
+func (r *Reporter) InspectProxies(ctx context.Context) {
+	if r == nil || r.client == nil {
+		return
+	}
+	if r.stateDir == "" {
+		return
+	}
+	observed := proxyinventory.Inspect(ctx, r.stateDir)
+	r.mu.Lock()
+	r.proxies = observed
+	r.mu.Unlock()
 }

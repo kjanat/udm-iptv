@@ -2,6 +2,8 @@ package diagnostics
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +52,7 @@ func RenderSnapshotStyled(value Snapshot, style func(ReportRole, string) string)
 	output.WriteString(r.field("Proxy source ranges", r.sourceRanges(value.Config)))
 	output.WriteString(r.field("LAN interfaces", strings.Join(value.Config.LANInterfaces, ", ")))
 	output.WriteString(r.service(value.Service))
+	output.WriteString(r.proxies(value))
 	output.WriteString(r.field("IGMP version", fmt.Sprintf("%d, MLD: %s, quickleave enabled: %t, proxy debug logging: %t",
 		value.Config.IGMPVersion, mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug)))
 	output.WriteString(r.network(value.Network))
@@ -158,4 +161,31 @@ func linkRole(state string) ReportRole {
 	default:
 		return ReportWarning
 	}
+}
+
+func (r reportRenderer) proxies(value Snapshot) string {
+	if value.Proxies == nil {
+		return r.field("Proxy availability", r.text(ReportWarning, "not collected"))
+	}
+	var output strings.Builder
+	for _, item := range value.Proxies {
+		text, role := "unavailable ("+item.Source+"): "+item.Reason, ReportWarning
+		if item.Available {
+			text, role = "available ("+item.Source+"): "+item.Path, ReportGood
+		}
+		output.WriteString(r.field(item.Name+" executable", r.text(role, text)))
+		if item.Available {
+			output.WriteString(r.field(item.Name+" build", item.Description()))
+			output.WriteString(r.field(item.Name+" reported version", fallbackText(item.Version)))
+			output.WriteString(r.field(item.Name+" VCS revision", fallbackText(item.Revision)))
+			for _, feature := range slices.Sorted(maps.Keys(item.Features)) {
+				value := item.Features[feature]
+				output.WriteString(r.field(item.Name+" "+feature, value.Status+" ("+value.Evidence+")"))
+			}
+			for _, message := range item.MetadataErrors {
+				output.WriteString(r.field(item.Name+" metadata", r.text(ReportWarning, message)))
+			}
+		}
+	}
+	return output.String()
 }

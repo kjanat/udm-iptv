@@ -21,6 +21,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/filemode"
+	"github.com/kjanat/udm-iptv/internal/proxyinventory"
 )
 
 const (
@@ -58,21 +59,22 @@ type researchState struct {
 }
 
 type researchReport struct {
-	Schema            int              `json:"schema"`
-	InstallationID    string           `json:"installation_id"`
-	Kind              string           `json:"kind"`
-	Revision          uint64           `json:"revision"`
-	PreviousRevision  uint64           `json:"previous_revision"`
-	AppliedRevision   uint64           `json:"applied_revision"`
-	ChangedFields     []string         `json:"changed_fields,omitempty"`
-	LastSavedChange   time.Time        `json:"last_saved_change"`
-	LastAppliedChange time.Time        `json:"last_applied_change"`
-	Settings          *config.Config   `json:"settings,omitempty"`
-	Applied           bool             `json:"applied"`
-	Feedback          string           `json:"feedback,omitempty"`
-	ConfirmedProvider string           `json:"user_confirmed_provider,omitempty"`
-	Network           *NetworkIdentity `json:"network,omitempty"`
-	Observation       *Observation     `json:"observation,omitempty"`
+	Proxies           proxyinventory.Inventory `json:"proxies,omitempty"`
+	Schema            int                      `json:"schema"`
+	InstallationID    string                   `json:"installation_id"`
+	Kind              string                   `json:"kind"`
+	Revision          uint64                   `json:"revision"`
+	PreviousRevision  uint64                   `json:"previous_revision"`
+	AppliedRevision   uint64                   `json:"applied_revision"`
+	ChangedFields     []string                 `json:"changed_fields,omitempty"`
+	LastSavedChange   time.Time                `json:"last_saved_change"`
+	LastAppliedChange time.Time                `json:"last_applied_change"`
+	Settings          *config.Config           `json:"settings,omitempty"`
+	Applied           bool                     `json:"applied"`
+	Feedback          string                   `json:"feedback,omitempty"`
+	ConfirmedProvider string                   `json:"user_confirmed_provider,omitempty"`
+	Network           *NetworkIdentity         `json:"network,omitempty"`
+	Observation       *Observation             `json:"observation,omitempty"`
 }
 
 // Observation describes measurements, never an inferred customer satisfaction.
@@ -291,6 +293,7 @@ func (r *Reporter) RecordObservation(ctx context.Context, observation Observatio
 	if !r.researchEnabled() {
 		return nil
 	}
+	r.InspectProxies(ctx)
 	var report researchReport
 	err := withResearchState(r.stateDir, func(state *researchState) error {
 		report = reportFromState(*state, "observation")
@@ -356,6 +359,7 @@ func (r *Reporter) sendResearch(ctx context.Context, report researchReport) erro
 	if r.client == nil || r.hub == nil || !r.researchEnabled() || !r.allow("presets", presetsPerMinute) {
 		return fmt.Errorf("queue %s: %w", report.Kind, errResearchNotQueued)
 	}
+	report.Proxies = r.proxyInventory()
 	payload, err := json.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("encode %s report: %w", report.Kind, err)
