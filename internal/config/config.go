@@ -396,14 +396,8 @@ func validateWANAddressing(value Config) error {
 			return errVLANMAC
 		}
 	}
-	if value.WAN.StaticAddress != "" {
-		prefix, err := netip.ParsePrefix(value.WAN.StaticAddress)
-		if err != nil || !prefix.Addr().Is4() {
-			return errStaticAddress
-		}
-	}
-	if value.WAN.DHCP && value.WAN.StaticAddress != "" {
-		return errDHCPWithStatic
+	if _, err := value.WAN.Addressing(); err != nil {
+		return err
 	}
 	if !value.WAN.DHCPRoutes.valid() {
 		return fmt.Errorf("%w %q", errRoutePolicy, value.WAN.DHCPRoutes)

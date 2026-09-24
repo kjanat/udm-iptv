@@ -75,7 +75,7 @@ type RuntimeState struct {
 // until the context is cancelled or either exits unexpectedly.
 func (application *Daemon) Run(parent context.Context) (result error) {
 	_, _ = sdnotify.SdNotify(false, "STATUS=Loading configuration")
-	value, err := startupConfiguration(parent, application.ConfigPath)
+	value, addressing, err := startupConfiguration(parent, application.ConfigPath)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	}()
 	var dhcp *managedProcess
 	defer func() { result = errors.Join(result, dhcp.stop()) }()
-	dhcp, staticFailure, err := application.startConnection(ctx, value, link)
+	dhcp, staticFailure, err := application.startConnection(ctx, value, addressing, link)
 	if err != nil {
 		return err
 	}
@@ -123,15 +123,19 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 }
 
 // startupConfiguration checks prerequisites before any network mutation.
-func startupConfiguration(ctx context.Context, path string) (config.Config, error) {
+func startupConfiguration(ctx context.Context, path string) (config.Config, config.Addressing, error) {
 	value, err := config.Load(path)
 	if err != nil {
-		return config.Config{}, fmt.Errorf("load configuration: %w", err)
+		return config.Config{}, config.Addressing{}, fmt.Errorf("load configuration: %w", err)
+	}
+	addressing, err := value.WAN.Addressing()
+	if err != nil {
+		return config.Config{}, config.Addressing{}, fmt.Errorf("resolve WAN addressing: %w", err)
 	}
 	if err := proxycheck.Check(ctx); err != nil {
-		return config.Config{}, fmt.Errorf("check multicast proxy before startup: %w", err)
+		return config.Config{}, config.Addressing{}, fmt.Errorf("check multicast proxy before startup: %w", err)
 	}
-	return value, nil
+	return value, addressing, nil
 }
 
 // iptables discards a rule's counters with the rule.
@@ -296,8 +300,8 @@ func proxyArguments(value config.Config) []string {
 
 // startConnection brings up either the DHCP client or the static IPTV
 // address, returning whichever failure channel applies to the chosen mode.
-func (application *Daemon) startConnection(ctx context.Context, value config.Config, link netlink.Link) (*managedProcess, <-chan error, error) {
-	if value.WAN.DHCP {
+func (application *Daemon) startConnection(ctx context.Context, value config.Config, addressing config.Addressing, link netlink.Link) (*managedProcess, <-chan error, error) {
+	if addressing.DHCP() {
 		_, _ = sdnotify.SdNotify(false, "STATUS=Waiting for the IPTV DHCP lease")
 		if err := network.ResetLease(link); err != nil {
 			return nil, nil, fmt.Errorf("reset previous DHCP lease: %w", err)
@@ -310,22 +314,22 @@ func (application *Daemon) startConnection(ctx context.Context, value config.Con
 		return dhcp, nil, err
 	}
 	var staticFailure <-chan error
-	if value.WAN.StaticAddress != "" {
+	if addressing.Static().IsValid() {
 		var err error
-		staticFailure, err = startStaticReconciler(ctx, value, link)
+		staticFailure, err = startStaticReconciler(ctx, value, addressing, link)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 
-	if err := network.ApplyStatic(value, link); err != nil {
+	if err := network.ApplyStatic(value, addressing, link); err != nil {
 		return nil, staticFailure, fmt.Errorf("apply the static IPTV network: %w", err)
 	}
 
 	return nil, staticFailure, nil
 }
 
-func startStaticReconciler(ctx context.Context, value config.Config, link netlink.Link) (<-chan error, error) {
+func startStaticReconciler(ctx context.Context, value config.Config, addressing config.Addressing, link netlink.Link) (<-chan error, error) {
 	failures := make(chan error, 1)
 	updates := make(chan netlink.AddrUpdate, addressUpdateBuffer)
 	options := netlink.AddrSubscribeOptions{ErrorCallback: func(err error) { reportFailure(failures, err) }}
@@ -333,7 +337,7 @@ func startStaticReconciler(ctx context.Context, value config.Config, link netlin
 	if err != nil {
 		return nil, fmt.Errorf("subscribe to address changes: %w", err)
 	}
-	go restoreStaticAddress(ctx, value, link, updates, failures)
+	go restoreStaticAddress(ctx, value, addressing, link, updates, failures)
 
 	return failures, nil
 }
@@ -346,7 +350,7 @@ func reportFailure(failures chan<- error, cause error) {
 	}
 }
 
-func restoreStaticAddress(ctx context.Context, value config.Config, link netlink.Link, updates <-chan netlink.AddrUpdate, failures chan<- error) {
+func restoreStaticAddress(ctx context.Context, value config.Config, addressing config.Addressing, link netlink.Link, updates <-chan netlink.AddrUpdate, failures chan<- error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -359,10 +363,10 @@ func restoreStaticAddress(ctx context.Context, value config.Config, link netlink
 
 				return
 			}
-			if !staticAddressDeleted(value.WAN.StaticAddress, link.Attrs().Index, update) {
+			if !staticAddressDeleted(addressing.Static(), link.Attrs().Index, update) {
 				continue
 			}
-			if err := network.ApplyStatic(value, link); err != nil {
+			if err := network.ApplyStatic(value, addressing, link); err != nil {
 				reportFailure(failures, err)
 
 				return
@@ -371,12 +375,11 @@ func restoreStaticAddress(ctx context.Context, value config.Config, link netlink
 	}
 }
 
-func staticAddressDeleted(configured string, linkIndex int, update netlink.AddrUpdate) bool {
-	if update.NewAddr || update.LinkIndex != linkIndex {
+func staticAddressDeleted(prefix netip.Prefix, linkIndex int, update netlink.AddrUpdate) bool {
+	if !prefix.IsValid() || update.NewAddr || update.LinkIndex != linkIndex {
 		return false
 	}
-	prefix, err := netip.ParsePrefix(configured)
-	if err != nil || !update.LinkAddress.IP.Equal(prefix.Addr().AsSlice()) {
+	if !update.LinkAddress.IP.Equal(prefix.Addr().AsSlice()) {
 		return false
 	}
 	bits, size := update.LinkAddress.Mask.Size()
