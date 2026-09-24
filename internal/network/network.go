@@ -421,20 +421,23 @@ func optionValue(spec []string, flag string) string {
 // ApplyStatic sets the configured static address and static routes on link.
 // On an owned link it also retires any IPv4 address a previous configuration
 // left behind.
-func ApplyStatic(value config.Config, link netlink.Link) error {
-	if value.WAN.StaticAddress != "" {
-		address, err := netlink.ParseAddr(value.WAN.StaticAddress)
-		if err != nil {
-			return fmt.Errorf("parse static address %s: %w", value.WAN.StaticAddress, err)
-		}
+func ApplyStatic(value config.Config, addressing config.Addressing, link netlink.Link) error {
+	if prefix := addressing.Static(); prefix.IsValid() {
+		address := staticAddress(prefix)
 		if err := netlink.AddrReplace(link, address); err != nil {
-			return fmt.Errorf("apply static address %s: %w", value.WAN.StaticAddress, err)
+			return fmt.Errorf("apply static address %s: %w", prefix, err)
 		}
 		if _, err := removeOtherAddresses(link, address, Lease{}, systemOperations()); err != nil {
 			return fmt.Errorf("retire the previous static address: %w", err)
 		}
 	}
 	return ApplyStaticRoutes(value, link)
+}
+
+func staticAddress(prefix netip.Prefix) *netlink.Addr {
+	return &netlink.Addr{IPNet: &net.IPNet{
+		IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), ipv4HostBits),
+	}}
 }
 
 // ApplyStaticRoutes installs the configured unicast routes on link.

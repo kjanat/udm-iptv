@@ -83,3 +83,63 @@ func TestRemoveLinkDeletesOnlyTheLinkItCreated(t *testing.T) {
 		t.Fatal("an untagged configuration deleted a link")
 	}
 }
+
+func TestResolvedStaticAddressInKernel(t *testing.T) {
+	enterPrivateNamespace(t)
+	if err := netlink.LinkAdd(&netlink.Dummy{Name: "static-test"}); err != nil {
+		t.Fatal(err)
+	}
+	link, err := netlink.LinkByName("static-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.LinkSetUp(link); err != nil {
+		t.Fatal(err)
+	}
+	value := config.Config{WAN: config.WAN{StaticAddress: "10.20.30.1/24"}}
+	addressing, err := value.WAN.Addressing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Startup and restoration use the same resolved host address. Applying it
+	// repeatedly must neither mask the host bits nor duplicate the address.
+	for range 2 {
+		if err := ApplyStatic(value, addressing, link); err != nil {
+			t.Fatal(err)
+		}
+		assertStaticHost(t, link)
+	}
+	// Existing addressing preserves that address while adding configured routes.
+	value.WAN.StaticAddress = ""
+	value.WAN.StaticRoutes = []string{"198.51.100.0/24"}
+	if err := ApplyStatic(value, config.Addressing{}, link); err != nil {
+		t.Fatal(err)
+	}
+	assertStaticHost(t, link)
+	assertStaticRoute(t, link, "198.51.100.0/24")
+}
+
+func assertStaticRoute(t *testing.T, link netlink.Link, destination string) {
+	t.Helper()
+	routes, err := netlink.RouteList(link, netlink.FAMILY_V4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range routes {
+		if route.Dst != nil && route.Dst.String() == destination {
+			return
+		}
+	}
+	t.Fatalf("missing static route %s: %v", destination, routes)
+}
+
+func assertStaticHost(t *testing.T, link netlink.Link) {
+	t.Helper()
+	addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addresses) != 1 || addresses[0].IPNet.String() != "10.20.30.1/24" {
+		t.Fatalf("static host address changed: %v", addresses)
+	}
+}

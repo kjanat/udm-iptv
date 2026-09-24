@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -34,7 +35,8 @@ func TestStaticAddressDeletionRecognition(t *testing.T) {
 		LinkAddress: net.IPNet{IP: net.ParseIP("10.20.30.1"), Mask: net.CIDRMask(24, 32)},
 		LinkIndex:   8,
 	}
-	if !staticAddressDeleted("10.20.30.1/24", 8, deleted) {
+	prefix := netip.MustParsePrefix("10.20.30.1/24")
+	if !staticAddressDeleted(prefix, 8, deleted) {
 		t.Fatal("configured static address deletion was not recognized")
 	}
 	for name, update := range map[string]netlink.AddrUpdate{
@@ -43,9 +45,12 @@ func TestStaticAddressDeletionRecognition(t *testing.T) {
 		"other address": {LinkAddress: net.IPNet{IP: net.ParseIP("10.20.30.2"), Mask: net.CIDRMask(24, 32)}, LinkIndex: 8},
 		"other prefix":  {LinkAddress: net.IPNet{IP: net.ParseIP("10.20.30.1"), Mask: net.CIDRMask(32, 32)}, LinkIndex: 8},
 	} {
-		if staticAddressDeleted("10.20.30.1/24", 8, update) {
+		if staticAddressDeleted(prefix, 8, update) {
 			t.Errorf("%s was treated as the configured address deletion", name)
 		}
+	}
+	if staticAddressDeleted(netip.Prefix{}, 8, deleted) {
+		t.Fatal("existing addressing was treated as a static address deletion")
 	}
 }
 
