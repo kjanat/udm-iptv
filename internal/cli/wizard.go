@@ -13,6 +13,7 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/device"
+	"github.com/kjanat/udm-iptv/internal/proxyinventory"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 	"github.com/kjanat/udm-iptv/internal/ui"
 )
@@ -63,12 +64,8 @@ func (application *Application) runConfigureForm(ctx context.Context, value *con
 	})
 	defer session.Close()
 
-	var err error
-	if discover == nil {
-		err = ui.ConfigureSuggested(ctx, value, catalog, runWizard(session), application.providerSuggestion, answered, detectedPorts()...)
-	} else {
-		err = ui.ConfigureFresh(ctx, value, catalog, runWizard(session), discover, answered, detectedPorts()...)
-	}
+	proxies := proxyinventory.Inspect(ctx, application.StateDir)
+	err := ui.ConfigureDetected(ctx, value, catalog, runWizard(session), application.providerSuggestion, discover, answered, proxies, detectedPorts()...)
 	if err != nil {
 		return fmt.Errorf("collect the configuration: %w", err)
 	}

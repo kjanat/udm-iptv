@@ -15,6 +15,7 @@ import (
 	"charm.land/huh/v2"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/proxyinventory"
 )
 
 type formValues struct {
@@ -239,13 +240,13 @@ func applyProfile(catalog config.Catalog, value *config.Config, profileID string
 
 // settingsForm builds the settings pages for the draft and returns the
 // wizard plus the function that copies the answers back into the draft.
-func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, asked int, askConsent bool, answered Answered) (*Wizard, func() error) {
+func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, asked int, askConsent bool, answered Answered, proxies ...proxyinventory.Inventory) (*Wizard, func() error) {
 	note := ""
 	if profile, found := catalog.Profile(value.Profile); found {
 		note = profile.Note
 	}
 	fields := newFormValues(*value)
-	groups, selectedPort, selectedLAN := configurationGroups(value, ports, note, &fields, askConsent)
+	groups, selectedPort, selectedLAN := configurationGroups(value, ports, note, &fields, askConsent, proxies...)
 	for _, p := range groups {
 		if p.address != nil {
 			p.address.answered = answered.has("static-address")
@@ -268,6 +269,11 @@ func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, as
 		value.LAN.Interfaces = resolveLAN(*selectedLAN)
 		config.NormalizeAddressing(value)
 
+		if len(proxies) > 0 {
+			if err := proxies[0].Validate(value.Proxy.Program); err != nil {
+				return fmt.Errorf("choose an available proxy: %w", err)
+			}
+		}
 		return value.Validate()
 	}
 
@@ -295,6 +301,7 @@ const (
 )
 
 type configureSession struct {
+	proxies    []proxyinventory.Inventory
 	catalog    config.Catalog
 	run        RunForm
 	draft      *config.Config
@@ -329,12 +336,19 @@ func ConfigureFresh(ctx context.Context, value *config.Config, catalog config.Ca
 	return configure(ctx, value, catalog, run, "", discover, answered, ports)
 }
 
-func configure(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, discover Discover, answered Answered, ports []Port) error {
+// ConfigureDetected uses host evidence supplied by the caller. Preview forms
+// continue to use the ordinary entry points and perform no host discovery.
+func ConfigureDetected(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, discover Discover, answered Answered, proxies proxyinventory.Inventory, ports ...Port) error {
+	return configure(ctx, value, catalog, run, suggestion, discover, answered, ports, proxies)
+}
+
+func configure(ctx context.Context, value *config.Config, catalog config.Catalog, run RunForm, suggestion string, discover Discover, answered Answered, ports []Port, proxies ...proxyinventory.Inventory) error {
 	draft := clone(*value)
 	fresh := discover != nil
-	estimate, _ := settingsForm(catalog, &draft, ports, 0, !fresh, answered)
+	estimate, _ := settingsForm(catalog, &draft, ports, 0, !fresh, answered, proxies...)
 	session := &configureSession{
 		catalog:    catalog,
+		proxies:    proxies,
 		run:        run,
 		draft:      &draft,
 		ports:      ports,
@@ -426,7 +440,7 @@ func (session *configureSession) pickProfile(ctx context.Context) (wizardStage, 
 }
 
 func (session *configureSession) settingsForm() (*Wizard, func() error) {
-	return settingsForm(session.catalog, session.draft, session.ports, session.asked, !session.fresh, session.answered)
+	return settingsForm(session.catalog, session.draft, session.ports, session.asked, !session.fresh, session.answered, session.proxies...)
 }
 
 func (session *configureSession) editSettings(ctx context.Context) (wizardStage, error) {
@@ -476,12 +490,12 @@ func configurationPages(value *config.Config, ports []Port, note string, fields 
 	return groups
 }
 
-func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues, askConsent bool) ([]*page, *string, *[]string) {
+func configurationGroups(value *config.Config, ports []Port, note string, fields *formValues, askConsent bool, proxies ...proxyinventory.Inventory) ([]*page, *string, *[]string) {
 	groups, selectedPort := wanGroups(&value.WAN.Interface, ports)
 	lanPages, selectedLAN := lanGroups(value.LAN.Interfaces, ports)
 	groups = append(groups, uplinkPages(value, note, fields)...)
 	groups = append(groups, lanPages...)
-	groups = append(groups, multicastPages(value, fields)...)
+	groups = append(groups, multicastPages(value, fields, proxies...)...)
 	if askConsent {
 		groups = append(groups, newPage(telemetryConsent(&value.Telemetry)))
 	}
@@ -527,7 +541,7 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 	}
 }
 
-func multicastPages(value *config.Config, fields *formValues) []*page {
+func multicastPages(value *config.Config, fields *formValues, proxies ...proxyinventory.Inventory) []*page {
 	return []*page{
 		newPage(newPrefixInputs(&fields.nat)).title("IPTV destinations"),
 		newPage(
@@ -538,7 +552,7 @@ func multicastPages(value *config.Config, fields *formValues) []*page {
 					huh.NewOption("IPv4 and IPv6 (MLDv2)", config.MaxMLDVersion),
 					huh.NewOption("IPv4 and IPv6 (legacy MLDv1)", mldVersion1),
 				).Value(&value.Proxy.MLDVersion),
-			newProxySelect(value),
+			newProxySelect(value, proxies...),
 			huh.NewSelect[int]().Key("igmp").Title("IGMP version").
 				Description("IGMPv3 works for most current receivers.").
 				Options(

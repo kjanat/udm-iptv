@@ -35,5 +35,5 @@ func (application *Application) statusCommand() *cobra.Command {
 }
 
 func (application *Application) collector() *diagnostics.Collector {
-	return &diagnostics.Collector{ConfigPath: application.ConfigPath, Version: application.Version}
+	return &diagnostics.Collector{ConfigPath: application.ConfigPath, StateDir: application.StateDir, Version: application.Version}
 }

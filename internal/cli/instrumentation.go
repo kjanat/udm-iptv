@@ -21,6 +21,7 @@ const (
 )
 
 func setTelemetryMetadata(ctx context.Context, reporter *telemetry.Reporter, value config.Config, version string) {
+	reporter.InspectProxies(ctx)
 	hw := device.Inspect(ctx)
 	reporter.SetMetadata(hw.Board, hw.Firmware, hw.Discovery, hw.SysID, value.Proxy.Program, value.Profile)
 	record, err := installer.QueryPackage(ctx)

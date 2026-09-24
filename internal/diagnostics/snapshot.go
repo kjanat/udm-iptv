@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -22,33 +23,35 @@ import (
 	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/mroute"
 	"github.com/kjanat/udm-iptv/internal/network"
+	"github.com/kjanat/udm-iptv/internal/proxyinventory"
 	"github.com/kjanat/udm-iptv/internal/service"
 )
 
 // Collector reads router state for snapshots and bounded captures.
-type Collector struct{ ConfigPath, Version string }
+type Collector struct{ ConfigPath, StateDir, Version string }
 
 // Snapshot represents a point-in-time summary of the router's
 // configuration and status.
 type Snapshot struct {
-	Errors      map[string]string   `json:"errors,omitempty"`
-	Timestamp   time.Time           `json:"timestamp"`
-	Version     string              `json:"version"`
-	System      systemInfo          `json:"system"`
-	ProxyConfig *string             `json:"proxyConfig"`
-	RecentLogs  *recentJournal      `json:"recentLogs,omitempty"`
-	Config      configSummary       `json:"config"`
-	Service     serviceStatus       `json:"service"`
-	Network     networkStatus       `json:"network"`
-	Multicast   *MulticastInfo      `json:"multicast"`
-	Memberships *[]Membership       `json:"memberships"`
-	Lease       *service.LeaseState `json:"lease"`
-	NAT         *[]network.NATRule  `json:"natRules"`
-	NATEvidence *[]NATEvidence      `json:"natEvidence"`
-	Downstream  []downstreamStatus  `json:"downstream"`
-	Switches    string              `json:"switches"`
-	NativeProxy string              `json:"nativeProxy"`
-	Playback    string              `json:"playback"`
+	Proxies     proxyinventory.Inventory `json:"proxies,omitempty"`
+	Errors      map[string]string        `json:"errors,omitempty"`
+	Timestamp   time.Time                `json:"timestamp"`
+	Version     string                   `json:"version"`
+	System      systemInfo               `json:"system"`
+	ProxyConfig *string                  `json:"proxyConfig"`
+	RecentLogs  *recentJournal           `json:"recentLogs,omitempty"`
+	Config      configSummary            `json:"config"`
+	Service     serviceStatus            `json:"service"`
+	Network     networkStatus            `json:"network"`
+	Multicast   *MulticastInfo           `json:"multicast"`
+	Memberships *[]Membership            `json:"memberships"`
+	Lease       *service.LeaseState      `json:"lease"`
+	NAT         *[]network.NATRule       `json:"natRules"`
+	NATEvidence *[]NATEvidence           `json:"natEvidence"`
+	Downstream  []downstreamStatus       `json:"downstream"`
+	Switches    string                   `json:"switches"`
+	NativeProxy string                   `json:"nativeProxy"`
+	Playback    string                   `json:"playback"`
 }
 
 type configSummary struct {
@@ -145,9 +148,14 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load configuration for snapshot: %w", err)
 	}
+	stateDir := application.StateDir
+	if stateDir == "" {
+		stateDir = filepath.Dir(application.ConfigPath)
+	}
 	hardware := device.Inspect(ctx)
 	result := Snapshot{
 		Timestamp:  time.Now().UTC(),
+		Proxies:    proxyinventory.Inspect(ctx, stateDir),
 		Version:    application.Version,
 		System:     inspectSystem(os.DirFS("/"), hardware),
 		Config:     summarizeConfig(value),
