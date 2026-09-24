@@ -48,6 +48,9 @@ func (application *Application) stopCommand() *cobra.Command {
 }
 
 func (application *Application) start(ctx context.Context) error {
+	if err := application.checkProxy(ctx); err != nil {
+		return err
+	}
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
 		return application.reportActivationFailure(ctx, fmt.Errorf("connect to systemd: %w", err))

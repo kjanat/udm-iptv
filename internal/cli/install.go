@@ -277,6 +277,9 @@ func (application *Application) restartCommand() *cobra.Command {
 }
 
 func (application *Application) restart(ctx context.Context, verify bool) error {
+	if err := application.checkProxy(ctx); err != nil {
+		return err
+	}
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {
 		return application.reportActivationFailure(ctx, fmt.Errorf("connect to systemd: %w", err))

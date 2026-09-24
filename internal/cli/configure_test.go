@@ -19,6 +19,11 @@ import (
 	"github.com/kjanat/udm-iptv/internal/filemode"
 )
 
+var (
+	errTestProxyConflict = errors.New("UniFi IGMP Proxy enabled")
+	errTestActivation    = errors.New("service failed")
+)
+
 func TestConfigureSetAppliesFlagsAfterLoading(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
@@ -41,6 +46,60 @@ func TestConfigureSetAppliesFlagsAfterLoading(t *testing.T) {
 	}
 	if updated.WAN.Interface != "eth9" || !updated.Proxy.QuickLeave {
 		t.Fatalf("flags were not applied: %#v", updated)
+	}
+}
+
+func TestConfigureConflictPreservesConfiguration(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.json")
+	if err := config.Save(path, configtest.KPN()); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	application := &Application{
+		ConfigPath: path, StateDir: filepath.Join(directory, "state"), Out: &output, Err: &output,
+		proxyPreflight: func(context.Context) error { return errTestProxyConflict },
+	}
+	command := application.root()
+	command.SetArgs([]string{"configure", "set", "--quickleave=true"})
+	if err := command.Execute(); !errors.Is(err, errTestProxyConflict) {
+		t.Fatalf("configure: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(previous, after) {
+		t.Fatalf("configuration changed: %q, %v", after, err)
+	}
+	if _, err := os.Stat(path + rejectedSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected rejected configuration: %v", err)
+	}
+	if application.reportConfig != nil || strings.Contains(output.String(), "Configuration saved") {
+		t.Fatalf("reported a configuration change: %s", &output)
+	}
+}
+
+func TestLifecycleConflictDoesNotReachSystemd(t *testing.T) {
+	t.Parallel()
+	application := &Application{proxyPreflight: func(context.Context) error { return errTestProxyConflict }}
+	if err := application.restart(t.Context(), true); !errors.Is(err, errTestProxyConflict) {
+		t.Fatalf("restart reached systemd despite conflict: %v", err)
+	}
+	if err := application.start(t.Context()); !errors.Is(err, errTestProxyConflict) {
+		t.Fatalf("start reached systemd despite conflict: %v", err)
+	}
+}
+
+func TestFailedActivationDoesNotReportSavedConfiguration(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	application := &Application{Out: &output}
+	err := application.finishConfiguration(t.Context(), true, nil, func(context.Context, bool) error { return errTestActivation })
+	if !errors.Is(err, errTestActivation) || strings.Contains(output.String(), "Configuration saved") {
+		t.Fatalf("error=%v output=%s", err, &output)
 	}
 }
 

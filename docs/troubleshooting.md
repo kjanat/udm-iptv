@@ -1,5 +1,31 @@
 # Startup troubleshooting
 
+## UniFi IGMP Proxy conflict
+
+Disable **IGMP Proxy** in UniFi Network → Internet → your WAN before using
+udm-iptv. IGMP snooping on LANs and switches can remain enabled.
+
+Configuration changes, installation, upgrade, start and restart check UniFi's
+effective proxy setting and running multicast proxies before applying changes.
+Daemon startup repeats the check before changing the IPTV network. UniFi's
+watchdog-managed proxy is detected even when `igmpproxy.service` is inactive;
+our existing v4/v5 service is allowed during migration and restart.
+
+A competing proxy can claim the kernel's multicast routing socket, causing
+`MRT_INIT: Address already in use`. Disable it through its managing service or
+UniFi setting: killing its process alone lets the watchdog start it again.
+The check does not switch UniFi settings or stop another service automatically.
+Enabling another proxy after the check can still cause a conflict.
+
+An upgrade started by an older udm-iptv version or directly through apt does not
+have the new client's early check. Its package can already be unpacked before
+the new installation check rejects the conflict. If dpkg left udm-iptv
+unconfigured, disable UniFi's IGMP Proxy, then run:
+
+```sh
+dpkg --configure udm-iptv
+```
+
 ## Diagnostic capture status
 
 Each capture keeps a private `.status.json` file alongside its text or JSONL output.

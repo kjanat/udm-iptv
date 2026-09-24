@@ -24,6 +24,7 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/filemode"
 	"github.com/kjanat/udm-iptv/internal/network"
+	"github.com/kjanat/udm-iptv/internal/proxycheck"
 	"github.com/kjanat/udm-iptv/internal/runtimebundle"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
@@ -74,9 +75,9 @@ type RuntimeState struct {
 // until the context is cancelled or either exits unexpectedly.
 func (application *Daemon) Run(parent context.Context) (result error) {
 	_, _ = sdnotify.SdNotify(false, "STATUS=Loading configuration")
-	value, err := config.Load(application.ConfigPath)
+	value, err := startupConfiguration(parent, application.ConfigPath)
 	if err != nil {
-		return fmt.Errorf("load configuration: %w", err)
+		return err
 	}
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -119,6 +120,18 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	return application.supervise(ctx, supervised{
 		program: value.Proxy.Program, proxy: process, dhcp: dhcp, static: staticFailure,
 	})
+}
+
+// startupConfiguration checks prerequisites before any network mutation.
+func startupConfiguration(ctx context.Context, path string) (config.Config, error) {
+	value, err := config.Load(path)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load configuration: %w", err)
+	}
+	if err := proxycheck.Check(ctx); err != nil {
+		return config.Config{}, fmt.Errorf("check multicast proxy before startup: %w", err)
+	}
+	return value, nil
 }
 
 // iptables discards a rule's counters with the rule.

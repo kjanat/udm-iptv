@@ -29,6 +29,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/kjanat/udm-iptv/internal/filemode"
+	"github.com/kjanat/udm-iptv/internal/proxycheck"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
@@ -90,6 +91,9 @@ func (application *Upgrader) Upgrade(ctx context.Context, options UpgradeOptions
 	}
 	if !plan.proceed {
 		return nil
+	}
+	if err := proxycheck.Check(ctx); err != nil {
+		return fmt.Errorf("check multicast proxy before upgrade: %w", err)
 	}
 	if plan.viaPackage {
 		err = application.applyPackageRelease(ctx, candidate, options.Force)

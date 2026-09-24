@@ -16,6 +16,7 @@ import (
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/filemode"
+	"github.com/kjanat/udm-iptv/internal/proxycheck"
 	"github.com/kjanat/udm-iptv/internal/runtimebundle"
 	"github.com/kjanat/udm-iptv/internal/service"
 )
@@ -59,12 +60,15 @@ func installedExecutable(plan Plan) string {
 	return filepath.Join(plan.StateDir, "bin", "udm-iptv")
 }
 
-// Preflight refuses to overwrite an existing installation without Replace.
-func (backend SystemBackend) Preflight(_ context.Context, plan Plan) error {
+// Preflight checks ownership and proxy conflicts before installation mutations.
+func (backend SystemBackend) Preflight(ctx context.Context, plan Plan) error {
 	if Installed(plan.StateDir) && !plan.Replace && !sameFile(plan.Executable, installedExecutable(plan)) {
 		return errAlreadyInstalled
 	}
 
+	if err := proxycheck.Check(ctx); err != nil {
+		return fmt.Errorf("check multicast proxy before installation: %w", err)
+	}
 	return nil
 }
 

@@ -403,6 +403,9 @@ func (application *Application) saveConfiguration(command *cobra.Command, value 
 		return fmt.Errorf("start the configuration change: %w", err)
 	}
 	defer func() { result = errors.Join(result, release()) }()
+	if err := application.checkProxy(command.Context()); err != nil {
+		return err
+	}
 	installed, previous, err := application.persistConfiguration(value)
 	if err != nil {
 		return err
@@ -412,9 +415,10 @@ func (application *Application) saveConfiguration(command *cobra.Command, value 
 
 func (application *Application) finishConfiguration(ctx context.Context, installed bool, previous []byte, restart func(context.Context, bool) error) error {
 	// Reporting failure must not strand a persisted configuration before activation.
-	activationErr := application.activateConfiguration(ctx, installed, previous, restart)
-	outputErr := writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath)
-	return errors.Join(activationErr, outputErr)
+	if err := application.activateConfiguration(ctx, installed, previous, restart); err != nil {
+		return err
+	}
+	return writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath)
 }
 
 func (application *Application) activateConfiguration(ctx context.Context, installed bool, previous []byte, restart func(context.Context, bool) error) error {
