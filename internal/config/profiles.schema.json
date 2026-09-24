@@ -1,0 +1,297 @@
+{
+  "$id": "https://raw.githubusercontent.com/kjanat/udm-iptv/refs/heads/go/internal/config/profiles.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "cidr": {
+      "description": "IPv4 network in CIDR notation: four octets 0-255, a slash and a prefix length 0-32. Single hosts use /32.",
+      "markdownDescription": "IPv4 network in CIDR notation: four octets 0–255, a slash and a prefix length 0–32.\n\nSingle hosts use `/32`, for example `148.122.7.125/32`. `0.0.0.0/0` matches everything.",
+      "type": "string",
+      "pattern": "^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/(3[0-2]|[12]?[0-9])$",
+      "patternErrorMessage": "Use IPv4 CIDR notation such as 213.75.0.0/16. Hosts need /32."
+    },
+    "cidrList": {
+      "description": "One or more distinct IPv4 networks in CIDR notation.",
+      "markdownDescription": "One or more distinct IPv4 networks in CIDR notation.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/cidr"
+      }
+    },
+    "country": {
+      "description": "A market the wizard offers as the first choice.",
+      "markdownDescription": "A market the wizard offers as the first choice.",
+      "type": "object",
+      "required": [
+        "localName",
+        "name"
+      ],
+      "properties": {
+        "localName": {
+          "$ref": "#/$defs/label",
+          "description": "Country name in its own language, shown next to the English name when it differs.",
+          "markdownDescription": "Country name in its own language, shown next to the English name when it differs, for example `Nederland`."
+        },
+        "name": {
+          "$ref": "#/$defs/label",
+          "description": "English country name shown in the wizard.",
+          "markdownDescription": "English country name shown in the wizard, for example `Netherlands`."
+        }
+      },
+      "additionalProperties": false
+    },
+    "countryCode": {
+      "description": "ISO 3166-1 alpha-2 country code in uppercase.",
+      "markdownDescription": "ISO 3166-1 alpha-2 country code in uppercase, for example `NL`.",
+      "type": "string",
+      "pattern": "^[A-Z]{2}$",
+      "patternErrorMessage": "Use a two-letter uppercase ISO 3166-1 code, for example NL."
+    },
+    "id": {
+      "description": "Lowercase identifier: a letter followed by 1 to 23 letters or digits. custom and legacy are reserved.",
+      "markdownDescription": "Lowercase identifier: a letter followed by 1 to 23 letters or digits.\n\n`custom` and `legacy` are reserved for configurations without a profile.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]{1,23}$",
+      "not": {
+        "enum": [
+          "custom",
+          "legacy"
+        ]
+      },
+      "patternErrorMessage": "Use a lowercase letter followed by 1 to 23 lowercase letters or digits."
+    },
+    "interface": {
+      "description": "Linux network interface name of 1 to 15 characters. Letters, digits, underscore, dot, colon and dash; may not start with a dot.",
+      "markdownDescription": "Linux network interface name of 1 to 15 characters: letters, digits, `_`, `.`, `:` and `-`; may not start with a dot.\n\nExamples: `eth8`, `ppp0`, `eth8.35`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,14}$",
+      "patternErrorMessage": "Use a Linux interface name of 1 to 15 characters, for example eth8 or ppp0."
+    },
+    "label": {
+      "description": "Display text of 1 to 64 characters without leading or trailing whitespace.",
+      "markdownDescription": "Display text of 1 to 64 characters without leading or trailing whitespace.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^\\S(.*\\S)?$",
+      "patternErrorMessage": "Remove leading and trailing whitespace."
+    },
+    "profile": {
+      "description": "Network settings for one IPTV network. Fields not listed here (proxy program, IGMP version, telemetry) come from the generic base; the WAN port and LAN bridges come from the console.",
+      "markdownDescription": "Network settings for one IPTV network.\n\nFields not listed here (proxy `improxy`, IGMPv3, telemetry defaults, VLAN interface `iptv`) come from the generic base in Go and can be overridden by the user. The physical port and the LAN bridges come from the console.",
+      "type": "object",
+      "required": [
+        "name",
+        "sourceRanges",
+        "wan"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/label",
+          "description": "Technical name shown only when a provider offers more than one profile.",
+          "markdownDescription": "Technical name shown only when a provider offers more than one profile, for example `São Paulo network (VLAN 20, DHCP)`."
+        },
+        "note": {
+          "description": "One sentence shown under the IPTV connection page, for facts the user may need such as provider DNS servers.",
+          "markdownDescription": "One sentence shown under the *IPTV connection* page, for facts the user may need such as provider DNS servers.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^\\S(.*\\S)?$",
+          "patternErrorMessage": "Remove leading and trailing whitespace."
+        },
+        "sourceRanges": {
+          "$ref": "#/$defs/cidrList",
+          "description": "Unicast source networks multicast video may originate from. Used as altnet by igmpproxy only; improxy ignores it. Multicast group addresses are destinations and are not allowed here.",
+          "markdownDescription": "Unicast source networks multicast video may originate from. Written as `altnet` lines for **igmpproxy only**; `improxy` has no equivalent and ignores it.\n\nMulticast groups such as `224.0.0.0/4` are destinations, not source networks. Do not list them in `sourceRanges` or `natDestinations`."
+        },
+        "wan": {
+          "$ref": "#/$defs/wan"
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "description": "A TV brand. The wizard offers it in every listed country and then offers its profiles.",
+      "markdownDescription": "A TV brand. The wizard offers it in every listed country and then offers its profiles.",
+      "type": "object",
+      "required": [
+        "countries",
+        "name",
+        "profiles"
+      ],
+      "properties": {
+        "countries": {
+          "description": "Countries where this provider is offered. Each code must exist in countries.",
+          "markdownDescription": "Countries where this provider is offered. Each code must exist in `countries`.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/countryCode"
+          }
+        },
+        "name": {
+          "$ref": "#/$defs/label",
+          "description": "Brand name as subscribers know it.",
+          "markdownDescription": "Brand name as subscribers know it, for example `Telekom MagentaTV`."
+        },
+        "profiles": {
+          "description": "Profile IDs this provider can use, in the order the wizard shows them. The first is the default. Each ID must exist in profiles.",
+          "markdownDescription": "Profile IDs this provider can use, in the order the wizard shows them. **The first is the default.** Each ID must exist in `profiles`.\n\nWith one entry the wizard skips the profile question.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "ptrSuffixes": {
+          "description": "Reverse-DNS suffixes of this provider's customer addresses, matched on label boundaries. Only a low-confidence hint for the wizard.",
+          "markdownDescription": "Reverse-DNS suffixes of this provider's customer addresses, matched on label boundaries: `kpn.net` matches `customer.kpn.net` and nothing else.\n\nOnly a low-confidence hint that pre-selects the provider in the wizard.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$",
+            "patternErrorMessage": "Use a lowercase DNS suffix such as kpn.net."
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "wan": {
+      "description": "How the IPTV uplink is brought up on the provider-facing port.",
+      "markdownDescription": "How the IPTV uplink is brought up on the provider-facing port.\n\n`dhcp: true` forbids `staticAddress`; `dhcp: false` forbids `dhcpOptions`.",
+      "type": "object",
+      "required": [
+        "dhcp",
+        "natDestinations",
+        "vlan"
+      ],
+      "properties": {
+        "dhcp": {
+          "description": "true: obtain the IPTV address with udhcpc. false: bring the interface up with staticAddress, or without an address when omitted. https://github.com/armcc/udhcp/raw/refs/heads/master/README.udhcpc",
+          "markdownDescription": "`true`: obtain the IPTV address with [`udhcpc`](https://github.com/armcc/udhcp/raw/refs/heads/master/README.udhcpc).\n\n`false`: bring the interface up with `staticAddress`, or without an address when omitted.",
+          "type": "boolean"
+        },
+        "dhcpOptions": {
+          "description": "Extra udhcpc arguments, one token per item. Only with dhcp true.",
+          "markdownDescription": "Extra `udhcpc` arguments, one token per item, for example `[\"-O\", \"staticroutes\", \"-V\", \"IPTV_RG\"]`. Only with `dhcp: true`.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^(-[A-Za-z]|[A-Za-z0-9_]+)$",
+            "patternErrorMessage": "One token per item: a single-letter flag such as -O or a plain value such as staticroutes."
+          }
+        },
+        "interface": {
+          "$ref": "#/$defs/interface",
+          "description": "Physical port or PPP interface carrying IPTV. Omit it; the console detects the port and the user picks it in the wizard.",
+          "markdownDescription": "Physical port or PPP interface carrying IPTV. Omit it; the console detects the port and the user picks it in the wizard.\n\nSet it only when the provider dictates it, such as `ppp0` for MagentaTV. `eth8.N` names a sub-interface of the detected port."
+        },
+        "natDestinations": {
+          "$ref": "#/$defs/cidrList",
+          "description": "Unicast destinations reached through the IPTV uplink. Each becomes an iptables MASQUERADE rule matching on destination. Never list multicast groups here.",
+          "markdownDescription": "Unicast destinations reached through the IPTV uplink (guide, video on demand, DNS). Each becomes an `iptables -t nat -A POSTROUTING -d <cidr> -o <iptv> -j MASQUERADE` rule, matching on **destination**.\n\nNever list multicast groups here or in `sourceRanges`; group forwarding is managed through receiver memberships."
+        },
+        "staticAddress": {
+          "$ref": "#/$defs/cidr",
+          "description": "Fixed IPv4 address with prefix length for the IPTV interface. Only with dhcp false.",
+          "markdownDescription": "Fixed IPv4 address with prefix length for the IPTV interface, for example `10.20.30.1/24`. Only with `dhcp: false`."
+        },
+        "vlan": {
+          "description": "802.1Q VLAN ID for IPTV on the uplink, 1 to 4094. 0 means untagged.",
+          "markdownDescription": "802.1Q VLAN ID for IPTV on the uplink, 1 to 4094. `0` means untagged: no VLAN interface is created.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4094
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "dhcp": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "staticAddress"
+          ]
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "dhcpOptions"
+          ]
+        }
+      }
+    }
+  },
+  "title": "udm-iptv provider catalog",
+  "description": "Countries, TV providers and the network profiles udm-iptv applies for each. The wizard asks country, then provider, then profile. Profiles are pure network settings; providers and countries only exist to find the right profile.",
+  "markdownDescription": "Countries, TV providers and the network profiles `udm-iptv` applies for each.\n\nThe wizard asks **country → provider → profile**. Profiles are pure network settings; providers and countries only exist to find the right profile.\n\nCross-references (`providers[].countries`, `providers[].profiles`) are checked by the Go loader, not by this schema.",
+  "type": "object",
+  "required": [
+    "countries",
+    "profiles",
+    "providers",
+    "schemaVersion"
+  ],
+  "properties": {
+    "$schema": {
+      "description": "Path or URL of this schema, for editor validation.",
+      "markdownDescription": "Path or URL of this schema, for editor validation.",
+      "type": "string"
+    },
+    "countries": {
+      "description": "Markets with at least one provider, keyed by ISO 3166-1 alpha-2 code.",
+      "markdownDescription": "Markets with at least one provider, keyed by **ISO 3166-1 alpha-2** code (`NL`, `CH`, …). Every country must be listed by at least one provider.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/country"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/countryCode"
+      }
+    },
+    "profiles": {
+      "description": "Network settings, keyed by profile ID. The ID is persisted in config.json, so never rename an existing one.",
+      "markdownDescription": "Network settings, keyed by profile ID.\n\nThe ID is persisted in `config.json` as `profile` and used by legacy-config inference, so **never rename an existing ID**. Every profile must be referenced by at least one provider.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/profile"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "providers": {
+      "description": "Brands a subscriber recognizes, keyed by ID. Each maps to one or more profiles.",
+      "markdownDescription": "Brands a subscriber recognizes, keyed by ID. Each maps to one or more profiles.\n\nSeveral providers may share one profile (KPN, XS4ALL and Freedom all use `kpn`). One provider may offer several profiles (Vivo: `vivo`, `vivogvt`).",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/provider"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "schemaVersion": {
+      "description": "Catalog format version. A binary refuses a catalog with a version it does not know.",
+      "markdownDescription": "Catalog format version. A binary refuses a catalog with a version it does not know.",
+      "const": 1
+    }
+  },
+  "additionalProperties": false
+}

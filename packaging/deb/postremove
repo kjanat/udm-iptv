@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = purge ]; then
+	state=/data/udm-iptv
+	if [ -e "${state}" ] || [ -L "${state}" ]; then
+		# Keep the same lock inode as the Go lifecycle operations. Never unlink
+		# it, even after unlocking: another process may already have it open.
+		[ ! -L /data ]
+		[ ! -L "${state}" ]
+		[ -d "${state}" ]
+		[ ! -L "${state}/.lock" ]
+		umask 077
+		exec 9>>"${state}/.lock"
+		flock -n 9
+		cd "${state}"
+		[ ! -L bin ]
+		# Match installer.ownedStateFiles/ownedStateDirectories. dpkg already
+		# removed its binary; unknown files, directories and .lock survive.
+		rm -f -- bin/udhcpc-hook bin/.udm-iptv.previous bin/.udm-iptv.previous-*
+		rm -f -- config.json config.json.rejected legacy.conf legacy-network.pending udm-iptv.conf \
+			udm-iptv.deb udm-iptv-restore debconf.preseed \
+			telemetry-research.json telemetry-research.lock
+		for kind in errors logs metrics traces presets network; do
+			rm -f -- "telemetry-${kind}.rate"
+		done
+		rm -rf -- diagnostics runtime sigstore
+		if [ -d bin ]; then
+			remaining=$(ls -A bin)
+			if [ -z "${remaining}" ]; then
+				rmdir bin
+			fi
+		fi
+	fi
+	if [ -e /usr/share/debconf/confmodule ]; then
+		# shellcheck source=/dev/null
+		. /usr/share/debconf/confmodule
+		db_purge
+	fi
+fi

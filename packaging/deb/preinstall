@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+state=/data/udm-iptv
+if [ -f /etc/udm-iptv.conf ] && [ ! -f "${state}/config.json" ]; then
+	mkdir -p "${state}"
+	cp /etc/udm-iptv.conf "${state}/legacy.conf"
+	chmod 0600 "${state}/legacy.conf"
+fi
+
+# dpkg runs the new preinst before unpacking it. Stop v4 here while its
+# ExecStop helper still exists; v4's generated prerm does not stop on upgrade.
+case "${1:-}:${2:-}" in
+	upgrade:4.*) ;;
+	*) exit 0 ;;
+esac
+if [ -e /usr/share/udm-iptv/go-package ] || [ ! -x /usr/lib/udm-iptv/udm-iptvd ]; then
+	exit 0
+fi
+installed=$(dpkg-query -W -f='${Version}' udm-iptv)
+if [ "${installed}" != "$2" ]; then
+	echo "Cannot prepare v4 migration: installed package version changed." >&2
+	exit 1
+fi
+if [ ! -f /etc/udm-iptv.conf ]; then
+	echo "Cannot prepare v4 migration: /etc/udm-iptv.conf is missing." >&2
+	exit 1
+fi
+mkdir -p "${state}"
+# This is the exact old configuration, not new defaults. v5 validates its
+# interface, parent, VLAN ID and current link before taking over that VLAN.
+pending=$(mktemp "${state}/legacy-network.XXXXXX")
+trap 'rm -f "${pending}"' EXIT
+cp /etc/udm-iptv.conf "${pending}"
+chmod 0600 "${pending}"
+if [ -d /run/systemd/system ]; then
+	systemctl stop udm-iptv.service
+fi
+mv "${pending}" "${state}/legacy-network.pending"

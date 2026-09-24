@@ -1,38 +1,62 @@
 {
-	"$schema": "https://dprint.dev/schemas/v0.json",
-	"useTabs": true,
-	"json": {},
-	"markdown": {
-		"emphasisKind": "asterisks",
-		"lineWidth": 100,
-		"textWrap": "never",
-		"codeBlock.useTabs": false,
-	},
-	"shfmt": {
-		"useTabs": true,
-		"binaryNextLine": true,
-		"switchCaseIndent": true,
-		"associations": [
-			".github/**/*.*sh",
-			"completions/udm-iptv",
-			"debian/config",
-			"debian/post*",
-			"docker/**/*.*sh",
-			"udm-iptv",
-			"udm-iptv-diag",
-			"udm-iptv-diagnostics",
-			"udm-iptv-restore",
-			"udm-iptvd",
-		]
-	},
-	"ruff": {},
-	"yaml": { "printWidth": 160 },
-	"plugins": [
-		"https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
-		"npm:@dprint/json@0.23.0",
-		"npm:@dprint/markdown@0.24.0",
-		"npm:@dprint/ruff@0.8.7",
-		"npm:dprint-plugin-yaml@0.6.0",
-		"npm:dprint-plugin-graphql@0.2.3",
-	],
+  "$schema": "https://dprint.dev/schemas/v0.json",
+  "useTabs": true,
+  "incremental": true,
+  "excludes": ["dist/**", "**/vendor", "docs/rfc/**"],
+  "json": {
+    "preferSingleLine": false,
+    "useTabs": false
+  },
+  "jsonSchemaSort": {
+    "associations": [
+      "**/schema.json",
+      "**/*.schema.json"
+    ]
+  },
+  "markdown": {
+    "emphasisKind": "asterisks",
+    "lineWidth": 100,
+    "textWrap": "maintain"
+  },
+  "shfmt": {
+    "useTabs": true,
+    "binaryNextLine": true,
+    "switchCaseIndent": true,
+    "associations": [
+      "packaging/deb/config",
+      "packaging/deb/postinstall",
+      "packaging/deb/postremove",
+      "packaging/deb/preinstall",
+      "packaging/deb/preremove"
+    ]
+  },
+  "yaml": { "printWidth": 160 },
+  "exec": {
+    "cwd": "${configDir}",
+    "commands": [
+      {
+        "command": "tombi format - --stdin-filename {{file_path}}",
+        "exts": ["toml"],
+        "setupCommand": "node -e \"try { require('child_process').execSync('tombi --version', {stdio:'ignore'}); } catch { require('child_process').execSync('npm i -g tombi', {stdio:'inherit'}); }\"",
+        "cacheKeyFiles": ["tombi.toml"]
+      },
+      {
+        "command": "golangci-lint fmt --stdin",
+        "exts": ["go"],
+        "cacheKeyFiles": [".golangci.toml"],
+      }
+    ]
+  },
+  "plugins": [
+    "https://plugins.dprint.dev/kjanat/json-schema-sort-0.1.2.wasm",
+    "https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
+    "npm:@dprint/json@0.24.0",
+    "npm:@dprint/markdown@0.24.0",
+    "npm:dprint-plugin-yaml@0.6.0",
+    "npm:@jakebailey/dprint-plugin-gofumpt@0.0.18",
+    "npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
+    "npm:@dprint/dockerfile@0.6.0",
+    "npm:@dprint/ruff@0.8.7",
+    "npm:dprint-plugin-graphql@0.2.3",
+  ],
 }
