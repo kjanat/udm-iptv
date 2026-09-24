@@ -46,6 +46,7 @@ var (
 )
 
 type researchState struct {
+	legacySettings     json.RawMessage
 	ID                 string        `json:"id"`
 	Revision           uint64        `json:"revision"`
 	Fingerprint        string        `json:"fingerprint"`
@@ -182,6 +183,7 @@ func flattenInto(result map[string]string, prefix string, value any) {
 }
 
 func (state *researchState) recordSave(current config.Config, fingerprint string) []string {
+	state.legacySettings = nil
 	if fingerprint == state.Fingerprint {
 		state.Settings = current
 
@@ -293,9 +295,8 @@ func (r *Reporter) RecordObservation(ctx context.Context, observation Observatio
 	err := withResearchState(r.stateDir, func(state *researchState) error {
 		report = reportFromState(*state, "observation")
 		report.Observation = &observation
-		if !state.hasSettings() {
-			report.Settings = nil
-		}
+		// Revision and identity link this heartbeat to its configuration report.
+		report.Settings = nil
 
 		return nil
 	})
@@ -539,7 +540,7 @@ func loadResearchState(path string) (researchState, error) {
 }
 
 func writeResearchState(directory, path string, state researchState) error {
-	data, err := json.Marshal(state)
+	data, err := json.Marshal(&state)
 	if err != nil {
 		return fmt.Errorf("encode telemetry state: %w", err)
 	}

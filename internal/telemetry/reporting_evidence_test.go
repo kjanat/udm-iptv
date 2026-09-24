@@ -1,7 +1,6 @@
 package telemetry
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,16 +41,14 @@ func TestOperationalIdentitySurvivesDisabledPresets(t *testing.T) {
 	}
 }
 
-func TestIdentityCorruptionIsVisibleWithoutReplacingEvidence(t *testing.T) {
+func TestIdentityCorruptionIsCountedWithoutReplacingEvidence(t *testing.T) {
 	r, _ := researchReporter(t)
-	var output bytes.Buffer
-	r.deliveryOutput = &output
 	path := filepath.Join(r.stateDir, "telemetry-research.json")
 	const broken = "{broken research state"
 	if err := atomicfile.Write(path, []byte(broken), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if r.installationID() != "" || !strings.Contains(output.String(), "decode installation identity") {
+	if r.installationID() != "" || len(r.deliveryCounts) != 1 {
 		t.Fatal("corrupt identity was silently replaced or ignored")
 	}
 	data, err := os.ReadFile(path)

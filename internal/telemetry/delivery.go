@@ -3,19 +3,15 @@ package telemetry
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"sort"
 
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 var errTelemetryDisabled = errors.New("telemetry disabled in saved configuration")
 
-// deliveryIssue reports locally, never through the pipeline that just failed.
-// Repeated drops retain a count; Close prints the aggregate without flooding the
-// router's journal during an exhausted budget or a disconnected network.
+// deliveryIssue counts failures without writing telemetry diagnostics to stderr
+// or feeding them back into the pipeline that just failed.
 func (r *Reporter) deliveryIssue(kind, reason string) {
 	if r == nil {
 		return
@@ -25,33 +21,7 @@ func (r *Reporter) deliveryIssue(kind, reason string) {
 	if r.deliveryCounts == nil {
 		r.deliveryCounts = make(map[string]uint64)
 	}
-	key := kind + ": " + reason
-	r.deliveryCounts[key]++
-	if r.deliveryCounts[key] == 1 {
-		_, _ = fmt.Fprintf(r.deliveryWriter(), "udm-iptv telemetry: %s; delivery incomplete\n", key)
-	}
-}
-
-func (r *Reporter) deliveryWriter() io.Writer {
-	if r.deliveryOutput != nil {
-		return r.deliveryOutput
-	}
-	return os.Stderr
-}
-
-func (r *Reporter) deliverySummary() {
-	r.deliveryMu.Lock()
-	defer r.deliveryMu.Unlock()
-	keys := make([]string, 0, len(r.deliveryCounts))
-	for key := range r.deliveryCounts {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		if count := r.deliveryCounts[key]; count > 1 {
-			_, _ = fmt.Fprintf(r.deliveryWriter(), "udm-iptv telemetry: %d delivery issues: %s\n", count, key)
-		}
-	}
+	r.deliveryCounts[kind+": "+reason]++
 }
 
 // Flush waits for SDK queues to drain. Success is not a server acknowledgement;

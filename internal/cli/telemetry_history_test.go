@@ -1,15 +1,51 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
+
+func TestSavedConfigurationTelemetryDropStaysOffStderr(t *testing.T) {
+	capture := captureTelemetry(t)
+	directory := t.TempDir()
+	now := time.Now().Unix()
+	// Exhaust the shared presets budget before this command saves its config.
+	rate := fmt.Sprintf("%d 0 %d 600\n", now/60, now/86400)
+	if err := atomicfile.Write(filepath.Join(directory, "telemetry-presets.rate"), []byte(rate), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	application := &Application{
+		ConfigPath: filepath.Join(directory, "config.json"), StateDir: directory,
+		Out: io.Discard, Err: &stderr, seed: seedBR0,
+		networkIdentity: func(context.Context) telemetry.NetworkIdentity { return telemetry.NetworkIdentity{} },
+	}
+	root := application.root()
+	root.SetArgs([]string{"configure", "set", "--profile=kpn"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("telemetry drop wrote to stderr: %s", stderr.String())
+	}
+	if strings.Contains(capture.output(), "installation configuration") {
+		t.Fatal("exhausted budget sent a configuration report")
+	}
+	value, err := config.Load(application.ConfigPath)
+	if err != nil || value.Profile != "kpn" {
+		t.Fatal("telemetry drop prevented the configuration save")
+	}
+}
 
 func envelopeContains(output, token string) bool {
 	return strings.Contains(output, token) || strings.Contains(output, strings.ReplaceAll(token, `"`, `\"`))

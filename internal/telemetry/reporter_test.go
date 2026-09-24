@@ -658,7 +658,7 @@ func TestErrorsAndLogsKeepActiveSpan(t *testing.T) {
 		logs += correlatedLogs(t, event, spans)
 	}
 	assertEqual(t, "correlated errors", failures, 1)
-	assertEqual(t, "correlated logs", logs, 4)
+	assertEqual(t, "correlated logs", logs, 3)
 }
 
 type outcomeCase struct {
@@ -810,27 +810,22 @@ func TestInstallationStepsBecomeChildSpans(t *testing.T) {
 	}
 }
 
-func TestLineWriterLogsCompleteLines(t *testing.T) {
+func TestLineWriterKeepsOutputForFailure(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
 	writer := r.LineWriter(context.Background(), "proxy")
-	if _, err := writer.Write([]byte("joined 239.1.1.1 on eth8.4\npart")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := writer.Write([]byte("ial line\n")); err != nil {
-		t.Fatal(err)
-	}
-	r.client.Flush(time.Second)
-	var bodies []string
-	for _, event := range transport.events {
-		for _, log := range event.Logs {
-			bodies = append(bodies, log.Body)
-			assertAttribute(t, "line", log.Attributes, "source", "proxy")
+	for _, part := range []string{"joined 239.1.1.1 on eth8.4\npart", "ial line\n"} {
+		if _, err := io.WriteString(writer, part); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if want := []string{"joined 239.1.1.1 on eth8.4", "partial line"}; !slices.Equal(bodies, want) {
-		t.Fatalf("lines = %q, want %q", bodies, want)
+	r.Flush()
+	if len(transport.events) != 0 {
+		t.Fatal("healthy subprocess output was sent")
 	}
-	assertEqual(t, "disabled writer", r.LineWriter(context.Background(), "x") == io.Discard, false)
+	if got := string(failureOutput(t, r, transport)); got != "joined 239.1.1.1 on eth8.4\npartial line\n" {
+		t.Fatalf("failure output = %q", got)
+	}
 	off, _ := newRecordingReporter(t, config.Telemetry{Enabled: true, Errors: true, TraceRate: 1})
+	defer off.Close()
 	assertEqual(t, "writer without logs", off.LineWriter(context.Background(), "proxy") == io.Discard, true)
 }

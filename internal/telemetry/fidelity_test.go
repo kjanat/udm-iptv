@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,31 +42,30 @@ func TestAttachmentPreservesCompleteEvidence(t *testing.T) {
 	}
 }
 
+func failureOutput(t *testing.T, r *Reporter, transport *recordingTransport) []byte {
+	t.Helper()
+	r.failure(t.Context(), "daemon", errOperationFailed, false)
+	r.Close()
+	for _, attachment := range failureEvents(transport.events)[0].Attachments {
+		if attachment.Filename == "udm-iptv-proxy-tail.log" {
+			return attachment.Payload
+		}
+	}
+	t.Fatal("missing subprocess failure evidence")
+	return nil
+}
+
 func TestLineWriterPreservesLongAndTrailingEvidence(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
 	writer := r.LineWriter(t.Context(), "proxy")
 	evidence := "  " + strings.Repeat("évidence", 1300) + "  \n\ntrailing text "
-	// The first write ends before the newline and exceeds the old tail-only
-	// buffer. This is the actual subprocess chunking path that lost prefixes.
-	for _, part := range []string{evidence[:lineLimit+100], evidence[lineLimit+100:]} {
+	for _, part := range []string{evidence[:4196], evidence[4196:]} {
 		if _, err := io.WriteString(writer, part); err != nil {
 			t.Fatal(err)
 		}
 	}
-	r.Close()
-	var actual strings.Builder
-	for _, event := range transport.events {
-		for _, entry := range event.Logs {
-			if entry.Attributes["line.empty"].AsInterface() != true {
-				actual.WriteString(entry.Body)
-			}
-			if entry.Attributes["line.end"].AsInterface() == true {
-				actual.WriteByte('\n')
-			}
-		}
-	}
-	if actual.String() != evidence {
-		t.Fatalf("stream evidence changed: got %d bytes, want %d", actual.Len(), len(evidence))
+	if actual := failureOutput(t, r, transport); string(actual) != evidence {
+		t.Fatal("failure attachment changed subprocess evidence")
 	}
 }
 
@@ -96,14 +95,53 @@ func (*refusingFlushTransport) Flush(_ time.Duration) bool            { return f
 
 var _ sentry.Transport = (*refusingFlushTransport)(nil)
 
-func TestDeliveryFailuresAreVisibleLocally(t *testing.T) {
+func captureTelemetryStderr(t *testing.T) func() {
+	t.Helper()
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stderr
+	os.Stderr = stderr
+	t.Cleanup(func() {
+		os.Stderr = previous
+		_ = stderr.Close()
+	})
+	return func() {
+		t.Helper()
+		info, err := stderr.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != 0 {
+			t.Fatal("telemetry delivery failures wrote to stderr")
+		}
+	}
+}
+
+func exhaustDailyLogBudget(t *testing.T, r *Reporter) {
+	t.Helper()
+	r.stateDir = t.TempDir()
+	budget, err := openRateBudget(r.stateDir, "logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ := (rateRecord{}).rollOver(time.Now())
+	record.usedDay = logsPerMinute * dailyBudgetFactor
+	err = budget.write(record)
+	budget.release()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeliveryFailuresStayOffStderr(t *testing.T) {
+	assertQuiet := captureTelemetryStderr(t)
 	transport := &refusingFlushTransport{}
 	r, err := newTestReporter(testSettings(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var output bytes.Buffer
-	r.deliveryOutput = &output
 	r.counts["logs"] = logsPerMinute
 	r.window = time.Now()
 	for range 2 {
@@ -111,12 +149,21 @@ func TestDeliveryFailuresAreVisibleLocally(t *testing.T) {
 			t.Fatal("exhausted budget allowed more logs")
 		}
 	}
-	r.Close()
-	for _, expected := range []string{"budget exhausted", "2 delivery issues", "queued telemetry did not drain"} {
-		if !strings.Contains(output.String(), expected) {
-			t.Fatalf("missing %q in %q", expected, output.String())
+	exhaustDailyLogBudget(t, r)
+	clear(r.counts)
+	for range 2 {
+		if r.allow("logs", logsPerMinute) {
+			t.Fatal("exhausted daily budget allowed more logs")
 		}
 	}
+	r.Close()
+	if r.deliveryCounts["logs: telemetry daily budget exhausted"] != 2 {
+		t.Fatalf("daily drops not counted: %v", r.deliveryCounts)
+	}
+	if r.deliveryCounts["logs: per-minute telemetry budget exhausted"] != 2 || r.deliveryCounts["flush: queued telemetry did not drain before the deadline"] != 1 {
+		t.Fatalf("delivery failures not counted: %v", r.deliveryCounts)
+	}
+	assertQuiet()
 	if r.client.Options().DisableClientReports {
 		t.Fatal("SDK drop reports disabled")
 	}
@@ -124,15 +171,13 @@ func TestDeliveryFailuresAreVisibleLocally(t *testing.T) {
 
 func TestBreadcrumbEvictionsAreCountedLocally(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
-	var output bytes.Buffer
-	r.deliveryOutput = &output
 	for range maxBreadcrumbs + 2 {
 		r.breadcrumb("operation", sentry.LevelInfo)
 	}
 	r.failure(t.Context(), "install", errOperationFailed, false)
 	r.Close()
-	if len(failureEvents(transport.events)[0].Breadcrumbs) != maxBreadcrumbs || !strings.Contains(output.String(), "2 delivery issues: breadcrumbs") {
-		t.Fatalf("eviction count missing or history limit changed: %s", output.String())
+	if len(failureEvents(transport.events)[0].Breadcrumbs) != maxBreadcrumbs || r.deliveryCounts["breadcrumbs: oldest breadcrumb evicted by SDK history limit"] != 2 {
+		t.Fatalf("eviction count missing or history limit changed: %v", r.deliveryCounts)
 	}
 }
 
@@ -142,9 +187,8 @@ func (rejectedDelivery) RoundTrip(*http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: http.StatusRequestEntityTooLarge, Header: make(http.Header), Body: http.NoBody}, nil
 }
 
-func TestTransportRejectionIsVisibleLocally(t *testing.T) {
-	var output bytes.Buffer
-	r := &Reporter{deliveryOutput: &output}
+func TestTransportRejectionIsCountedLocally(t *testing.T) {
+	r := &Reporter{}
 	transport := deliveryTransport{reporter: r, base: rejectedDelivery{}}
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://example.invalid/envelope", nil)
 	if err != nil {
@@ -155,14 +199,13 @@ func TestTransportRejectionIsVisibleLocally(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	if !strings.Contains(output.String(), "HTTP 413") {
-		t.Fatalf("rejection invisible: %s", output.String())
+	if r.deliveryCounts["transport: server rejected telemetry: HTTP 413"] != 1 {
+		t.Fatalf("rejection not counted: %v", r.deliveryCounts)
 	}
 }
 
 func TestTransportHonorsRevocationBeforeClientReportDelivery(t *testing.T) {
-	var output bytes.Buffer
-	r := &Reporter{deliveryOutput: &output, configPath: filepath.Join(t.TempDir(), "config.json")}
+	r := &Reporter{configPath: filepath.Join(t.TempDir(), "config.json")}
 	value := configtest.Custom()
 	value.Telemetry.Enabled = false
 	if err := config.Save(r.configPath, value); err != nil {
@@ -177,34 +220,19 @@ func TestTransportHonorsRevocationBeforeClientReportDelivery(t *testing.T) {
 	if response != nil {
 		defer func() { _ = response.Body.Close() }()
 	}
-	if !errors.Is(err, errTelemetryDisabled) || response != nil || output.Len() != 0 {
-		t.Fatalf("explicit opt-out sent traffic or warned: response=%v err=%v output=%s", response, err, output.String())
+	if !errors.Is(err, errTelemetryDisabled) || response != nil || len(r.deliveryCounts) != 0 {
+		t.Fatalf("explicit opt-out sent traffic or counted a failure: response=%v err=%v counts=%v", response, err, r.deliveryCounts)
 	}
 }
 
-func TestLineWriterFlushPreservesInvalidUTF8(t *testing.T) {
+func TestLineWriterPreservesInvalidUTF8(t *testing.T) {
 	r, transport := newRecordingReporter(t, testSettings())
 	writer := r.LineWriter(t.Context(), "proxy")
-	evidence := bytes.Repeat([]byte{0x80}, lineLimit+1)
+	evidence := bytes.Repeat([]byte{0x80}, 4097)
 	if _, err := writer.Write(evidence); err != nil {
 		t.Fatal(err)
 	}
-	FlushLines(writer)
-	r.Close()
-	var actual []byte
-	for _, event := range transport.events {
-		for _, entry := range event.Logs {
-			if entry.Attributes["line.encoding"].AsInterface() != "base64" {
-				t.Fatal("binary evidence missing encoding marker")
-			}
-			part, err := base64.StdEncoding.DecodeString(entry.Body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			actual = append(actual, part...)
-		}
-	}
-	if !bytes.Equal(actual, evidence) {
-		t.Fatal("binary line lost bytes or Flush and Close duplicated the tail")
+	if actual := failureOutput(t, r, transport); !bytes.Equal(actual, evidence) {
+		t.Fatal("binary subprocess evidence lost bytes")
 	}
 }

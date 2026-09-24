@@ -37,9 +37,9 @@ func (application *Application) reportSavedConfiguration(command *cobra.Command)
 	ctx, cancel := context.WithTimeout(command.Context(), reportConfigTimeout)
 	defer cancel()
 	setTelemetryMetadata(ctx, reporter, value, application.Version)
-	if err := reporter.RecordConfiguration(ctx, *application.reportConfig, application.reportApplied, application.networkIdentity); err != nil {
-		command.PrintErrln("Configuration saved; telemetry report incomplete:", err)
-	}
+	// Reporting is best effort; delivery drops must not add stderr warnings to
+	// a successful configuration save or package upgrade.
+	_ = reporter.RecordConfiguration(ctx, *application.reportConfig, application.reportApplied, application.networkIdentity)
 }
 
 func (application *Application) telemetryCommand() *cobra.Command {

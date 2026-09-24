@@ -127,7 +127,6 @@ func (application *Daemon) logRemovedNAT(ctx context.Context, removed []network.
 		return
 	}
 	log := application.Monitor.LineWriter(ctx, "nat")
-	defer telemetry.FlushLines(log)
 	output := io.MultiWriter(application.Out, log)
 	for _, rule := range removed {
 		_, _ = fmt.Fprintf(output, "NAT rule removed: %s\n", rule)
@@ -156,6 +155,7 @@ func (application *Daemon) supervise(ctx context.Context, sources supervised) er
 	}
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
 	_, _ = sdnotify.SdNotify(false, "STATUS=IPTV proxy is running")
+	application.Monitor.Ready(ctx)
 	stopMetrics := application.startTelemetryMetrics(ctx)
 	defer stopMetrics()
 	select {
@@ -258,7 +258,6 @@ func (application *Daemon) proxyCommand(ctx context.Context, value config.Config
 		proxy.Stdout = out
 		output = &processOutput{}
 	}
-	output.flush = func() { telemetry.FlushLines(proxyLog) }
 	proxy.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(proxy)
 
@@ -411,7 +410,7 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 	configureGracefulStop(client)
 	// Keep ownership from the previous client; readiness rejects records older than since.
 	since := time.Now().UTC()
-	process, err := startProcess(client, func() { telemetry.FlushLines(dhcpLog) })
+	process, err := startProcess(client)
 	if err != nil {
 		return nil, fmt.Errorf("start DHCP client: %w", err)
 	}
