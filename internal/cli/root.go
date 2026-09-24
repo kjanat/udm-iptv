@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kjanat/udm-iptv/internal/config"
+	"github.com/kjanat/udm-iptv/internal/proxycheck"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 	"github.com/kjanat/udm-iptv/internal/ui"
 )
@@ -37,6 +38,17 @@ type Application struct {
 	reportConfig       *config.Config
 	reportApplied      bool
 	providerSuggestion string
+	proxyPreflight     func(context.Context) error
+}
+
+func (application *Application) checkProxy(ctx context.Context) error {
+	if application.proxyPreflight != nil {
+		return application.proxyPreflight(ctx)
+	}
+	if err := proxycheck.Check(ctx); err != nil {
+		return fmt.Errorf("check multicast proxy availability: %w", err)
+	}
+	return nil
 }
 
 // Execute runs the udm-iptv root command against os.Args.
