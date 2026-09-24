@@ -178,15 +178,14 @@ func executeUninstall(ctx context.Context, actions uninstallActions) error {
 // packageName is the Debian package that ships this program.
 const packageName = "udm-iptv"
 
-// packageCommands are the external programs a delegated removal or upgrade runs.
+// packageCommands are the external programs a delegated removal runs.
 type packageCommands struct {
-	record  func(context.Context) (PackageRecord, error)
-	remove  func(ctx context.Context, action string, out, errOut io.Writer) error
-	install func(ctx context.Context, packagePath string, allowDowngrade bool, out, errOut io.Writer) error
+	record func(context.Context) (PackageRecord, error)
+	remove func(ctx context.Context, action string, out, errOut io.Writer) error
 }
 
 func systemPackageCommands() packageCommands {
-	return packageCommands{record: QueryPackage, remove: aptRemove, install: aptInstall}
+	return packageCommands{record: QueryPackage, remove: aptRemove}
 }
 
 // PackageRecord is what dpkg holds for the udm-iptv package: its status word
@@ -247,7 +246,9 @@ func aptRemove(ctx context.Context, action string, out, errOut io.Writer) error 
 	return runApt(ctx, out, errOut, false, action, "-y", packageName)
 }
 
-func aptInstall(ctx context.Context, packagePath string, allowDowngrade bool, out, errOut io.Writer) error {
+// InstallPackage delegates a verified local package to apt. Its maintainer
+// scripts acquire the installation lock; callers must not hold that lock.
+func InstallPackage(ctx context.Context, packagePath string, allowDowngrade bool, out, errOut io.Writer) error {
 	arguments := []string{"install", "-y"}
 	if allowDowngrade {
 		arguments = append(arguments, "--allow-downgrades")

@@ -82,7 +82,7 @@ func TestPurgeRemovesOwnedStateOnly(t *testing.T) {
 
 func TestRejectUnsafeStatePaths(t *testing.T) {
 	for _, path := range []string{"", ".", "relative", "/", "/data", "/tmp", "/etc", "/usr/local", "/var/lib", "/home/user", "/root", "/data/iptv/..", "/data//iptv"} {
-		if err := validateStatePath(path); err == nil {
+		if err := ValidateStatePath(path); err == nil {
 			t.Errorf("unsafe directory accepted: %q", path)
 		}
 		plan := testPlan()

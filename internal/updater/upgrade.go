@@ -1,4 +1,4 @@
-package installer
+package updater
 
 import (
 	"bufio"
@@ -29,6 +29,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/kjanat/udm-iptv/internal/filemode"
+	"github.com/kjanat/udm-iptv/internal/installer"
 	"github.com/kjanat/udm-iptv/internal/proxycheck"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
@@ -144,12 +145,12 @@ func (application *Upgrader) describe(candidate upgradeCandidate, plan upgradePl
 }
 
 func (application *Upgrader) prepare(ctx context.Context, options UpgradeOptions) (upgradeCandidate, upgradePlan, error) {
-	if err := validateStatePath(application.StateDir); err != nil {
-		return upgradeCandidate{}, upgradePlan{}, err
+	if err := installer.ValidateStatePath(application.StateDir); err != nil {
+		return upgradeCandidate{}, upgradePlan{}, fmt.Errorf("validate upgrade state directory: %w", err)
 	}
 	installed := application.installed
 	if installed == nil {
-		installed = Installed
+		installed = installer.Installed
 	}
 	if !installed(application.StateDir) {
 		return upgradeCandidate{}, upgradePlan{}, errNotInstalled
@@ -214,7 +215,7 @@ type upgradePlan struct {
 // installation, with what dpkg recorded. An executable swapped in behind
 // dpkg's back leaves the record behind, and the package path repairs it
 // without being forced.
-func planUpgrade(running, candidate string, record PackageRecord, force bool) (upgradePlan, error) {
+func planUpgrade(running, candidate string, record installer.PackageRecord, force bool) (upgradePlan, error) {
 	if !force && olderThan(candidate, running) {
 		return upgradePlan{}, fmt.Errorf("%w: udm-iptv %s is running, which is newer than %s; use --force to install it anyway", errDowngrade, running, candidate)
 	}
@@ -239,9 +240,9 @@ func planUpgrade(running, candidate string, record PackageRecord, force bool) (u
 
 // applyStandaloneRelease replaces the executable this program installed.
 func (application *Upgrader) applyStandaloneRelease(ctx context.Context, candidate upgradeCandidate) (result error) {
-	release, err := AcquireLock(application.StateDir)
+	release, err := installer.AcquireLock(application.StateDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("lock standalone upgrade: %w", err)
 	}
 	defer func() { result = errors.Join(result, release()) }()
 
@@ -311,7 +312,7 @@ func candidateAssets(candidate upgradeCandidate, viaPackage bool) (releaseAssets
 
 func (application *Upgrader) packageCommands() packageCommands {
 	if application.packages.record == nil {
-		return systemPackageCommands()
+		return packageCommands{record: installer.QueryPackage, install: installer.InstallPackage}
 	}
 
 	return application.packages

@@ -20,7 +20,7 @@ var errOperationInProgress = errors.New("another udm-iptv installation, upgrade,
 // script that apt runs on behalf of a locked operation fails instead of
 // waiting on its parent. The returned function releases the lock.
 func AcquireLock(stateDir string) (func() error, error) {
-	if err := validateStatePath(stateDir); err != nil {
+	if err := ValidateStatePath(stateDir); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(stateDir, filemode.PrivateDir); err != nil {

@@ -137,7 +137,7 @@ use-field-name = false
 ignored-fields = ["SHA256", "Links", "Embedded"]
 
 [[linters.settings.tagliatelle.case.overrides]]
-pkg            = "internal/installer"
+pkg            = "internal/updater"
 use-field-name = false
 ignored-fields = ["BundleURL"]
 
