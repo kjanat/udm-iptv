@@ -68,8 +68,8 @@ func assertPendingLegacyNetwork(t *testing.T, plan Plan) {
 	}
 }
 
-// The live interface must be the one v4 recorded. The v5 configuration may
-// differ from v4: that is the corrected-configuration path, not a mismatch.
+// The live interface must be the one v4 recorded. A v5 configuration that
+// differs from v4 is a corrected configuration.
 func TestLegacyNetworkMigrationRejectsInterfacesV4DidNotCreate(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -97,8 +97,8 @@ func TestLegacyNetworkMigrationRejectsInterfacesV4DidNotCreate(t *testing.T) {
 	}
 }
 
-// A v5 configuration that keeps the v4 name adopts the v4 interface, whatever
-// parent or VLAN v5 chose: daemon startup replaces an adopted interface.
+// A v5 configuration reusing the v4 name adopts the v4 interface, whatever
+// parent or VLAN v5 chose. Daemon startup replaces an adopted interface.
 func TestLegacyNetworkMigrationAdoptsWhenTheNameIsReused(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -214,6 +214,34 @@ func TestLegacyNetworkMigrationRetryAfterHandoverOrReplacement(t *testing.T) {
 	}}
 	if err := migrateLegacyNetwork(plan, links); err != nil {
 		t.Fatalf("stale provenance without a live interface blocked the install: %v", err)
+	}
+}
+
+// An interface handed over on an earlier attempt is ours; a v5 configuration
+// that then drops its name leaves nothing to replace it, so it goes.
+func TestLegacyNetworkMigrationRemovesAHandedOverInterfaceV5Renamed(t *testing.T) {
+	t.Parallel()
+	plan := legacyNetworkPlan(t, legacyNetworkConfig)
+	plan.Config.WAN.VLANInterface = "other"
+	vlan := &netlink.Vlan{Name: "iptv", Index: 20, ParentIndex: 8, VlanId: 4, Alias: legacyNetworkAlias}
+	links := legacyTestLinks(t, vlan)
+	handover, err := inspectLegacyNetwork(plan, links)
+	if err != nil || handover.link != vlan || handover.adopt {
+		t.Fatalf("inspection = %+v, %v; want removal", handover, err)
+	}
+	removed := 0
+	links.remove = func(link netlink.Link) error {
+		if link != vlan {
+			t.Fatalf("unexpected removal: %v", link)
+		}
+		removed++
+		return nil
+	}
+	if err := migrateLegacyNetwork(plan, links); err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removal performed %d times", removed)
 	}
 }
 

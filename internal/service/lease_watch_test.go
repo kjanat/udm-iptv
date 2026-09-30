@@ -28,10 +28,18 @@ type addressWatch struct {
 
 func startAddressWatch(t *testing.T, present int) *addressWatch {
 	t.Helper()
+	return startAddressWatchWith(t, present, false)
+}
+
+func startAddressWatchWith(t *testing.T, present int, armed bool) *addressWatch {
+	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	watch := &addressWatch{updates: make(chan netlink.AddrUpdate), failures: make(chan error, 1), present: present, cancel: cancel}
 	supervisor := &leaseAddressWatch{linkIndex: 7, remaining: func() (int, error) { return watch.present, nil }, timeout: watchTimeout}
+	if armed {
+		supervisor.arm()
+	}
 	go supervisor.run(ctx, watch.updates, watch.failures)
 
 	return watch
@@ -98,4 +106,17 @@ func TestLeaseAddressWatchStopsWithTheRun(t *testing.T) {
 	closed := startAddressWatch(t, 0)
 	close(closed.updates)
 	closed.expectFailure(t, errAddressSubscriptionClosed)
+}
+
+// A deletion that happened before the subscription is never delivered, so
+// the watch checks the link once when it starts.
+func TestLeaseAddressWatchChecksTheLinkAtStart(t *testing.T) {
+	t.Parallel()
+	bare := startAddressWatchWith(t, 0, true)
+	bare.expectFailure(t, errIPTVAddressLost)
+	held := startAddressWatchWith(t, 1, true)
+	held.expectQuiet(t)
+	restored := startAddressWatchWith(t, 0, true)
+	restored.updates <- addressUpdate(7, "10.207.101.2", true)
+	restored.expectQuiet(t)
 }

@@ -216,10 +216,9 @@ func (application *Daemon) supervise(ctx context.Context, sources supervised) er
 	}
 }
 
-// stopping reports whether the daemon is shutting down, which makes a
-// supervised process ending an expected event rather than a failure. A stop
-// signal delivered to the whole process group reaches the children before
-// this process observes it, so a child's exit waits signalGrace for it.
+// stopping reports whether the daemon is shutting down. A stop signal sent
+// to the whole process group reaches the children first; a child's exit
+// therefore waits signalGrace for this process to observe the signal.
 func stopping(ctx context.Context) bool {
 	if ctx.Err() != nil {
 		return true

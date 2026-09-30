@@ -30,7 +30,8 @@ func systemLegacyNetworkLinks() legacyNetworkLinks {
 
 // legacyHandover is what activation does with the interface the v4 service
 // left behind: adopt it when v5 reuses its name, so startup replaces it;
-// otherwise remove it with its stale addresses and routes.
+// otherwise remove it with its stale addresses and routes. An interface that
+// already carries our alias is ours either way.
 type legacyHandover struct {
 	link  netlink.Link
 	adopt bool
@@ -41,15 +42,9 @@ type legacyHandover struct {
 // nothing. The pending file survives until installation health and cleanup
 // succeed.
 func inspectLegacyNetwork(plan Plan, links legacyNetworkLinks) (legacyHandover, error) {
-	previous, err := config.ImportLegacy(filepath.Join(plan.StateDir, legacyNetworkPending))
-	if errors.Is(err, os.ErrNotExist) {
-		return legacyHandover{}, nil
-	}
-	if err != nil {
-		return legacyHandover{}, fmt.Errorf("read pending v4 network migration: %w", err)
-	}
-	if previous.WAN.VLAN == 0 {
-		return legacyHandover{}, nil // An untagged uplink remains borrowed, never adopted.
+	previous, pending, err := pendingLegacyNetwork(plan.StateDir)
+	if err != nil || !pending {
+		return legacyHandover{}, err
 	}
 	name := previous.WAN.VLANInterface
 	link, err := links.find(name)
@@ -59,8 +54,13 @@ func inspectLegacyNetwork(plan Plan, links legacyNetworkLinks) (legacyHandover, 
 	if err != nil {
 		return legacyHandover{}, fmt.Errorf("inspect legacy IPTV interface %s: %w", name, err)
 	}
+	adopt := plan.Config.WAN.VLAN > 0 && plan.Config.WAN.VLANInterface == name
 	if link.Attrs().Alias == legacyNetworkAlias {
-		return legacyHandover{}, nil
+		if adopt {
+			return legacyHandover{}, nil
+		}
+
+		return legacyHandover{link: link}, nil
 	}
 	parent, err := links.find(previous.WAN.Interface)
 	if err != nil {
@@ -70,9 +70,22 @@ func inspectLegacyNetwork(plan Plan, links legacyNetworkLinks) (legacyHandover, 
 		return legacyHandover{}, fmt.Errorf("%w: expected %s VLAN %d on %s", errLegacyNetworkMismatch,
 			name, previous.WAN.VLAN, previous.WAN.Interface)
 	}
-	adopt := plan.Config.WAN.VLAN > 0 && plan.Config.WAN.VLANInterface == name
 
 	return legacyHandover{link: link, adopt: adopt}, nil
+}
+
+// pendingLegacyNetwork reads the v4 provenance awaiting migration. An
+// untagged uplink remains borrowed, never adopted.
+func pendingLegacyNetwork(stateDir string) (config.Config, bool, error) {
+	previous, err := config.ImportLegacy(filepath.Join(stateDir, legacyNetworkPending))
+	if errors.Is(err, os.ErrNotExist) {
+		return config.Config{}, false, nil
+	}
+	if err != nil {
+		return config.Config{}, false, fmt.Errorf("read pending v4 network migration: %w", err)
+	}
+
+	return previous, previous.WAN.VLAN != 0, nil
 }
 
 // migrateLegacyNetwork performs the handover inspectLegacyNetwork decided.

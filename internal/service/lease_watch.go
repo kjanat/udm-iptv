@@ -36,6 +36,7 @@ func watchLeaseAddress(ctx context.Context, link netlink.Link) (<-chan error, er
 		return len(addresses), nil
 	}
 	watch := &leaseAddressWatch{linkIndex: link.Attrs().Index, remaining: remaining, timeout: dhcpRecoveryTimeout}
+	watch.arm()
 	go watch.run(ctx, updates, failures)
 
 	return failures, nil
@@ -89,6 +90,12 @@ func (watch *leaseAddressWatch) observe(update netlink.AddrUpdate) {
 
 		return
 	}
+	watch.arm()
+}
+
+// arm starts the recovery timer when the link holds no IPv4 address. Netlink
+// does not replay a deletion that happened before the subscription.
+func (watch *leaseAddressWatch) arm() {
 	if watch.lost != nil {
 		return
 	}
