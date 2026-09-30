@@ -105,6 +105,55 @@ test('flags style tells at any length', () => {
 	assert.deepEqual(groups.map(group => group.reasons), [['"X rather than Y"']]);
 });
 
+test('flags hedging in comments and Markdown', () => {
+	const comment = groupsFromPatch(
+		'rule.go',
+		`\
+@@ -0,0 +1,2 @@
++\t// The lease may not be present yet.
++\treturn lease
+`,
+	);
+	const prose = groupsFromPatch(
+		'docs/status.md',
+		`\
+@@ -0,0 +1,1 @@
++Playback remains unknown until a receiver reports.
+`,
+	);
+
+	assert.deepEqual(comment.map(group => group.reasons), [['hedge']]);
+	assert.deepEqual(prose.map(group => group.reasons), [['hedge']]);
+});
+
+test('flags tells inside Go string literals', () => {
+	const groups = groupsFromPatch(
+		'status.go',
+		`\
+@@ -0,0 +1,3 @@
++\tmatched := "VLAN configuration matches (DHCP and playback not verified)"
++\tname := fmt.Sprintf("%s on %s", link, parent)
++\treturn matched + name
+`,
+	);
+
+	assert.deepEqual(groups.map(group => [group.start, group.reasons]), [[1, ['hedge']]]);
+});
+
+test('ignores Go struct tags and strings without tells', () => {
+	const groups = groupsFromPatch(
+		'status.go',
+		`\
+@@ -0,0 +1,3 @@
++type vlanCheck struct {
++\tStatus string \`json:"status,omitempty"\`
++}
+`,
+	);
+
+	assert.deepEqual(groups, []);
+});
+
 test('scans Markdown prose but skips fenced code', () => {
 	const groups = groupsFromPatch(
 		'docs/checks.md',

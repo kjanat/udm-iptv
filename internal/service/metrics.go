@@ -7,7 +7,9 @@ import (
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
 
+	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/mroute"
+	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/kjanat/udm-iptv/internal/telemetry"
 )
 
@@ -20,7 +22,7 @@ const (
 	snapshotTimeout = 10 * time.Second
 )
 
-func (application *Daemon) startTelemetryMetrics(parent context.Context) func() {
+func (application *Daemon) startTelemetryMetrics(parent context.Context, value config.Config) func() {
 	if !application.Monitor.MetricsEnabled() && !application.Monitor.ResearchEnabled() {
 		return func() {}
 	}
@@ -42,6 +44,7 @@ func (application *Daemon) startTelemetryMetrics(parent context.Context) func() 
 				}
 				application.Monitor.Gauge(ctx, "daemon.uptime", time.Since(started).Seconds())
 				application.meterMulticast(ctx)
+				application.meterNAT(ctx, value)
 				application.sampleSystemd(ctx, started, &state)
 			}
 		}
@@ -106,6 +109,31 @@ func (application *Daemon) meterMulticast(ctx context.Context) {
 		return
 	}
 	reportMulticast(ctx, application.Monitor, table)
+}
+
+// meterNAT reports the unicast traffic the IPTV NAT rules carried, per
+// destination, so a receiver's provisioning requests are visible next to
+// the multicast counters.
+func (application *Daemon) meterNAT(ctx context.Context, value config.Config) {
+	rules, err := network.ListNAT(value)
+	if err != nil {
+		return
+	}
+	reportNAT(ctx, application.Monitor, rules)
+}
+
+func reportNAT(ctx context.Context, reporter metricReporter, rules []network.NATRule) {
+	var packets, bytes uint64
+	for _, rule := range rules {
+		if !rule.Managed {
+			continue
+		}
+		packets += rule.Packets
+		bytes += rule.Bytes
+		reporter.Gauge(ctx, "nat.destination.packets", float64(rule.Packets), telemetry.String("destination", rule.Destination))
+	}
+	reporter.Gauge(ctx, "nat.packets", float64(packets))
+	reporter.Gauge(ctx, "nat.bytes", float64(bytes))
 }
 
 type metricReporter interface {

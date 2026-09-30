@@ -38,6 +38,7 @@ type Provider struct {
 	Countries   []string
 	Profiles    []string
 	PTRSuffixes []string
+	ASNs        []string
 }
 
 // Catalog is the country → provider → profile hierarchy the wizard walks.
@@ -94,6 +95,7 @@ type providerDefinition struct {
 	Countries   []string `json:"countries"`
 	Profiles    []string `json:"profiles"`
 	PTRSuffixes []string `json:"ptrSuffixes"`
+	ASNs        []string `json:"asns"`
 }
 
 type profileDefinition struct {
@@ -158,12 +160,19 @@ func (document catalogDocument) providers() ([]Provider, map[string]bool, map[st
 	usedCountries := map[string]bool{}
 	usedProfiles := map[string]bool{}
 	suffixOwners := map[string]string{}
+	systemOwners := map[string]string{}
 	for id, definition := range document.Providers {
 		for _, suffix := range definition.PTRSuffixes {
 			if owner, taken := suffixOwners[suffix]; taken {
 				return nil, nil, nil, fmt.Errorf("%w: PTR suffix %s belongs to both %s and %s", errCatalogReference, suffix, owner, id)
 			}
 			suffixOwners[suffix] = id
+		}
+		for _, asn := range definition.ASNs {
+			if owner, taken := systemOwners[asn]; taken {
+				return nil, nil, nil, fmt.Errorf("%w: %s belongs to both %s and %s", errCatalogReference, asn, owner, id)
+			}
+			systemOwners[asn] = id
 		}
 		for _, code := range definition.Countries {
 			if _, found := document.Countries[code]; !found {
@@ -177,7 +186,7 @@ func (document catalogDocument) providers() ([]Provider, map[string]bool, map[st
 			}
 			usedProfiles[profile] = true
 		}
-		providers = append(providers, Provider{ID: id, Name: definition.Name, Countries: definition.Countries, Profiles: definition.Profiles, PTRSuffixes: definition.PTRSuffixes})
+		providers = append(providers, Provider{ID: id, Name: definition.Name, Countries: definition.Countries, Profiles: definition.Profiles, PTRSuffixes: definition.PTRSuffixes, ASNs: definition.ASNs})
 	}
 
 	return providers, usedCountries, usedProfiles, nil
@@ -247,6 +256,17 @@ func (catalog Catalog) ProviderByPointerName(name string) (Provider, bool) {
 			if name == suffix || strings.HasSuffix(name, "."+suffix) {
 				return provider, true
 			}
+		}
+	}
+
+	return Provider{}, false
+}
+
+// ProviderByASN finds the provider that lists the autonomous system.
+func (catalog Catalog) ProviderByASN(asn string) (Provider, bool) {
+	for _, provider := range catalog.Providers {
+		if slices.Contains(provider.ASNs, asn) {
+			return provider, true
 		}
 	}
 

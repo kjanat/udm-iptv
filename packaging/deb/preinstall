@@ -8,6 +8,13 @@ if [ -f /etc/udm-iptv.conf ] && [ ! -f "${state}/config.json" ]; then
 	chmod 0600 "${state}/legacy.conf"
 fi
 
+# dpkg unpacks the new executable over the old one before postinst can copy it.
+if [ "${1:-}" = upgrade ] && [ -x "${state}/bin/udm-iptv" ] && [ ! -L "${state}/bin/udm-iptv" ]; then
+	previous=$(mktemp "${state}/bin/.udm-iptv.previous-XXXXXX")
+	cp -p "${state}/bin/udm-iptv" "${previous}"
+	mv "${previous}" "${state}/bin/.udm-iptv.previous"
+fi
+
 # dpkg runs the new preinst before unpacking it. Stop v4 here while its
 # ExecStop helper still exists; v4's generated prerm does not stop on upgrade.
 case "${1:-}:${2:-}" in

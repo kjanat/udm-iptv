@@ -387,7 +387,7 @@ func (r *Reporter) filterResearchLog(log *sentry.Log) *sentry.Log {
 	if !r.networkEnabled() {
 		report.Network = nil
 	} else if report.Network != nil {
-		clean := cleanIdentity(*report.Network)
+		clean := cleanIdentity(config.DefaultCatalog(), *report.Network)
 		report.Network = &clean
 	}
 	payload, err := json.Marshal(report)

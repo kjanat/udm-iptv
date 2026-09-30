@@ -34,14 +34,21 @@ type recoveryPath struct {
 	present bool
 }
 
-// Begin snapshots standalone replacements before any installation stage mutates
-// them. Debian owns package upgrades and their recovery, so they are excluded.
+// previousExecutable is where the Debian preinst keeps the executable dpkg
+// is about to replace, since postinst runs only after the new one is in place.
+func previousExecutable(plan Plan) string {
+	return filepath.Join(plan.StateDir, "bin", ".udm-iptv.previous")
+}
+
+// Begin snapshots a replaced installation before any stage mutates it. A
+// package upgrade restores the executable from the preinst's copy; without
+// that copy there is nothing to go back to.
 func (backend SystemBackend) Begin(ctx context.Context, plan Plan) (InstallationTransaction, error) {
 	if !plan.Replace || !Installed(plan.StateDir) {
 		return InstallationTransaction{}, nil
 	}
-	packageRecord, err := QueryPackage(ctx)
-	if err != nil || packageRecord.Owned() {
+	sources, recoverable, err := recoverySources(ctx, plan)
+	if err != nil || !recoverable {
 		return InstallationTransaction{}, err
 	}
 	paths := []string{
@@ -50,29 +57,64 @@ func (backend SystemBackend) Begin(ctx context.Context, plan Plan) (Installation
 		filepath.Join(plan.StateDir, "runtime"),
 		"/etc/systemd/system/multi-user.target.wants/udm-iptv.service",
 	}
-	snapshot, err := snapshotInstallation(plan.StateDir, paths)
+	snapshot, err := snapshotInstallation(plan.StateDir, paths, sources)
 	if err != nil {
 		return InstallationTransaction{}, err
 	}
 	return InstallationTransaction{finish: func(ctx context.Context, cause error) error {
-		return snapshot.finish(ctx, cause, stopReplacementService, backend.recoverInstallation)
+		err := snapshot.finish(ctx, cause, stopReplacementService, backend.recoverInstallation)
+		for _, source := range sources {
+			if removeErr := os.Remove(source); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, fmt.Errorf("remove the previous executable copy %s: %w", source, removeErr))
+			}
+		}
+		return err
 	}}, nil
 }
 
-func snapshotInstallation(stateDir string, paths []string) (installationSnapshot, error) {
+// recoverySources says where a replaced file is copied from when that is
+// not its own path. A package upgrade without the preinst's copy has no
+// executable to go back to.
+func recoverySources(ctx context.Context, plan Plan) (map[string]string, bool, error) {
+	packageRecord, err := QueryPackage(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	sources := map[string]string{}
+	if !packageRecord.Owned() {
+		return sources, true, nil
+	}
+	previous := previousExecutable(plan)
+	if _, err := os.Stat(previous); errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, fmt.Errorf("inspect the previous executable %s: %w", previous, err)
+	}
+	sources[installedExecutable(plan)] = previous
+
+	return sources, true, nil
+}
+
+// snapshotInstallation copies each path aside. A path with an entry in
+// sources is copied from there instead, and restored to the path.
+func snapshotInstallation(stateDir string, paths []string, sources map[string]string) (installationSnapshot, error) {
 	directory, err := os.MkdirTemp(stateDir, ".install-recovery-")
 	if err != nil {
 		return installationSnapshot{}, fmt.Errorf("create installation recovery directory: %w", err)
 	}
 	snapshot := installationSnapshot{directory: directory}
 	for index, path := range paths {
-		info, err := os.Lstat(path)
+		source := path
+		if replacement, ok := sources[path]; ok {
+			source = replacement
+		}
+		info, err := os.Lstat(source)
 		present := !errors.Is(err, os.ErrNotExist)
 		if err == nil && info.IsDir() && path != filepath.Join(stateDir, "runtime") {
 			return installationSnapshot{}, errors.Join(fmt.Errorf("%w: %s", errStateFileIsDirectory, path), os.RemoveAll(directory))
 		}
 		if present {
-			err = copyRecoveryPath(path, snapshot.entry(index))
+			err = copyRecoveryPath(source, snapshot.entry(index))
 		}
 		if present && err != nil {
 			return installationSnapshot{}, errors.Join(err, os.RemoveAll(directory))

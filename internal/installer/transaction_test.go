@@ -23,7 +23,7 @@ func TestInstallationSnapshotRestoresFilesLinksAndRuntime(t *testing.T) {
 	if err := os.Symlink("old-generation", filepath.Join(paths[3], "improxy")); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := snapshotInstallation(directory, paths)
+	snapshot, err := snapshotInstallation(directory, paths, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,12 +91,31 @@ func assertRecoveryContext(ctx context.Context, t *testing.T) {
 	}
 }
 
+// dpkg has already replaced the executable when postinst runs, so a package
+// upgrade restores the copy preinst kept.
+func TestInstallationSnapshotRestoresTheRecordedSource(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	binary, previous := filepath.Join(directory, "binary"), filepath.Join(directory, ".udm-iptv.previous")
+	writeRecoveryFixture(t, binary, "rejected", filemode.Executable)
+	writeRecoveryFixture(t, previous, "previous", filemode.Executable)
+	snapshot, err := snapshotInstallation(directory, []string{binary}, map[string]string{binary: previous})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nothing := func(context.Context) error { return nil }
+	if err := snapshot.finish(t.Context(), errInjectedPlanStep, nothing, nothing); !errors.Is(err, errInjectedPlanStep) {
+		t.Fatal(err)
+	}
+	assertRecoveryFixture(t, binary, "previous", filemode.Executable)
+}
+
 func TestFailedRecoveryKeepsSnapshot(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "binary")
 	writeRecoveryFixture(t, path, "previous", filemode.Executable)
-	snapshot, err := snapshotInstallation(directory, []string{path})
+	snapshot, err := snapshotInstallation(directory, []string{path}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +136,7 @@ func TestSuccessfulReplacementDiscardsSnapshotWithoutRecovery(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "binary")
 	writeRecoveryFixture(t, path, "previous", filemode.Executable)
-	snapshot, err := snapshotInstallation(directory, []string{path})
+	snapshot, err := snapshotInstallation(directory, []string{path}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +159,7 @@ func TestInstallationSnapshotRejectsUnexpectedDirectory(t *testing.T) {
 	directory, unrelated := t.TempDir(), t.TempDir()
 	path := filepath.Join(unrelated, "notes")
 	writeRecoveryFixture(t, path, "unrelated", filemode.PrivateFile)
-	if _, err := snapshotInstallation(directory, []string{unrelated}); !errors.Is(err, errStateFileIsDirectory) {
+	if _, err := snapshotInstallation(directory, []string{unrelated}, nil); !errors.Is(err, errStateFileIsDirectory) {
 		t.Fatalf("accepted unrelated directory as a managed file: %v", err)
 	}
 	assertRecoveryFixture(t, path, "unrelated", filemode.PrivateFile)

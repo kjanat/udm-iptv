@@ -25,6 +25,7 @@ fi
 # terminal to ask for them. Leave IPTV unconfigured rather than saving the
 # defaults of whichever profile the draft happened to hold.
 if [ "${configured}" = false ] && [ "${profile}" = custom ]; then
+	rm -f /data/udm-iptv/bin/.udm-iptv.previous
 	mkdir -p "$(dirname "${command}")"
 	ln -sf "${binary}" "${command}"
 	echo "udm-iptv is installed but IPTV is not configured yet."

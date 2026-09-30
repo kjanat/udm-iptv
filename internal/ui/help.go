@@ -110,7 +110,7 @@ These reports are not anonymous.
 
 Every report carries a random installation ID that stays the same, so your settings history and your failures are linked to one router.
 
-Network identity is on by default. It adds your full public IP address and its reverse-DNS hostname, and the lookup contacts ipify and your DNS resolver.
+Network identity is on by default. It adds your full public IP address, the autonomous system announcing it and its reverse-DNS hostname. The address comes from your WAN connection, or from ipify when that address is not public; the provider match is built into the program, and your DNS resolver is asked only when no built-in network matches.
 
 Never sent: passwords, packet captures.
 

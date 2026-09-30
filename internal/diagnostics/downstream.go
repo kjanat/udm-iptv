@@ -171,17 +171,58 @@ func extraProxyPIDs(ours int) ([]int, error) {
 	return extra, readErrors
 }
 
-func formatReceivers(usage *MulticastInfo, groups *int) string {
+func formatReceivers(usage *MulticastInfo, receivers string, groups *int) string {
 	routes := "multicast routes unavailable"
 	if usage != nil {
 		routes = fmt.Sprintf("%d multicast routes (%d packets)", usage.Routes, usage.Packets)
 	}
-	Membership := "router's own LAN group memberships unavailable"
+	membership := "router's own LAN group memberships unavailable"
 	if groups != nil {
-		Membership = strconv.Itoa(*groups) + " LAN groups joined by the router itself"
+		membership = strconv.Itoa(*groups) + " LAN groups joined by the router itself"
 	}
 
-	return routes + ", " + Membership
+	return routes + "; receivers: " + receivers + "; " + membership
+}
+
+// receiverSummary counts, per LAN bridge, the groups its member ports joined
+// according to the bridge MDB. The bridge's own host entry is left out.
+func receiverSummary(memberships *[]Membership, lan []string) string {
+	if memberships == nil {
+		return "bridge MDB unavailable"
+	}
+	parts := make([]string, 0, len(lan))
+	for _, bridge := range lan {
+		groups, ports := map[string]bool{}, map[string]bool{}
+		for _, entry := range *memberships {
+			if entry.Bridge != bridge || entry.Port == bridge || linkLocalGroup(entry.Group) {
+				continue
+			}
+			groups[entry.Group] = true
+			ports[entry.Port] = true
+		}
+		if len(groups) == 0 {
+			parts = append(parts, bridge+": none")
+
+			continue
+		}
+		parts = append(parts, bridge+": "+plural(len(groups), "group")+" on "+plural(len(ports), "port"))
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+func linkLocalGroup(group string) bool {
+	address, err := netip.ParseAddr(group)
+
+	return err == nil && address.IsLinkLocalMulticast()
+}
+
+func plural(count int, noun string) string {
+	if count == 1 {
+		return "1 " + noun
+	}
+
+	return strconv.Itoa(count) + " " + noun + "s"
 }
 
 func countLANIGMPGroups(table string, lan []string) int {

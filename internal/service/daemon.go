@@ -118,7 +118,7 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	defer removeIgnoringError(runtimeStatePath)
 
 	return application.supervise(ctx, supervised{
-		program: value.Proxy.Program, proxy: process, dhcp: dhcp, network: networkFailure,
+		program: value.Proxy.Program, config: value, proxy: process, dhcp: dhcp, network: networkFailure,
 	})
 }
 
@@ -180,6 +180,7 @@ func (application *Daemon) logRemovedNAT(ctx context.Context, removed []network.
 // supervised names the ways a started run can end.
 type supervised struct {
 	program string
+	config  config.Config
 	proxy   *managedProcess
 	dhcp    *managedProcess
 	network <-chan error
@@ -200,7 +201,7 @@ func (application *Daemon) supervise(ctx context.Context, sources supervised) er
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
 	_, _ = sdnotify.SdNotify(false, "STATUS=IPTV proxy is running")
 	application.Monitor.Ready(ctx)
-	stopMetrics := application.startTelemetryMetrics(ctx)
+	stopMetrics := application.startTelemetryMetrics(ctx, sources.config)
 	defer stopMetrics()
 	select {
 	case <-ctx.Done():

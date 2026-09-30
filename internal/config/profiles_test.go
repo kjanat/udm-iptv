@@ -119,6 +119,8 @@ func profileSchemaRejections() map[string]profileEdit {
 		"provider no profiles":      func(d, _, _ map[string]any) { providerOf(d)["profiles"] = []string{} },
 		"provider dangling profile": func(d, _, _ map[string]any) { providerOf(d)["profiles"] = []string{"nope"} },
 		"provider dangling country": func(d, _, _ map[string]any) { providerOf(d)["countries"] = []string{"ZZ"} },
+		"provider bare AS number":   func(d, _, _ map[string]any) { providerOf(d)["asns"] = []string{"1136"} },
+		"provider empty asns":       func(d, _, _ map[string]any) { providerOf(d)["asns"] = []string{} },
 		"orphan profile": func(d, p, _ map[string]any) {
 			profiles, _ := d["profiles"].(map[string]any)
 			profiles["orphan"] = p

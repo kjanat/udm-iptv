@@ -27,7 +27,7 @@ The reported TV freezes still have no confirmed diagnosis.
       Native proxy and TV playback remain “not checked”.
       Regression tests: `internal/diagnostics/downstream_test.go`.
       Background: fabianishere/udm-iptv#408 and fabianishere/udm-iptv#247.
-- [x] **Suggest providers using bounded public-IP/PTR discovery.**
+- [x] **Suggest providers from the WAN address and built-in provider networks, with bounded ipify/PTR fallback.**
       First interactive setup only; suggestions require user confirmation.
       Saved settings, explicit profiles and previews remain untouched.
       Unknown providers remain manual; network-reporting opt-out prevents discovery.

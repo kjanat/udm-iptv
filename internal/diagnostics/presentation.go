@@ -55,8 +55,8 @@ func RenderSnapshotStyled(value Snapshot, style func(ReportRole, string) string)
 	output.WriteString(r.field("LAN interfaces", strings.Join(value.Config.LANInterfaces, ", ")))
 	output.WriteString(r.service(value.Service))
 	output.WriteString(r.proxies(value))
-	output.WriteString(r.field("IGMP version", fmt.Sprintf("%d, MLD: %s, quickleave enabled: %t, proxy debug logging: %t",
-		value.Config.IGMPVersion, mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug)))
+	output.WriteString(r.field("IGMP version", fmt.Sprintf("%s, MLD: %s, quickleave enabled: %t, proxy debug logging: %t",
+		igmpVersionText(value.Config), mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug)))
 	output.WriteString(r.network(value.Network))
 	output.WriteString(r.field("Multicast routes", r.available(value.Multicast != nil, multicastSummary(value.Multicast))))
 	output.WriteString(renderMulticast(value.Multicast))
@@ -76,6 +76,15 @@ func RenderSnapshotStyled(value Snapshot, style func(ReportRole, string) string)
 	output.WriteString(r.collectionErrors("service", value.Service.Errors))
 	output.WriteString(r.collectionErrors("network", value.Network.Errors))
 	return output.String()
+}
+
+func igmpVersionText(value configSummary) string {
+	if value.IGMPVersionEffective == 0 || value.IGMPVersionEffective == value.IGMPVersion {
+		return strconv.Itoa(value.IGMPVersion)
+	}
+
+	return fmt.Sprintf("%d configured, %d effective (%s sends IGMPv%d queries)",
+		value.IGMPVersion, value.IGMPVersionEffective, value.Proxy, value.IGMPVersionEffective)
 }
 
 func (r reportRenderer) configuration(value configSummary) string {

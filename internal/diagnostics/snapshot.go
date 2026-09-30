@@ -56,26 +56,28 @@ type Snapshot struct {
 }
 
 type configSummary struct {
-	MACAddress        string   `json:"vlanMAC,omitempty"`
-	StaticCIDR        string   `json:"staticAddress,omitempty"`
-	DHCPOptionValues  []string `json:"dhcpOptions,omitempty"`
-	Profile           string   `json:"profile"`
-	WANInterface      string   `json:"wanInterface"`
-	VLAN              int      `json:"vlan"`
-	IPTVInterface     string   `json:"iptvInterface"`
-	CustomMAC         bool     `json:"customMAC"`
-	DHCP              bool     `json:"dhcp"`
-	DHCPOptions       bool     `json:"dhcpOptionsConfigured"`
-	StaticAddress     bool     `json:"staticAddressConfigured"`
-	DHCPRoutes        string   `json:"dhcpRoutes"`
-	NATDestinations   []string `json:"natDestinations"`
-	LANInterfaces     []string `json:"lanInterfaces"`
-	Proxy             string   `json:"proxy"`
-	IGMPVersion       int      `json:"igmpVersion"`
-	MLDVersion        int      `json:"mldVersion"`
-	QuickLeave        bool     `json:"quickLeave"`
-	Debug             bool     `json:"debug"`
-	ProxySourceRanges []string `json:"proxySourceRanges"`
+	MACAddress           string   `json:"vlanMAC,omitempty"`
+	StaticCIDR           string   `json:"staticAddress,omitempty"`
+	DHCPOptionValues     []string `json:"dhcpOptions,omitempty"`
+	Profile              string   `json:"profile"`
+	WANInterface         string   `json:"wanInterface"`
+	VLAN                 int      `json:"vlan"`
+	IPTVInterface        string   `json:"iptvInterface"`
+	CustomMAC            bool     `json:"customMAC"`
+	DHCP                 bool     `json:"dhcp"`
+	DHCPOptions          bool     `json:"dhcpOptionsConfigured"`
+	StaticAddress        bool     `json:"staticAddressConfigured"`
+	DHCPRoutes           string   `json:"dhcpRoutes"`
+	NATDestinations      []string `json:"natDestinations"`
+	LANInterfaces        []string `json:"lanInterfaces"`
+	Proxy                string   `json:"proxy"`
+	IGMPVersion          int      `json:"igmpVersion"`
+	IGMPVersionEffective int      `json:"igmpVersionEffective"`
+	SourceRangesApplied  bool     `json:"sourceRangesApplied"`
+	MLDVersion           int      `json:"mldVersion"`
+	QuickLeave           bool     `json:"quickLeave"`
+	Debug                bool     `json:"debug"`
+	ProxySourceRanges    []string `json:"proxySourceRanges"`
 }
 
 type serviceStatus struct {
@@ -177,7 +179,7 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 	}
 	result.Switches = inspectSwitch(os.DirFS("/sys"), hardware.Firmware)
 	result.NativeProxy = inspectNativeProxy(ctx, result.Service.ProxyPID)
-	result.Playback = inspectReceivers(result.Multicast, value.LAN.Interfaces)
+	result.Playback = inspectReceivers(result.Multicast, result.Memberships, value.LAN.Interfaces)
 
 	return result, nil
 }
@@ -247,14 +249,15 @@ func inspectNativeProxy(ctx context.Context, ourPID int) string {
 	return text
 }
 
-func inspectReceivers(usage *MulticastInfo, lan []string) string {
+func inspectReceivers(usage *MulticastInfo, memberships *[]Membership, lan []string) string {
+	receivers := receiverSummary(memberships, lan)
 	data, err := os.ReadFile("/proc/net/igmp")
 	if err != nil {
-		return formatReceivers(usage, nil) + ": " + err.Error()
+		return formatReceivers(usage, receivers, nil) + ": " + err.Error()
 	}
 	groups := countLANIGMPGroups(string(data), lan)
 
-	return formatReceivers(usage, &groups)
+	return formatReceivers(usage, receivers, &groups)
 }
 
 // counterUnavailable keeps a failed read out of the counts, so an unreadable
@@ -465,9 +468,21 @@ func summarizeConfig(value config.Config) configSummary {
 		CustomMAC: value.WAN.VLANMAC != "", DHCP: value.WAN.DHCP, DHCPOptions: len(value.WAN.DHCPOptions) > 0, StaticAddress: value.WAN.StaticAddress != "",
 		DHCPRoutes: string(value.WAN.DHCPRoutes), NATDestinations: value.WAN.NATDestinations,
 		LANInterfaces: value.LAN.Interfaces, Proxy: value.Proxy.Program, IGMPVersion: value.Proxy.IGMPVersion, MLDVersion: value.Proxy.MLDVersion,
+		IGMPVersionEffective: effectiveIGMPVersion(value.Proxy), SourceRangesApplied: value.Proxy.Program == config.ProxyIgmpproxy && len(value.Proxy.SourceRanges) > 0,
 		QuickLeave: value.Proxy.QuickLeave, Debug: value.Proxy.Debug, ProxySourceRanges: value.Proxy.SourceRanges,
 	}
 }
+
+// igmpproxy builds every general query as IGMPv2 and has no version setting.
+func effectiveIGMPVersion(proxy config.Proxy) int {
+	if proxy.Program == config.ProxyIgmpproxy {
+		return igmpVersion2
+	}
+
+	return proxy.IGMPVersion
+}
+
+const igmpVersion2 = 2
 
 func inspectService(ctx context.Context) serviceStatus {
 	var status serviceStatus

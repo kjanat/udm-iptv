@@ -2,12 +2,14 @@ package diagnostics
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kjanat/udm-iptv/internal/config"
 	"github.com/kjanat/udm-iptv/internal/mroute"
 	"github.com/kjanat/udm-iptv/internal/network"
 	"github.com/kjanat/udm-iptv/internal/service"
@@ -41,14 +43,21 @@ func TestReadableDiagnosticsIncludeProxySettings(t *testing.T) {
 	t.Parallel()
 	for _, proxy := range []string{"improxy", "igmpproxy"} {
 		for _, enabled := range []bool{true, false} {
-			value := Snapshot{Config: configSummary{Proxy: proxy, IGMPVersion: 3, QuickLeave: enabled, Debug: enabled}, Service: serviceStatus{Proxy: proxy}}
+			settings := config.DefaultKPN()
+			settings.Proxy.Program, settings.Proxy.QuickLeave, settings.Proxy.Debug = proxy, enabled, enabled
+			value := Snapshot{Config: summarizeConfig(settings), Service: serviceStatus{Proxy: proxy}}
 			output := RenderSnapshot(value)
-			want := "IGMP version: 3, MLD: disabled, quickleave enabled: false, proxy debug logging: false"
-			if enabled {
-				want = "IGMP version: 3, MLD: disabled, quickleave enabled: true, proxy debug logging: true"
+			version := "3"
+			if proxy == "igmpproxy" {
+				version = "3 configured, 2 effective (igmpproxy sends IGMPv2 queries)"
 			}
+			want := fmt.Sprintf("IGMP version: %s, MLD: disabled, quickleave enabled: %t, proxy debug logging: %t", version, enabled, enabled)
 			if !strings.Contains(output, want) {
 				t.Fatalf("missing proxy settings: %s", output)
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil || !strings.Contains(string(encoded), fmt.Sprintf(`"igmpVersionEffective":%d`, effectiveIGMPVersion(settings.Proxy))) {
+				t.Fatalf("JSON lost the effective IGMP version: %s (%v)", encoded, err)
 			}
 			for _, kind := range []string{"initial", "final"} {
 				if !strings.Contains(RenderEvent(Event{Type: kind, Snapshot: &value}), want) {

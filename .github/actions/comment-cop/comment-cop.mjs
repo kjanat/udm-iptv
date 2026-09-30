@@ -62,6 +62,11 @@ const TELLS = [
 		'An explanation of a consequence or failure mode can be useful. Keep it when it documents a non-obvious constraint; otherwise state the behavior directly.',
 	],
 	[
+		'hedge',
+		/\b(?:not (?:yet )?verified|unverified|may (?:be|have|not|still|already)|might|possibly|probably|likely|appears? to|seems? to|cannot (?:be )?(?:confirm|verif|prov|establish)\w*|does not prove|remains? unknown|not (?:been )?(?:checked|proven|confirmed|established))\b/i,
+		'State the fact the code establishes. A qualifier such as "may" or "not verified" leaves the reader to guess what was checked.',
+	],
+	[
 		'paste artifact',
 		/[“”‘’]|[\u00A0\u00AD\u200B-\u200D\uFEFF]/,
 		'Check typographic quotes and nonstandard whitespace for accidental pasted characters. Preserve intentional examples and quotations.',
@@ -69,6 +74,8 @@ const TELLS = [
 ];
 
 const TOP_LEVEL_DECL = /^(?:package|const|func|type|var)\b/;
+const GO_STRING = /"(?:[^"\\\n]|\\.)*"|`[^`]*`/g;
+const GO_STRUCT_TAG = /^`\w+:"/;
 const DASH_AS_SUBJECT = /[`'"][—–][`'"]|\b(?:em|en)[-\s]dash|U\+201[34]/i;
 const MD_ITEM = /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|\||>\s)/;
 
@@ -120,6 +127,17 @@ function isDocBlock(group, nextLine, sourceLines) {
 	return field !== undefined && stripCommentPrefix(firstLine).startsWith(`${field} `);
 }
 
+/** @param {string} text */
+function tellsIn(text) {
+	const reasons = [];
+	for (const [name, pattern] of TELLS) {
+		if (!pattern.test(text)) continue;
+		if (name === 'em dash' && DASH_AS_SUBJECT.test(text)) continue;
+		reasons.push(name);
+	}
+	return reasons;
+}
+
 /** @param {PendingGroup} group @param {string} nextLine @param {string[] | undefined} sourceLines */
 function reasonsFor(group, nextLine, sourceLines) {
 	const reasons = [];
@@ -130,12 +148,17 @@ function reasonsFor(group, nextLine, sourceLines) {
 	const text = group.lang === 'md'
 		? group.lines.join(' ')
 		: group.lines.map(stripCommentPrefix).join(' ');
-	for (const [name, pattern] of TELLS) {
-		if (!pattern.test(text)) continue;
-		if (name === 'em dash' && DASH_AS_SUBJECT.test(text)) continue;
-		reasons.push(name);
+	return [...reasons, ...tellsIn(text)];
+}
+
+/** @param {string} line */
+function goStringText(line) {
+	const literals = [];
+	for (const match of line.matchAll(GO_STRING)) {
+		if (GO_STRUCT_TAG.test(match[0])) continue;
+		literals.push(match[0].slice(1, -1));
 	}
-	return reasons;
+	return literals.join(' ');
 }
 
 /** @param {Fence} fence @param {string} line @returns {Fence} */
@@ -233,6 +256,12 @@ export function groupsFromPatch(path, patch, source) {
 				}
 			} else {
 				flush(content);
+				if (lang === 'go') {
+					const reasons = tellsIn(goStringText(content));
+					if (reasons.length > 0) {
+						groups.push({ path, start: newLine, end: newLine, text: content, reasons });
+					}
+				}
 			}
 			newLine++;
 			continue;

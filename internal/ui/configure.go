@@ -541,6 +541,14 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 	}
 }
 
+func igmpVersionDescription(proxy string) string {
+	if proxy == config.ProxyIgmpproxy {
+		return "igmpproxy sends IGMPv2 queries whatever is chosen here."
+	}
+
+	return "IGMPv3 works for most current receivers."
+}
+
 func multicastPages(value *config.Config, fields *formValues, proxies ...proxyinventory.Inventory) []*page {
 	return []*page{
 		newPage(newPrefixInputs(&fields.nat)).title("IPTV destinations"),
@@ -554,7 +562,7 @@ func multicastPages(value *config.Config, fields *formValues, proxies ...proxyin
 				).Value(&value.Proxy.MLDVersion),
 			newProxySelect(value, proxies...),
 			huh.NewSelect[int]().Key("igmp").Title("IGMP version").
-				Description("IGMPv3 works for most current receivers.").
+				DescriptionFunc(func() string { return igmpVersionDescription(value.Proxy.Program) }, &value.Proxy.Program).
 				Options(
 					huh.NewOption("IGMPv3 (recommended)", config.DefaultIGMPVersion),
 					huh.NewOption("IGMPv2", igmpVersion2),

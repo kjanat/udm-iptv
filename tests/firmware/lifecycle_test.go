@@ -131,6 +131,7 @@ func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
 	h.healthy(name)
 	version := strings.TrimSpace(h.inside(name, binary, "version"))
 	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
+	h.inside(name, "test", "!", "-e", "/data/udm-iptv/bin/.udm-iptv.previous")
 	h.assertPackageRecord(name, version)
 	h.assertNetwork(name, "iptv", "198.51.100.2/24", kpnDestinations)
 	config := h.readConfig(name)

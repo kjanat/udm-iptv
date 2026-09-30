@@ -133,7 +133,7 @@ See [startup troubleshooting](docs/troubleshooting.md) for DHCP and VLAN failure
 
 [Provider profiles](docs/providers) supply editable defaults. [KPN specifications](docs/providers/kpn.md).
 
-First setup suggests providers through ipify/PTR; confirm your selection.
+First setup suggests a provider from your address; confirm it.
 
 Saved settings remain unchanged until you accept the review.
 

@@ -4,6 +4,8 @@ package network
 
 import (
 	"errors"
+	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/vishvananda/netlink"
@@ -89,6 +91,30 @@ func TestRemoveLinkDeletesOnlyTheLinkItCreated(t *testing.T) {
 	mustRemoveLink(t, value, created)
 	if !linkExists(t, value.WAN.VLANInterface) {
 		t.Fatal("an untagged configuration deleted a link")
+	}
+}
+
+// The egress address is whatever source the kernel picks for the default
+// route; without a default route there is none.
+func TestKernelEgressAddressFollowsTheDefaultRoute(t *testing.T) {
+	enterPrivateNamespace(t)
+	if _, err := EgressAddress(); err == nil {
+		t.Fatal("egress address without a default route")
+	}
+	link := kernelDummy(t, "wan-test")
+	address, err := netlink.ParseAddr("203.0.113.5/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.AddrAdd(link, address); err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.RouteAdd(&netlink.Route{LinkIndex: link.Attrs().Index, Gw: net.IPv4(203, 0, 113, 1)}); err != nil {
+		t.Fatal(err)
+	}
+	egress, err := EgressAddress()
+	if err != nil || egress != netip.MustParseAddr("203.0.113.5") {
+		t.Fatalf("egress = %v, %v", egress, err)
 	}
 }
 

@@ -81,7 +81,7 @@ func (application *Application) suggestProvider(ctx context.Context, settings co
 	if application.networkIdentity == nil || !settings.Enabled || !settings.NetworkIdentity {
 		return "", nil
 	}
-	err := writeString(application.Err, "Checking provider using ipify and reverse DNS…\n")
+	err := writeString(application.Err, "Checking provider from your internet address…\n")
 	if err != nil {
 		return "", err
 	}
@@ -91,14 +91,24 @@ func (application *Application) suggestProvider(ctx context.Context, settings co
 	}
 	application.providerSuggestion = suggestedProvider(identity)
 	if application.providerSuggestion == "" {
+		if identity.LookupError != "" {
+			return "", writef(application.Err, "Provider unknown (%s). Choose manually.\n", identity.LookupError)
+		}
+
 		return "", writeString(application.Err, "Provider unknown. Choose manually.\n")
+	}
+
+	if identity.Method == "asn" {
+		return application.providerSuggestion, writef(application.Err, "Suggested: %s (your internet address is in %s's network, %s).\n", application.providerSuggestion, application.providerSuggestion, identity.ASN)
 	}
 
 	return application.providerSuggestion, writef(application.Err, "Suggested: %s (from reverse DNS).\n", application.providerSuggestion)
 }
 
 func suggestedProvider(identity telemetry.NetworkIdentity) string {
-	if identity.Method != "ptr-suffix" || identity.Confidence != "low" || identity.Status != "ip-and-ptr" {
+	byNetwork := identity.Method == "asn" && identity.Confidence == "medium" && identity.Status == "ip-and-asn"
+	byName := identity.Method == "ptr-suffix" && identity.Confidence == "low" && identity.Status == "ip-and-ptr"
+	if !byNetwork && !byName {
 		return ""
 	}
 	if _, ok := config.DefaultCatalog().ProviderByID(identity.Provider); ok {

@@ -418,6 +418,30 @@ func optionValue(spec []string, flag string) string {
 	return ""
 }
 
+var errNoEgressAddress = errors.New("the kernel has no source address for internet traffic")
+
+// routeProbeAddress is in TEST-NET-1 (RFC 5737), so the lookup selects the
+// default route without naming a real host.
+const routeProbeAddress = "192.0.2.1"
+
+// EgressAddress is the source address the kernel selects for traffic to the
+// internet, read from its route lookup without sending anything.
+func EgressAddress() (netip.Addr, error) {
+	routes, err := netlink.RouteGet(net.ParseIP(routeProbeAddress))
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("look up the internet route: %w", err)
+	}
+	if len(routes) == 0 || routes[0].Src == nil {
+		return netip.Addr{}, errNoEgressAddress
+	}
+	address, ok := netip.AddrFromSlice(routes[0].Src)
+	if !ok {
+		return netip.Addr{}, errNoEgressAddress
+	}
+
+	return address.Unmap(), nil
+}
+
 // ApplyStatic sets the configured static address and static routes on link.
 // On an owned link it also retires any IPv4 address a previous configuration
 // left behind.

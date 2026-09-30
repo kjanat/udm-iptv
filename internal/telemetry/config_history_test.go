@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -425,16 +427,155 @@ func runLookupCase(t *testing.T, test lookupCase) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(test.body)) }))
 	defer server.Close()
 	called := false
-	result := lookupNetwork(context.Background(), server.Client(), server.URL, func(_ context.Context, ip string) ([]string, error) {
+	result := lookupNetwork(context.Background(), testSources(server, func(_ context.Context, ip string) ([]string, error) {
 		called = true
 		assertEqual(t, "PTR address", ip, "11.22.33.44")
 
 		return []string{"customer.kpn.net."}, nil
-	})
+	}))
 	assertEqual(t, "PTR lookup performed", called, test.called)
+	assertEqual(t, "IP source", result.IPSource, map[bool]string{true: ipSourceHTTPS, false: ""}[test.ip != ""])
 	assertEqual(t, "public IP", result.IP, test.ip)
 	assertEqual(t, "detected provider", result.Provider, test.provider)
 	assertEqual(t, "detection method", result.Method, test.method)
+}
+
+const lookupTestBudget = 30 * time.Millisecond
+
+var errNoEgress = errors.New("no default route")
+
+// testSources asks the server for the address and the given resolver for the
+// name; the kernel has no route to offer.
+func testSources(server *httptest.Server, ptr func(context.Context, string) ([]string, error)) lookupSources {
+	return lookupSources{
+		egress:   func() (netip.Addr, error) { return netip.Addr{}, errNoEgress },
+		client:   server.Client(),
+		endpoint: server.URL,
+		ptr:      ptr,
+		catalog:  config.DefaultCatalog(),
+		budget:   lookupTestBudgets,
+	}
+}
+
+func blockingPTR(ctx context.Context, _ string) ([]string, error) {
+	<-ctx.Done()
+
+	return nil, fmt.Errorf("resolver gave up: %w", ctx.Err())
+}
+
+func noPTR(context.Context, string) ([]string, error) { return nil, nil }
+
+var lookupTestBudgets = lookupBudget{https: lookupTestBudget, ptr: lookupTestBudget}
+
+func failingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("public IP requested although the WAN address was known")
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+func catalogAddress(t *testing.T, asn string) netip.Addr {
+	t.Helper()
+	networks, err := config.EmbeddedProviderNetworks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, network := range networks {
+		if network.ASN == asn && network.Prefix.Addr().Is4() {
+			return network.Prefix.Addr().Next()
+		}
+	}
+	t.Fatalf("no IPv4 prefix for %s in the embedded table", asn)
+
+	return netip.Addr{}
+}
+
+// A public WAN address inside a catalog provider's network answers the whole
+// lookup locally.
+func TestNetworkLookupUsesTheWANAddressAndItsNetwork(t *testing.T) {
+	address := catalogAddress(t, "AS1136")
+	sources := testSources(failingServer(t), blockingPTR)
+	sources.egress = func() (netip.Addr, error) { return address, nil }
+	result := lookupNetwork(context.Background(), sources)
+	want := NetworkIdentity{
+		IP: address.String(), IPSource: ipSourceWAN, ASN: "AS1136", Provider: "kpn", Method: "asn",
+		Confidence: "medium", Status: "ip-and-asn", ObservedAt: result.ObservedAt,
+	}
+	if result != want {
+		t.Fatalf("WAN lookup:\n got %+v\nwant %+v", result, want)
+	}
+}
+
+// A private WAN address, behind another router or carrier NAT, falls back to
+// the HTTPS lookup, and an address outside every catalog network falls back
+// to reverse DNS.
+func TestNetworkLookupFallsBackFromAPrivateWANAddress(t *testing.T) {
+	fast := publicIPServer(t, 0)
+	sources := testSources(fast, noPTR)
+	sources.egress = func() (netip.Addr, error) { return netip.MustParseAddr("192.168.1.1"), nil }
+	result := lookupNetwork(context.Background(), sources)
+	if result.IP != "11.22.33.44" || result.IPSource != ipSourceHTTPS || result.ASN != "" || result.Status != "ip-only" {
+		t.Fatalf("private WAN fallback: %+v", result)
+	}
+}
+
+func publicIPServer(t *testing.T, delay time.Duration) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(delay):
+			_, _ = w.Write([]byte("11.22.33.44"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+// Each phase has its own deadline and its own elapsed time.
+func TestNetworkLookupSlowHTTPSLeavesTheDNSBudgetUntouched(t *testing.T) {
+	slow := publicIPServer(t, 10*lookupTestBudget)
+	result := lookupNetwork(context.Background(), testSources(slow, blockingPTR))
+	if result.IP != "" || result.Status != "unavailable" || !strings.HasPrefix(result.LookupError, "request public IP:") {
+		t.Fatalf("slow HTTPS: %+v", result)
+	}
+	if result.HTTPSMillis < lookupTestBudget.Milliseconds() || result.PTRMillis != 0 {
+		t.Fatalf("slow HTTPS timing: %+v", result)
+	}
+}
+
+func TestNetworkLookupSlowResolverKeepsTheIP(t *testing.T) {
+	fast := publicIPServer(t, 0)
+	result := lookupNetwork(context.Background(), testSources(fast, blockingPTR))
+	if result.IP != "11.22.33.44" || result.Status != "ip-only" || !strings.HasPrefix(result.LookupError, "reverse DNS lookup:") {
+		t.Fatalf("slow resolver: %+v", result)
+	}
+	if result.PTRMillis < lookupTestBudget.Milliseconds() {
+		t.Fatalf("slow resolver timing: %+v", result)
+	}
+}
+
+func TestNetworkLookupWithoutAPTRRecordIsIPOnly(t *testing.T) {
+	fast := publicIPServer(t, 0)
+	result := lookupNetwork(context.Background(), testSources(fast, noPTR))
+	if result.IP != "11.22.33.44" || result.Status != "ip-only" || result.LookupError != "" {
+		t.Fatalf("no PTR record: %+v", result)
+	}
+}
+
+func TestNetworkLookupReportsCallerCancellation(t *testing.T) {
+	fast := publicIPServer(t, 0)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := lookupNetwork(cancelled, testSources(fast, blockingPTR))
+	if result.IP != "" || !strings.HasPrefix(result.LookupError, "request public IP:") || !strings.Contains(result.LookupError, context.Canceled.Error()) {
+		t.Fatalf("cancelled caller: %+v", result)
+	}
 }
 
 func TestNetworkLookupIsBoundedAndUsesPTR(t *testing.T) {
@@ -446,7 +587,7 @@ func TestNetworkLookupIsBoundedAndUsesPTR(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) { runLookupCase(t, test) })
 	}
 	for _, name := range []string{"notkpn.net", "kpn.net.attacker.invalid", "customer\n.kpn.net"} {
-		result := cleanIdentity(NetworkIdentity{IP: "11.22.33.44", PTR: name})
+		result := cleanIdentity(config.DefaultCatalog(), NetworkIdentity{IP: "11.22.33.44", PTR: name})
 		assertEqual(t, "provider for "+name, result.Provider, "unknown")
 	}
 }

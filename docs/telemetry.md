@@ -56,10 +56,9 @@ A persistent installation ID correlates enabled operational reporting even when 
 
 ## Privacy
 
-Network identity lookup contacts ipify and your DNS resolver.
-ipify sees your public IP; DNS resolves its PTR.
+Network identity lookup reads your WAN address from the kernel and matches it against the provider networks built into the program, extracted from IPinfo Lite. ipify is asked for the address only when the WAN address is not public, and your DNS resolver for its PTR only when no built-in network matches.
 Sentry also sees your connection's public IP during reporting.
-Disabling network identity removes the IP/PTR fields and lookups.
+Disabling network identity removes the IP, ASN and PTR fields and the lookups.
 
 Automatic telemetry does not attach packet payloads or the files written by `udm-iptv diagnose --capture`. SDK collection of HTTP headers, cookies and request bodies is disabled. Enabled error reports, diagnostic attachments and program logs retain their original text; their content is not redacted.
 
