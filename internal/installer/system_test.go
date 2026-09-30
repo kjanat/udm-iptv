@@ -9,7 +9,7 @@ func TestSystemdUnitWaitsForNativeReadiness(t *testing.T) {
 	t.Parallel()
 	unit := systemdUnit("/custom state/bin/udm-iptv", "/custom state/config.json", "/custom state")
 	for _, expected := range []string{
-		"Type=notify", "NotifyAccess=main", "TimeoutStartSec=45s",
+		"Type=notify", "NotifyAccess=main", "TimeoutStartSec=45s", "KillMode=mixed",
 		`Environment="UDM_IPTV_STATE_DIR=/custom state"`,
 		`ExecStart="/custom state/bin/udm-iptv" daemon --config "/custom state/config.json"`,
 	} {

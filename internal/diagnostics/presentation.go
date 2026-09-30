@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kjanat/udm-iptv/internal/service"
 )
 
 // ReportRole describes a report fragment before terminal styling is applied.
@@ -136,7 +138,16 @@ func (r reportRenderer) service(value serviceStatus) string {
 	return r.field("Service", fmt.Sprintf("%s (%s, restarts: %s)%s", state,
 		fallbackText(value.UnitFile), r.observed(value.Errors, strconv.FormatUint(value.Restarts, 10), "systemd"), renderResume(value))) +
 		r.field("Service load state", fallbackText(value.LoadState)) +
-		r.field("Proxy", fmt.Sprintf("%s (PID %s)", fallbackText(value.Proxy), r.observed(value.Errors, strconv.Itoa(value.ProxyPID), "runtime")))
+		r.field("Proxy", fmt.Sprintf("%s (PID %s)", fallbackText(value.Proxy), r.observed(value.Errors, strconv.Itoa(value.ProxyPID), "runtime"))) +
+		r.field("Daemon run", r.observed(value.Errors, renderOwner(value.Owner), "owner"))
+}
+
+func renderOwner(owner *service.Owner) string {
+	if owner == nil {
+		return "none"
+	}
+
+	return fmt.Sprintf("PID %d since %s, %s index %d, token %s", owner.PID, owner.StartedAt.Format(time.RFC3339), owner.Interface, owner.LinkIndex, owner.Token)
 }
 
 func (r reportRenderer) network(value networkStatus) string {

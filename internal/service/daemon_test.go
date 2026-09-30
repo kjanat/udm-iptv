@@ -1,11 +1,13 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/vishvananda/netlink"
@@ -93,6 +95,33 @@ func TestProxyConfigurationCarriesTheMLDChoice(t *testing.T) {
 			rendered := renderIMProxyConfig(value, "iptv")
 			if !strings.Contains(rendered, test.want+"\n") {
 				t.Fatalf("configuration lacks %q:\n%s", test.want, rendered)
+			}
+		})
+	}
+}
+
+// systemd's default KillMode signals the whole control group at once, so a
+// child can exit before this process has observed its own stop signal.
+func TestChildExitDuringShutdownIsNotAFailure(t *testing.T) {
+	t.Parallel()
+	for name, stop := range map[string]func(context.Context, supervised) error{
+		"proxy": func(ctx context.Context, sources supervised) error { return sources.proxyStopped(ctx) },
+		"dhcp":  func(ctx context.Context, sources supervised) error { return sources.dhcpStopped(ctx) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sources := supervised{program: "improxy", proxy: &managedProcess{err: errStopFailed}, dhcp: &managedProcess{err: errStopFailed}}
+			ctx, cancel := context.WithCancel(t.Context())
+			time.AfterFunc(signalGrace/4, cancel)
+			if err := stop(ctx, sources); err != nil {
+				t.Fatalf("exit just before the stop signal reported as failure: %v", err)
+			}
+			if err := stop(t.Context(), sources); err == nil || !errors.Is(err, errStopFailed) {
+				t.Fatalf("exit without a stop signal not reported: %v", err)
+			}
+			sources.proxy = &managedProcess{}
+			if err := sources.proxyStopped(t.Context()); !errors.Is(err, errProxyExited) {
+				t.Fatalf("clean proxy exit without a stop signal: %v", err)
 			}
 		})
 	}

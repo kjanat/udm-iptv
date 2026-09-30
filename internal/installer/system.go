@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
-	"github.com/vishvananda/netlink"
 
 	"github.com/kjanat/udm-iptv/internal/atomicfile"
 	"github.com/kjanat/udm-iptv/internal/config"
@@ -69,6 +68,9 @@ func (backend SystemBackend) Preflight(ctx context.Context, plan Plan) error {
 	if err := proxycheck.Check(ctx); err != nil {
 		return fmt.Errorf("check multicast proxy before installation: %w", err)
 	}
+	if _, err := inspectLegacyNetwork(plan, systemLegacyNetworkLinks()); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -112,7 +114,7 @@ func (backend SystemBackend) WriteFiles(ctx context.Context, plan Plan) error {
 
 // Activate reloads systemd, enables the unit and restarts the service.
 func (backend SystemBackend) Activate(ctx context.Context, plan Plan) error {
-	if err := migrateLegacyNetwork(plan, legacyNetworkLinks{find: netlink.LinkByName, setAlias: netlink.LinkSetAlias}); err != nil {
+	if err := migrateLegacyNetwork(plan, systemLegacyNetworkLinks()); err != nil {
 		return err
 	}
 	err := activateService(ctx)
@@ -208,6 +210,7 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=45s
 TimeoutStopSec=30s
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target

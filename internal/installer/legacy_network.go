@@ -11,63 +11,88 @@ import (
 	"github.com/kjanat/udm-iptv/internal/config"
 )
 
-const legacyNetworkPending = "legacy-network.pending"
+const (
+	legacyNetworkPending = "legacy-network.pending"
+	legacyNetworkAlias   = "udm-iptv"
+)
 
-var errLegacyNetworkMismatch = errors.New("legacy IPTV interface does not match the saved v4 configuration and requested v5 configuration; interface left unchanged")
+var errLegacyNetworkMismatch = errors.New("legacy IPTV interface does not match the saved v4 configuration; interface left unchanged")
 
 type legacyNetworkLinks struct {
 	find     func(string) (netlink.Link, error)
 	setAlias func(netlink.Link, string) error
+	remove   func(netlink.Link) error
 }
 
-// migrateLegacyNetwork consumes the provenance saved by the Debian preinstall
-// script after successfully stopping the installed v4 service. A matching interface can be
-// handed to v5, which replaces it and its old addresses/routes during startup.
-// The pending file survives until installation health and cleanup succeed.
-func migrateLegacyNetwork(plan Plan, links legacyNetworkLinks) error {
+func systemLegacyNetworkLinks() legacyNetworkLinks {
+	return legacyNetworkLinks{find: netlink.LinkByName, setAlias: netlink.LinkSetAlias, remove: netlink.LinkDel}
+}
+
+// legacyHandover is what activation does with the interface the v4 service
+// left behind: adopt it when v5 reuses its name, so startup replaces it;
+// otherwise remove it with its stale addresses and routes.
+type legacyHandover struct {
+	link  netlink.Link
+	adopt bool
+}
+
+// inspectLegacyNetwork validates the provenance the Debian preinstall script
+// saved after stopping the v4 service against the live interface. It changes
+// nothing. The pending file survives until installation health and cleanup
+// succeed.
+func inspectLegacyNetwork(plan Plan, links legacyNetworkLinks) (legacyHandover, error) {
 	previous, err := config.ImportLegacy(filepath.Join(plan.StateDir, legacyNetworkPending))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return legacyHandover{}, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read pending v4 network migration: %w", err)
+		return legacyHandover{}, fmt.Errorf("read pending v4 network migration: %w", err)
 	}
 	if previous.WAN.VLAN == 0 {
-		return nil // An untagged uplink remains borrowed, never adopted.
+		return legacyHandover{}, nil // An untagged uplink remains borrowed, never adopted.
 	}
-	if previous.WAN.Interface != plan.Config.WAN.Interface ||
-		previous.WAN.VLAN != plan.Config.WAN.VLAN ||
-		previous.WAN.VLANInterface != plan.Config.WAN.VLANInterface {
-		return fmt.Errorf("%w: v4 %s VLAN %d on %s; v5 %s VLAN %d on %s", errLegacyNetworkMismatch,
-			previous.WAN.VLANInterface, previous.WAN.VLAN, previous.WAN.Interface,
-			plan.Config.WAN.VLANInterface, plan.Config.WAN.VLAN, plan.Config.WAN.Interface)
-	}
-	return handOverLegacyVLAN(previous, links)
-}
-
-func handOverLegacyVLAN(previous config.Config, links legacyNetworkLinks) error {
 	name := previous.WAN.VLANInterface
 	link, err := links.find(name)
 	if _, absent := errors.AsType[netlink.LinkNotFoundError](err); absent {
-		return nil
+		return legacyHandover{}, nil
 	}
 	if err != nil {
-		return fmt.Errorf("inspect legacy IPTV interface %s: %w", name, err)
+		return legacyHandover{}, fmt.Errorf("inspect legacy IPTV interface %s: %w", name, err)
+	}
+	if link.Attrs().Alias == legacyNetworkAlias {
+		return legacyHandover{}, nil
 	}
 	parent, err := links.find(previous.WAN.Interface)
 	if err != nil {
-		return fmt.Errorf("inspect legacy WAN interface %s: %w", previous.WAN.Interface, err)
+		return legacyHandover{}, fmt.Errorf("inspect legacy WAN interface %s: %w", previous.WAN.Interface, err)
 	}
 	if !matchesLegacyVLAN(link, parent, previous) {
-		return fmt.Errorf("%w: expected %s VLAN %d on %s", errLegacyNetworkMismatch,
+		return legacyHandover{}, fmt.Errorf("%w: expected %s VLAN %d on %s", errLegacyNetworkMismatch,
 			name, previous.WAN.VLAN, previous.WAN.Interface)
 	}
-	if link.Attrs().Alias == "udm-iptv" {
-		return nil // A previous activation attempt already handed this over.
+	adopt := plan.Config.WAN.VLAN > 0 && plan.Config.WAN.VLANInterface == name
+
+	return legacyHandover{link: link, adopt: adopt}, nil
+}
+
+// migrateLegacyNetwork performs the handover inspectLegacyNetwork decided.
+func migrateLegacyNetwork(plan Plan, links legacyNetworkLinks) error {
+	handover, err := inspectLegacyNetwork(plan, links)
+	if err != nil || handover.link == nil {
+		return err
 	}
-	if err := links.setAlias(link, "udm-iptv"); err != nil {
-		return fmt.Errorf("hand over legacy IPTV interface %s: %w", name, err)
+	name := handover.link.Attrs().Name
+	if handover.adopt {
+		if err := links.setAlias(handover.link, legacyNetworkAlias); err != nil {
+			return fmt.Errorf("hand over legacy IPTV interface %s: %w", name, err)
+		}
+
+		return nil
 	}
+	if err := links.remove(handover.link); err != nil {
+		return fmt.Errorf("remove legacy IPTV interface %s: %w", name, err)
+	}
+
 	return nil
 }
 
@@ -75,5 +100,5 @@ func matchesLegacyVLAN(link, parent netlink.Link, previous config.Config) bool {
 	vlan, ok := link.(*netlink.Vlan)
 	return ok && vlan.VlanId == previous.WAN.VLAN &&
 		vlan.ParentIndex == parent.Attrs().Index &&
-		(vlan.Alias == "" || vlan.Alias == "udm-iptv")
+		vlan.Alias == ""
 }

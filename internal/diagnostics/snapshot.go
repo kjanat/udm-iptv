@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -79,6 +80,7 @@ type configSummary struct {
 
 type serviceStatus struct {
 	Errors      map[string]string `json:"errors,omitempty"`
+	Owner       *service.Owner    `json:"owner,omitempty"`
 	SystemState string            `json:"systemState"`
 	Units       []unitEvidence    `json:"units,omitempty"`
 	ResumeAt    *time.Time        `json:"resumeAt,omitempty"`
@@ -479,6 +481,11 @@ func inspectService(ctx context.Context) serviceStatus {
 		status.ProxyPID = state.ProxyPID
 	} else {
 		recordCollectionError(&status.Errors, "runtime", err)
+	}
+	if owner, err := service.ReadOwner(); err == nil {
+		status.Owner = &owner
+	} else if !errors.Is(err, os.ErrNotExist) {
+		recordCollectionError(&status.Errors, "owner", err)
 	}
 	connection, err := systemd.NewSystemConnectionContext(ctx)
 	if err != nil {

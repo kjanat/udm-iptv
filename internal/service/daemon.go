@@ -97,7 +97,7 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	}()
 	var dhcp *managedProcess
 	defer func() { result = errors.Join(result, dhcp.stop()) }()
-	dhcp, staticFailure, err := application.startConnection(ctx, value, addressing, link, owner.Token)
+	dhcp, networkFailure, err := application.startConnection(ctx, value, addressing, link, owner.Token)
 	if err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	defer removeIgnoringError(runtimeStatePath)
 
 	return application.supervise(ctx, supervised{
-		program: value.Proxy.Program, proxy: process, dhcp: dhcp, static: staticFailure,
+		program: value.Proxy.Program, proxy: process, dhcp: dhcp, network: networkFailure,
 	})
 }
 
@@ -182,7 +182,7 @@ type supervised struct {
 	program string
 	proxy   *managedProcess
 	dhcp    *managedProcess
-	static  <-chan error
+	network <-chan error
 }
 
 // supervise waits out a settling period before reporting readiness, so a
@@ -193,8 +193,8 @@ func (application *Daemon) supervise(ctx context.Context, sources supervised) er
 		return sources.proxyStopped(ctx)
 	case <-processDone(sources.dhcp):
 		return sources.dhcpStopped(ctx)
-	case cause := <-sources.static:
-		return staticReconcileFailed(ctx, cause)
+	case cause := <-sources.network:
+		return networkFailed(ctx, cause)
 	case <-time.After(signalGrace):
 	}
 	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
@@ -211,15 +211,27 @@ func (application *Daemon) supervise(ctx context.Context, sources supervised) er
 		return sources.proxyStopped(ctx)
 	case <-processDone(sources.dhcp):
 		return sources.dhcpStopped(ctx)
-	case cause := <-sources.static:
-		return staticReconcileFailed(ctx, cause)
+	case cause := <-sources.network:
+		return networkFailed(ctx, cause)
 	}
 }
 
-// stopping reports whether the daemon is already shutting down, which makes a
-// supervised process ending an expected event rather than a failure.
+// stopping reports whether the daemon is shutting down, which makes a
+// supervised process ending an expected event rather than a failure. A stop
+// signal delivered to the whole process group reaches the children before
+// this process observes it, so a child's exit waits signalGrace for it.
 func stopping(ctx context.Context) bool {
-	return ctx.Err() != nil
+	if ctx.Err() != nil {
+		return true
+	}
+	grace := time.NewTimer(signalGrace)
+	defer grace.Stop()
+	select {
+	case <-ctx.Done():
+		return true
+	case <-grace.C:
+		return false
+	}
 }
 
 func (sources supervised) proxyStopped(ctx context.Context) error {
@@ -241,12 +253,12 @@ func (sources supervised) dhcpStopped(ctx context.Context) error {
 	return unexpectedProcessExit("DHCP client", sources.dhcp.err)
 }
 
-func staticReconcileFailed(ctx context.Context, cause error) error {
+func networkFailed(ctx context.Context, cause error) error {
 	if stopping(ctx) {
 		return nil
 	}
 
-	return fmt.Errorf("reconcile static IPTV network: %w", cause)
+	return fmt.Errorf("keep the IPTV network configured: %w", cause)
 }
 
 func writeProxyConfig(value config.Config) error {
@@ -326,7 +338,7 @@ func proxyArguments(value config.Config) []string {
 }
 
 // startConnection brings up either the DHCP client or the static IPTV
-// address, returning whichever failure channel applies to the chosen mode.
+// address, returning the channel that reports the mode's later failures.
 func (application *Daemon) startConnection(ctx context.Context, value config.Config, addressing config.Addressing, link netlink.Link, owner string) (*managedProcess, <-chan error, error) {
 	if addressing.DHCP() {
 		_, _ = sdnotify.SdNotify(false, "STATUS=Waiting for the IPTV DHCP lease")
@@ -337,8 +349,15 @@ func (application *Daemon) startConnection(ctx context.Context, value config.Con
 			return nil, nil, fmt.Errorf("apply the configured IPTV routes: %w", err)
 		}
 		dhcp, err := application.startDHCP(ctx, value, owner)
+		if err != nil {
+			return dhcp, nil, err
+		}
+		lost, err := watchLeaseAddress(ctx, link)
+		if err != nil {
+			return dhcp, nil, fmt.Errorf("watch the IPTV DHCP address: %w", err)
+		}
 
-		return dhcp, nil, err
+		return dhcp, lost, nil
 	}
 	var staticFailure <-chan error
 	if addressing.Static().IsValid() {
