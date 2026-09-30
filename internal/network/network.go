@@ -85,8 +85,8 @@ func ensureVLAN(value config.Config, parent netlink.Link) (netlink.Link, error) 
 	return vlan, nil
 }
 
-// RemoveLink deletes the VLAN sub-interface when this program created it.
-func RemoveLink(value config.Config) error {
+// RemoveLink deletes the VLAN sub-interface when it is still the one this run created.
+func RemoveLink(value config.Config, created netlink.Link) error {
 	if value.WAN.VLAN == 0 {
 		return nil
 	}
@@ -99,7 +99,7 @@ func RemoveLink(value config.Config) error {
 
 		return fmt.Errorf("inspect VLAN interface %s: %w", name, err)
 	}
-	if !owned(link) {
+	if !owned(link) || link.Attrs().Index != created.Attrs().Index {
 		return nil
 	}
 	if err := netlink.LinkDel(link); err != nil {

@@ -47,6 +47,7 @@ jobs:
           - { package: network, test: "Test.*", privileged: true }
           - { package: service, test: "TestProxy(StateFailureReapsProcess|StateAndStop)", privileged: false }
           - { package: service, test: "TestSystemd(Lifecycle|PauseFailureRestoresService)", privileged: true }
+          - { package: service, test: "TestSecondDaemonCannotTakeTheIPTVNetwork", privileged: true }
     steps:
       - *Checkout
       - parallel:

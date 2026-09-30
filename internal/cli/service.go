@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -43,45 +44,78 @@ func (application *Application) dhcpHookCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use: "dhcp-hook ACTION", Hidden: true, Args: cobra.ExactArgs(1),
 		RunE: application.reportingHook(func(command *cobra.Command, arguments []string) error {
-			// These callbacks describe recoverable client events.
-			// udhcpc keeps trying until the daemon's deadline.
-			if arguments[0] == "leasefail" || arguments[0] == "nak" {
-				return application.dhcpRetryWarning(command.Context(), arguments[0])
-			}
-			policy := config.RoutePolicy(routes)
-			if value, err := config.Load(application.ConfigPath); err == nil {
-				policy = value.WAN.DHCPRoutes
-			}
-			lease, err := network.LeaseFromEnvironment(arguments[0])
-			if err != nil {
-				return fmt.Errorf("read the DHCP lease from the environment: %w", err)
-			}
-			previous := network.Lease{}
-			if state, err := service.ReadLeaseState(); err == nil {
-				previous = state.Lease
-			}
-			switch arguments[0] {
-			case "deconfig":
-				applied := network.ApplyLease(&lease, previous, policy)
-				if applied != nil {
-					// Retain ownership for a later retry when cleanup was only partial.
-					previous.ManagedRoutes = lease.ManagedRoutes
-					previous.ManagedAddresses = lease.ManagedAddresses
-					return errors.Join(applied, service.WriteLeaseState(previous, applied))
-				}
-				return service.RemoveLeaseState()
-			case "bound", "renew":
-				applied := network.ApplyLease(&lease, previous, policy)
-
-				return errors.Join(applied, service.WriteLeaseState(lease, applied))
-			default:
-				return fmt.Errorf("%w %q", errUnsupportedHookAction, arguments[0])
-			}
+			return application.runDHCPHook(command.Context(), arguments[0], config.RoutePolicy(routes))
 		}),
 	}
 	command.Flags().StringVar(&routes, "dhcp-routes", string(config.RoutesNoDefault), "route policy when the configuration is unreadable")
 
 	return command
+}
+
+// runDHCPHook handles one udhcpc callback; fallback is the route policy when
+// the configuration is unreadable.
+func (application *Application) runDHCPHook(ctx context.Context, action string, fallback config.RoutePolicy) error {
+	owner := os.Getenv(service.OwnerEnvironment)
+	allowed, err := service.HookOwnership(owner)
+	if err != nil {
+		return fmt.Errorf("identify the daemon run owning the IPTV network: %w", err)
+	}
+	if !allowed {
+		return application.staleHookWarning(ctx, action)
+	}
+	// These callbacks describe recoverable client events.
+	// udhcpc keeps trying until the daemon's deadline.
+	if action == "leasefail" || action == "nak" {
+		return application.dhcpRetryWarning(ctx, action)
+	}
+	policy := fallback
+	if value, err := config.Load(application.ConfigPath); err == nil {
+		policy = value.WAN.DHCPRoutes
+	}
+	lease, err := network.LeaseFromEnvironment(action)
+	if err != nil {
+		return fmt.Errorf("read the DHCP lease from the environment: %w", err)
+	}
+	previous := network.Lease{}
+	if state, err := service.ReadLeaseState(); err == nil {
+		previous = state.Lease
+	}
+
+	return applyDHCPHook(action, &lease, previous, owner, policy)
+}
+
+func applyDHCPHook(action string, lease *network.Lease, previous network.Lease, owner string, policy config.RoutePolicy) error {
+	switch action {
+	case "deconfig":
+		applied := network.ApplyLease(lease, previous, policy)
+		if applied != nil {
+			// Retain ownership for a later retry when cleanup was only partial.
+			previous.ManagedRoutes = lease.ManagedRoutes
+			previous.ManagedAddresses = lease.ManagedAddresses
+			return errors.Join(applied, service.WriteLeaseState(previous, owner, applied))
+		}
+		if err := service.RemoveLeaseState(); err != nil {
+			return fmt.Errorf("forget the released lease: %w", err)
+		}
+
+		return nil
+	case "bound", "renew":
+		applied := network.ApplyLease(lease, previous, policy)
+
+		return errors.Join(applied, service.WriteLeaseState(*lease, owner, applied))
+	default:
+		return fmt.Errorf("%w %q", errUnsupportedHookAction, action)
+	}
+}
+
+func (application *Application) staleHookWarning(ctx context.Context, action string) error {
+	message := fmt.Sprintf("ignored DHCP %s from a client outside the daemon run that owns the IPTV network", action)
+	application.monitor.Warn(ctx, message)
+	if _, err := fmt.Fprintln(application.Err, message); err != nil {
+		return fmt.Errorf("write stale DHCP hook warning: %w", err)
+	}
+
+	return nil
 }
 
 func (application *Application) dhcpRetryWarning(ctx context.Context, action string) error {

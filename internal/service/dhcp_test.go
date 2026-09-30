@@ -57,7 +57,7 @@ func TestDHCPChildEnvironmentDoesNotRecordInheritedOptions(t *testing.T) {
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestDHCPHookEnvironmentHelper$")
 	// Model udhcpc adding the environment values it received from the server.
-	child.Env = append(dhcpEnvironment("/chosen/config", "/chosen/state"),
+	child.Env = append(dhcpEnvironment("/chosen/config", "/chosen/state", "run-token"),
 		"UDM_IPTV_TEST_DHCP_ENV=1", "interface=iptv", "ip=192.0.2.20", "mask=24",
 		"dns=192.0.2.53", "opt224=vendor-option")
 	output, err := child.CombinedOutput()
@@ -71,7 +71,7 @@ func TestDHCPChildEnvironmentDoesNotRecordInheritedOptions(t *testing.T) {
 	if lease.Metric != 320 || lease.Options["dns"] != "192.0.2.53" || lease.Options["opt224"] != "vendor-option" {
 		t.Fatalf("lease options lost: %+v", lease)
 	}
-	for _, forbidden := range []string{"http_proxy", "private_token", "domain", "interface"} {
+	for _, forbidden := range []string{"http_proxy", "private_token", "domain", "interface", OwnerEnvironment} {
 		if _, exists := lease.Options[forbidden]; exists {
 			t.Errorf("inherited/non-option %q was recorded", forbidden)
 		}
@@ -82,7 +82,7 @@ func TestDHCPHookEnvironmentHelper(t *testing.T) {
 	if os.Getenv("UDM_IPTV_TEST_DHCP_ENV") != "1" {
 		return
 	}
-	if os.Getenv("UDM_IPTV_CONFIG") != "/chosen/config" || os.Getenv("UDM_IPTV_STATE_DIR") != "/chosen/state" || os.Getenv("PATH") == "" {
+	if os.Getenv("UDM_IPTV_CONFIG") != "/chosen/config" || os.Getenv("UDM_IPTV_STATE_DIR") != "/chosen/state" || os.Getenv(OwnerEnvironment) != "run-token" || os.Getenv("PATH") == "" {
 		t.Fatal("explicit hook environment lost")
 	}
 	lease, err := network.LeaseFromEnvironment("bound")

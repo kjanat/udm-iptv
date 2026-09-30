@@ -81,11 +81,11 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	}
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	link, err := network.EnsureLink(value)
+	link, owner, releaseNetwork, err := claimNetwork(value)
 	if err != nil {
-		return fmt.Errorf("prepare the IPTV interface: %w", err)
+		return err
 	}
-	defer func() { result = errors.Join(result, network.RemoveLink(value)) }()
+	defer func() { result = errors.Join(result, releaseNetwork()) }()
 	restoreIPv6, err := network.EnableIPv6Multicast(value)
 	defer func() { result = errors.Join(result, restoreIPv6()) }()
 	if err != nil {
@@ -97,7 +97,7 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	}()
 	var dhcp *managedProcess
 	defer func() { result = errors.Join(result, dhcp.stop()) }()
-	dhcp, staticFailure, err := application.startConnection(ctx, value, addressing, link)
+	dhcp, staticFailure, err := application.startConnection(ctx, value, addressing, link, owner.Token)
 	if err != nil {
 		return err
 	}
@@ -136,6 +136,33 @@ func startupConfiguration(ctx context.Context, path string) (config.Config, conf
 		return config.Config{}, config.Addressing{}, fmt.Errorf("check multicast proxy before startup: %w", err)
 	}
 	return value, addressing, nil
+}
+
+// claimNetwork takes the daemon lock, prepares the IPTV interface and records
+// this run as its owner. The returned function undoes all three, releasing
+// the lock last.
+func claimNetwork(value config.Config) (netlink.Link, Owner, func() error, error) {
+	release, err := lockDaemon(runtimeDir)
+	if err != nil {
+		return nil, Owner{}, nil, fmt.Errorf("claim the IPTV network: %w", err)
+	}
+	link, err := network.EnsureLink(value)
+	if err != nil {
+		return nil, Owner{}, nil, errors.Join(fmt.Errorf("prepare the IPTV interface: %w", err), release())
+	}
+	owner, err := newOwner(network.Target(value), link)
+	if err == nil {
+		err = writeOwner(runtimeDir, owner)
+	}
+	if err != nil {
+		return nil, Owner{}, nil, errors.Join(err, network.RemoveLink(value, link), release())
+	}
+
+	return link, owner, func() error {
+		removeIgnoringError(filepath.Join(runtimeDir, ownerFile))
+
+		return errors.Join(network.RemoveLink(value, link), release())
+	}, nil
 }
 
 // iptables discards a rule's counters with the rule.
@@ -300,7 +327,7 @@ func proxyArguments(value config.Config) []string {
 
 // startConnection brings up either the DHCP client or the static IPTV
 // address, returning whichever failure channel applies to the chosen mode.
-func (application *Daemon) startConnection(ctx context.Context, value config.Config, addressing config.Addressing, link netlink.Link) (*managedProcess, <-chan error, error) {
+func (application *Daemon) startConnection(ctx context.Context, value config.Config, addressing config.Addressing, link netlink.Link, owner string) (*managedProcess, <-chan error, error) {
 	if addressing.DHCP() {
 		_, _ = sdnotify.SdNotify(false, "STATUS=Waiting for the IPTV DHCP lease")
 		if err := network.ResetLease(link); err != nil {
@@ -309,7 +336,7 @@ func (application *Daemon) startConnection(ctx context.Context, value config.Con
 		if err := network.ApplyStaticRoutes(value, link); err != nil {
 			return nil, nil, fmt.Errorf("apply the configured IPTV routes: %w", err)
 		}
-		dhcp, err := application.startDHCP(ctx, value)
+		dhcp, err := application.startDHCP(ctx, value, owner)
 
 		return dhcp, nil, err
 	}
@@ -395,11 +422,11 @@ func unexpectedProcessExit(name string, err error) error {
 	return fmt.Errorf("%s %w", name, errProcessExited)
 }
 
-func (application *Daemon) startDHCP(ctx context.Context, value config.Config) (*managedProcess, error) {
+func (application *Daemon) startDHCP(ctx context.Context, value config.Config, owner string) (*managedProcess, error) {
 	var done *managedProcess
 	err := application.Monitor.Run(ctx, "dhcp.acquire", func(ctx context.Context) error {
 		var err error
-		done, err = application.startDHCPClient(ctx, value)
+		done, err = application.startDHCPClient(ctx, value, owner)
 
 		return err
 	})
@@ -410,7 +437,7 @@ func (application *Daemon) startDHCP(ctx context.Context, value config.Config) (
 	return done, nil
 }
 
-func (application *Daemon) startDHCPClient(ctx context.Context, value config.Config) (*managedProcess, error) {
+func (application *Daemon) startDHCPClient(ctx context.Context, value config.Config, owner string) (*managedProcess, error) {
 	hook := filepath.Join(application.StateDir, "bin", "udhcpc-hook")
 	arguments := dhcpArguments(value, hook)
 	binary := "udhcpc"
@@ -421,16 +448,14 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 	client := exec.CommandContext(ctx, binary, arguments...)
 	dhcpLog := application.Monitor.LineWriter(ctx, "udhcpc")
 	client.Stdout, client.Stderr = io.MultiWriter(application.Out, dhcpLog), io.MultiWriter(application.Err, dhcpLog)
-	client.Env = dhcpEnvironment(application.ConfigPath, application.StateDir)
+	client.Env = dhcpEnvironment(application.ConfigPath, application.StateDir, owner)
 	client.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	configureGracefulStop(client)
-	// Keep ownership from the previous client; readiness rejects records older than since.
-	since := time.Now().UTC()
 	process, err := startProcess(client)
 	if err != nil {
 		return nil, fmt.Errorf("start DHCP client: %w", err)
 	}
-	if err := waitDHCPLease(ctx, process, network.Target(value), since); err != nil {
+	if err := waitDHCPLease(ctx, process, network.Target(value), owner); err != nil {
 		return nil, errors.Join(err, process.stop())
 	}
 	return process, nil
@@ -439,11 +464,12 @@ func (application *Daemon) startDHCPClient(ctx context.Context, value config.Con
 // The hook records udhcpc's lower-case environment as lease options. A clean
 // child environment prevents inherited credentials or even stale option names
 // from being mistaken for data supplied by the DHCP server.
-func dhcpEnvironment(configPath, stateDir string) []string {
+func dhcpEnvironment(configPath, stateDir, owner string) []string {
 	environment := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"UDM_IPTV_CONFIG=" + configPath,
 		"UDM_IPTV_STATE_DIR=" + stateDir,
+		OwnerEnvironment + "=" + owner,
 	}
 	if metric, ok := os.LookupEnv("IF_METRIC"); ok {
 		environment = append(environment, "IF_METRIC="+metric)
@@ -460,7 +486,7 @@ func dhcpArguments(value config.Config, hook string) []string {
 // waitDHCPLease waits until the hook records that it applied a lease of
 // this run to target. An address on the interface is not enough: the hook
 // sets it before the routes, and a route it could not install is a failure.
-func waitDHCPLease(ctx context.Context, process *managedProcess, target string, since time.Time) error {
+func waitDHCPLease(ctx context.Context, process *managedProcess, target, owner string) error {
 	deadline := time.NewTimer(dhcpAcquireTimeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(dhcpLeasePoll)
@@ -478,7 +504,7 @@ func waitDHCPLease(ctx context.Context, process *managedProcess, target string, 
 			if err != nil {
 				continue
 			}
-			ready, err := leaseReady(state, target, since)
+			ready, err := leaseReady(state, target, owner)
 			if err != nil {
 				return err
 			}

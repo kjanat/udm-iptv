@@ -18,14 +18,14 @@ func TestLeaseStateRoundTrip(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "run", "lease.json")
 	lease := network.Lease{Action: "bound", Interface: "iptv", Address: "10.207.71.227", Mask: "20", Routers: []string{"10.207.64.1"}, StaticRoutes: []string{"213.75.112.0/21", "10.207.64.1"}, Options: map[string]string{"dns": "195.121.1.34", "lease": "3600"}}
-	if err := writeLeaseState(path, lease, nil); err != nil {
+	if err := writeLeaseState(path, lease, "run-a", nil); err != nil {
 		t.Fatal(err)
 	}
 	state, err := readLeaseState(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Received.IsZero() || !state.Applied || state.Failure != "" || state.Lease.Address != lease.Address || state.Lease.Options["dns"] != "195.121.1.34" || len(state.Lease.StaticRoutes) != 2 {
+	if state.Received.IsZero() || state.Owner != "run-a" || !state.Applied || state.Failure != "" || state.Lease.Address != lease.Address || state.Lease.Options["dns"] != "195.121.1.34" || len(state.Lease.StaticRoutes) != 2 {
 		t.Fatalf("lease state = %+v", state)
 	}
 }
@@ -35,7 +35,7 @@ var errRouteRefused = errors.New("apply DHCP routes: route refused")
 func TestLeaseStateRecordsAFailedApplication(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "run", "lease.json")
-	if err := writeLeaseState(path, network.Lease{Action: "bound", Interface: "iptv"}, errRouteRefused); err != nil {
+	if err := writeLeaseState(path, network.Lease{Action: "bound", Interface: "iptv"}, "run-a", errRouteRefused); err != nil {
 		t.Fatal(err)
 	}
 	state, err := readLeaseState(path)
@@ -47,28 +47,30 @@ func TestLeaseStateRecordsAFailedApplication(t *testing.T) {
 	}
 }
 
-// The daemon waits for the hook's record of this run's lease on this
-// interface, and stops waiting the moment the hook reports it could not
-// apply one.
+// The daemon waits for the hook's record of a lease its own client applied
+// on this interface, and stops waiting the moment the hook reports it could
+// not apply one. A lease another run's client delivered is not this run's.
 func TestLeaseReadyNeedsThisRunsAppliedLease(t *testing.T) {
 	t.Parallel()
-	since := time.Date(2026, 9, 19, 2, 0, 0, 0, time.UTC)
+	const owner = "run-b"
+	received := time.Date(2026, 9, 19, 2, 0, 0, 0, time.UTC)
 	bound := network.Lease{Action: "bound", Interface: "iptv", Address: "10.207.67.179", Mask: "20"}
 	for name, test := range map[string]struct {
 		state LeaseState
 		ready bool
 		err   error
 	}{
-		"applied":         {LeaseState{Received: since.Add(time.Second), Applied: true, Lease: bound}, true, nil},
-		"renewed":         {LeaseState{Received: since.Add(time.Minute), Applied: true, Lease: network.Lease{Action: "renew", Interface: "iptv"}}, true, nil},
-		"previous run":    {LeaseState{Received: since.Add(-time.Hour), Applied: true, Lease: bound}, false, nil},
-		"other interface": {LeaseState{Received: since.Add(time.Second), Applied: true, Lease: network.Lease{Action: "bound", Interface: "eth8"}}, false, nil},
-		"deconfig":        {LeaseState{Received: since.Add(time.Second), Applied: true, Lease: network.Lease{Action: "deconfig", Interface: "iptv"}}, false, nil},
-		"not applied":     {LeaseState{Received: since.Add(time.Second), Failure: "apply DHCP routes: refused", Lease: bound}, false, errLeaseNotApplied},
+		"applied":         {LeaseState{Received: received, Owner: owner, Applied: true, Lease: bound}, true, nil},
+		"renewed":         {LeaseState{Received: received, Owner: owner, Applied: true, Lease: network.Lease{Action: "renew", Interface: "iptv"}}, true, nil},
+		"other run":       {LeaseState{Received: received.Add(time.Second), Owner: "run-a", Applied: true, Lease: bound}, false, nil},
+		"unowned":         {LeaseState{Received: received.Add(time.Second), Applied: true, Lease: bound}, false, nil},
+		"other interface": {LeaseState{Received: received, Owner: owner, Applied: true, Lease: network.Lease{Action: "bound", Interface: "eth8"}}, false, nil},
+		"deconfig":        {LeaseState{Received: received, Owner: owner, Applied: true, Lease: network.Lease{Action: "deconfig", Interface: "iptv"}}, false, nil},
+		"not applied":     {LeaseState{Received: received, Owner: owner, Failure: "apply DHCP routes: refused", Lease: bound}, false, errLeaseNotApplied},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			ready, err := leaseReady(test.state, "iptv", since)
+			ready, err := leaseReady(test.state, "iptv", owner)
 			if ready != test.ready || !errors.Is(err, test.err) {
 				t.Fatalf("ready=%v err=%v", ready, err)
 			}
@@ -88,7 +90,7 @@ func TestFailedLeaseStateRetainsRouteOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	lease.ManagedAddresses = []netlink.Addr{*address}
-	if err := writeLeaseState(path, lease, errRouteRefused); err != nil {
+	if err := writeLeaseState(path, lease, "run-a", errRouteRefused); err != nil {
 		t.Fatal(err)
 	}
 	state, err := readLeaseState(path)

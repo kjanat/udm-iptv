@@ -33,11 +33,21 @@ func linkExists(t *testing.T, name string) bool {
 	return false
 }
 
-func mustRemoveLink(t *testing.T, value config.Config) {
+func mustRemoveLink(t *testing.T, value config.Config, created netlink.Link) {
 	t.Helper()
-	if err := RemoveLink(value); err != nil {
+	if err := RemoveLink(value, created); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustEnsureLink(t *testing.T, value config.Config) netlink.Link {
+	t.Helper()
+	link, err := EnsureLink(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return link
 }
 
 func addForeignVLAN(t *testing.T, value config.Config) {
@@ -62,25 +72,48 @@ func TestRemoveLinkDeletesOnlyTheLinkItCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := vlanConfig("wan-test")
-	if _, err := EnsureLink(value); err != nil {
-		t.Fatal(err)
-	}
-	mustRemoveLink(t, value)
+	created := mustEnsureLink(t, value)
+	mustRemoveLink(t, value, created)
 	if linkExists(t, value.WAN.VLANInterface) {
 		t.Fatal("the created VLAN survived RemoveLink")
 	}
-	mustRemoveLink(t, value)
+	mustRemoveLink(t, value, created)
 
 	addForeignVLAN(t, value)
-	mustRemoveLink(t, value)
+	mustRemoveLink(t, value, created)
 	if !linkExists(t, value.WAN.VLANInterface) {
 		t.Fatal("a VLAN this program did not create was deleted")
 	}
 
 	value.WAN.VLAN = 0
-	mustRemoveLink(t, value)
+	mustRemoveLink(t, value, created)
 	if !linkExists(t, value.WAN.VLANInterface) {
 		t.Fatal("an untagged configuration deleted a link")
+	}
+}
+
+func TestRemoveLinkKeepsASuccessorsReplacement(t *testing.T) {
+	enterPrivateNamespace(t)
+	if err := netlink.LinkAdd(&netlink.Dummy{Name: "wan-test"}); err != nil {
+		t.Fatal(err)
+	}
+	value := vlanConfig("wan-test")
+	first := mustEnsureLink(t, value)
+	second := mustEnsureLink(t, value)
+	if first.Attrs().Index == second.Attrs().Index {
+		t.Fatal("the replacement kept the stale interface index")
+	}
+	mustRemoveLink(t, value, first)
+	current, err := netlink.LinkByName(value.WAN.VLANInterface)
+	if err != nil {
+		t.Fatalf("the successor's VLAN was deleted: %v", err)
+	}
+	if current.Attrs().Index != second.Attrs().Index {
+		t.Fatalf("VLAN index %d after stale cleanup; the successor created %d", current.Attrs().Index, second.Attrs().Index)
+	}
+	mustRemoveLink(t, value, second)
+	if linkExists(t, value.WAN.VLANInterface) {
+		t.Fatal("the successor's own cleanup left its VLAN")
 	}
 }
 

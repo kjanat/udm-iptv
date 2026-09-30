@@ -17,27 +17,28 @@ const leaseStatePath = "/run/udm-iptv/lease.json"
 
 var errLeaseNotApplied = errors.New("the DHCP hook could not apply the lease")
 
-// LeaseState is the last lease event the DHCP hook handled. Applied says
-// whether the address and routes went in; Failure holds the reason when
-// they did not.
+// LeaseState is the last lease event the DHCP hook handled. Owner is the
+// token of the daemon run whose client delivered it. Applied says whether
+// the address and routes went in; Failure holds the reason when they did not.
 type LeaseState struct {
 	Received time.Time     `json:"received"`
+	Owner    string        `json:"owner,omitempty"`
 	Applied  bool          `json:"applied"`
 	Failure  string        `json:"failure,omitempty"`
 	Lease    network.Lease `json:"lease"`
 }
 
-// WriteLeaseState records lease as the current one, with the outcome of
-// applying it.
-func WriteLeaseState(lease network.Lease, applyErr error) error {
-	return writeLeaseState(leaseStatePath, lease, applyErr)
+// WriteLeaseState records lease as the current one, with the run that
+// delivered it and the outcome of applying it.
+func WriteLeaseState(lease network.Lease, owner string, applyErr error) error {
+	return writeLeaseState(leaseStatePath, lease, owner, applyErr)
 }
 
-func writeLeaseState(path string, lease network.Lease, applyErr error) error {
+func writeLeaseState(path string, lease network.Lease, owner string, applyErr error) error {
 	if err := os.MkdirAll(filepath.Dir(path), filemode.SharedDir); err != nil {
 		return fmt.Errorf("create lease state directory: %w", err)
 	}
-	state := LeaseState{Received: time.Now().UTC(), Applied: applyErr == nil, Lease: lease}
+	state := LeaseState{Received: time.Now().UTC(), Owner: owner, Applied: applyErr == nil, Lease: lease}
 	if applyErr != nil {
 		state.Failure = applyErr.Error()
 	}
@@ -66,12 +67,12 @@ func ReadLeaseState() (LeaseState, error) {
 	return readLeaseState(leaseStatePath)
 }
 
-// leaseReady reports whether state is a lease the hook applied to target
-// after since. A record the hook wrote for a failed application is an error;
-// a record from before since, for another interface, or for a deconfig is
+// leaseReady reports whether state is a lease that owner's client applied to
+// target. A record the hook wrote for a failed application is an error; a
+// record from another run, for another interface, or for a deconfig is
 // simply not the lease being waited for.
-func leaseReady(state LeaseState, target string, since time.Time) (bool, error) {
-	if state.Received.Before(since) || state.Lease.Interface != target {
+func leaseReady(state LeaseState, target, owner string) (bool, error) {
+	if state.Owner != owner || state.Lease.Interface != target {
 		return false, nil
 	}
 	if state.Lease.Action != "bound" && state.Lease.Action != "renew" {
