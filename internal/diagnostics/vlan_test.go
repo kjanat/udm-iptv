@@ -27,7 +27,7 @@ func TestVLANComparison(t *testing.T) {
 		{name: "matching custom name", parent: "eth4", id: 4, status: "match", want: "tv-custom on eth4, VLAN 4"},
 		{name: "different parent", parent: "eth6", id: 4, status: "mismatch", want: "Existing:   tv-custom on eth6, VLAN 4"},
 		{name: "different tag", parent: "eth4", id: 6, status: "mismatch", want: "Existing:   tv-custom on eth4, VLAN 6"},
-		{name: "absent", linkErr: netlink.LinkNotFoundError{}, status: "missing", want: "normal while the service is stopped"},
+		{name: "absent", linkErr: netlink.LinkNotFoundError{}, status: "missing", want: "Configured IPTV VLAN interface is absent:\n  Configured: tv-custom on eth4, VLAN 4\n  Service:    inactive\n"},
 		{name: "lookup denied", linkErr: errLinkQuery, status: "unavailable", want: "netlink query denied"},
 		{name: "parent unavailable", id: 4, parentErr: errLinkQuery, status: "unavailable", want: "cannot resolve parent link index 8"},
 		{name: "name occupied", notVLAN: true, status: "wrong-type", want: "tv-custom is a dummy, not a VLAN"},
@@ -52,7 +52,7 @@ func TestVLANComparison(t *testing.T) {
 			if check.Status != test.status {
 				t.Fatalf("status = %s, want %s", check.Status, test.status)
 			}
-			output := RenderSnapshot(Snapshot{Network: networkStatus{VLAN: check}})
+			output := RenderSnapshot(Snapshot{Network: networkStatus{VLAN: check}, Service: serviceStatus{ActiveState: "inactive"}})
 			if !strings.Contains(output, test.want) {
 				t.Fatalf("missing %q in snapshot:\n%s", test.want, output)
 			}

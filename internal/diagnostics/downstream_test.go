@@ -25,14 +25,14 @@ func TestDownstreamMissingDataIsNotHealthy(t *testing.T) {
 	if !reflect.DeepEqual(links, want) {
 		t.Fatalf("unknown became healthy: %+v", links)
 	}
-	text := RenderSnapshot(Snapshot{Downstream: links, Switches: "firmware 4.1.13, switch0 up", NativeProxy: "igmpproxy.service inactive, no extra proxy processes", Playback: "5 multicast routes (20173 packets), 2 IGMP groups on LAN"})
+	text := RenderSnapshot(Snapshot{Downstream: links, Switches: "firmware 4.1.13, switch0 up", NativeProxy: "igmpproxy.service inactive, no extra proxy processes", Playback: "5 multicast routes (20173 packets), 2 LAN groups joined by the router itself"})
 	for _, required := range []string{
 		"br0: link=up, snooping=enabled, querier=disabled",
 		"br1: snooping=unrecognized",
 		"eth0.10: no sysfs",
 		"Switch: firmware 4.1.13, switch0 up",
 		"Native UniFi proxy: igmpproxy.service inactive, no extra proxy processes",
-		"Receivers: 5 multicast routes (20173 packets), 2 IGMP groups on LAN",
+		"Forwarding: 5 multicast routes (20173 packets), 2 LAN groups joined by the router itself",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("missing %s in %s", required, text)
@@ -76,19 +76,19 @@ func TestFormatReceiversSeparatesUnavailableFromZero(t *testing.T) {
 	none := 0
 	usage := MulticastInfo{Routes: 5, Packets: 20173}
 	idle := MulticastInfo{}
-	if got := formatReceivers(&usage, &none); got != "5 multicast routes (20173 packets), 0 IGMP groups on LAN" {
+	if got := formatReceivers(&usage, &none); got != "5 multicast routes (20173 packets), 0 LAN groups joined by the router itself" {
 		t.Fatal(got)
 	}
-	if got := formatReceivers(&usage, nil); got != "5 multicast routes (20173 packets), IGMP groups on LAN unavailable" {
+	if got := formatReceivers(&usage, nil); got != "5 multicast routes (20173 packets), router's own LAN group memberships unavailable" {
 		t.Fatal(got)
 	}
-	if got := formatReceivers(&idle, &none); got != "0 multicast routes (0 packets), 0 IGMP groups on LAN" {
+	if got := formatReceivers(&idle, &none); got != "0 multicast routes (0 packets), 0 LAN groups joined by the router itself" {
 		t.Fatal(got)
 	}
-	if got := formatReceivers(nil, &none); got != "multicast routes unavailable, 0 IGMP groups on LAN" {
+	if got := formatReceivers(nil, &none); got != "multicast routes unavailable, 0 LAN groups joined by the router itself" {
 		t.Fatal(got)
 	}
-	if got := formatReceivers(nil, nil); got != "multicast routes unavailable, IGMP groups on LAN unavailable" {
+	if got := formatReceivers(nil, nil); got != "multicast routes unavailable, router's own LAN group memberships unavailable" {
 		t.Fatal(got)
 	}
 }

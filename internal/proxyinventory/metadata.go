@@ -41,7 +41,7 @@ func familyFeatures(program string) map[string]Feature {
 	return map[string]Feature{
 		"ipv4_multicast":        {Status: "supported", Evidence: "program family"},
 		"ipv6_multicast":        ipv6,
-		"ipv4_querier_election": {Status: unknownStatus, Evidence: "not established by executable presence or version"},
+		"ipv4_querier_election": {Status: unknownStatus, Evidence: "not probed"},
 	}
 }
 

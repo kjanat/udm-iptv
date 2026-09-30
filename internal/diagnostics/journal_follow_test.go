@@ -126,7 +126,7 @@ func TestJournalDrainHonorsCaptureDeadline(t *testing.T) {
 	if err := drainJournal(ctx, make(chan Event), func(event Event) error { notices = append(notices, event); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(notices) != 1 || notices[0].Type != EventError || !strings.Contains(notices[0].Message, "in-flight records may be missing") {
+	if len(notices) != 1 || notices[0].Type != EventError || !strings.Contains(notices[0].Message, "Journal drain cancelled before the stream closed") {
 		t.Fatalf("deadline lost the collection completeness notice: %+v", notices)
 	}
 }

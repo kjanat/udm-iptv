@@ -94,7 +94,7 @@ func (application *Application) suggestProvider(ctx context.Context, settings co
 		return "", writeString(application.Err, "Provider unknown. Choose manually.\n")
 	}
 
-	return application.providerSuggestion, writef(application.Err, "Suggested: %s (PTR hint, unverified). Confirm your TV provider.\n", application.providerSuggestion)
+	return application.providerSuggestion, writef(application.Err, "Suggested: %s (from reverse DNS).\n", application.providerSuggestion)
 }
 
 func suggestedProvider(identity telemetry.NetworkIdentity) string {

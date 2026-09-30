@@ -683,7 +683,7 @@ func (r reportRenderer) sourceRanges(summary configSummary) string {
 	}
 	ranges := strings.Join(summary.ProxySourceRanges, ", ")
 	if summary.Proxy == config.ProxyImproxy {
-		return ranges + " (" + r.text(ReportWarning, "configured; improxy has no source filter, so nothing is applied") + ")"
+		return ranges + " (" + r.text(ReportWarning, "ignored by improxy") + ")"
 	}
 
 	return ranges + " (applied as igmpproxy altnet)"

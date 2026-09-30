@@ -15,7 +15,6 @@ The reported TV freezes still have no confirmed diagnosis.
       Invalid leases and failed updates have regression tests.
       Background: fabianishere/udm-iptv#57.
 - [x] Verify stable processes and automatic startup before reporting success.
-      Program readiness does not prove successful TV playback.
       Background: fabianishere/udm-iptv#420.
 - [x] Show proxy, IGMP version, quickleave and debug settings.
       Background: fabianishere/udm-iptv#410.

@@ -280,7 +280,7 @@ func (application *Collector) finalizeCapture(ctx context.Context, write func(Ev
 		return err
 	}
 	if expired(ctx) {
-		return write(Event{Time: time.Now().UTC(), Type: EventTimeout, Message: "Capture deadline reached; a collector may have stalled."})
+		return write(Event{Time: time.Now().UTC(), Type: EventTimeout, Message: "Capture deadline reached."})
 	}
 
 	return write(Event{Time: time.Now().UTC(), Type: EventCompleted, Message: "Capture finished within its deadline."})

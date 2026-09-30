@@ -58,7 +58,7 @@ func (r reportRenderer) downstream(value Snapshot) string {
 	}
 	fmt.Fprintf(&output, "Switch: %s\n", fallbackText(value.Switches))
 	fmt.Fprintf(&output, "Native UniFi proxy: %s\n", fallbackText(value.NativeProxy))
-	fmt.Fprintf(&output, "Receivers: %s\n", fallbackText(value.Playback))
+	fmt.Fprintf(&output, "Forwarding: %s\n", fallbackText(value.Playback))
 
 	return output.String()
 }
@@ -176,9 +176,9 @@ func formatReceivers(usage *MulticastInfo, groups *int) string {
 	if usage != nil {
 		routes = fmt.Sprintf("%d multicast routes (%d packets)", usage.Routes, usage.Packets)
 	}
-	Membership := "IGMP groups on LAN unavailable"
+	Membership := "router's own LAN group memberships unavailable"
 	if groups != nil {
-		Membership = strconv.Itoa(*groups) + " IGMP groups on LAN"
+		Membership = strconv.Itoa(*groups) + " LAN groups joined by the router itself"
 	}
 
 	return routes + ", " + Membership

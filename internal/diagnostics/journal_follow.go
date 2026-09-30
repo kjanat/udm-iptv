@@ -169,7 +169,7 @@ func drainJournal(ctx context.Context, events <-chan Event, write func(Event) er
 		}
 		select {
 		case <-ctx.Done():
-			return write(journalError("Journal drain ended before the stream closed; in-flight records may be missing", ctx.Err()))
+			return write(journalError("Journal drain cancelled before the stream closed", ctx.Err()))
 		case event, open := <-events:
 			if !open {
 				return nil
