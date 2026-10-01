@@ -444,16 +444,19 @@ const lookupTestBudget = 30 * time.Millisecond
 
 var errNoEgress = errors.New("no default route")
 
+const testUserAgent = "udm-iptv/5.0.0-test"
+
 // testSources asks the server for the address and the given resolver for the
 // name; the kernel has no route to offer.
 func testSources(server *httptest.Server, ptr func(context.Context, string) ([]string, error)) lookupSources {
 	return lookupSources{
-		egress:   func() (netip.Addr, error) { return netip.Addr{}, errNoEgress },
-		client:   server.Client(),
-		endpoint: server.URL,
-		ptr:      ptr,
-		catalog:  config.DefaultCatalog(),
-		budget:   lookupTestBudgets,
+		egress:    func() (netip.Addr, error) { return netip.Addr{}, errNoEgress },
+		client:    server.Client(),
+		endpoint:  server.URL,
+		userAgent: testUserAgent,
+		ptr:       ptr,
+		catalog:   config.DefaultCatalog(),
+		budget:    lookupTestBudgets,
 	}
 }
 
@@ -502,7 +505,7 @@ func TestNetworkLookupUsesTheWANAddressAndItsNetwork(t *testing.T) {
 	sources.egress = func() (netip.Addr, error) { return address, nil }
 	result := lookupNetwork(context.Background(), sources)
 	want := NetworkIdentity{
-		IP: address.String(), IPSource: ipSourceWAN, ASN: "AS1136", Provider: "kpn", Method: "asn",
+		IP: address.String(), IPSource: ipSourceWAN, ASN: "AS1136", ASNSource: asnSourceTable, Provider: "kpn", Method: "asn",
 		Confidence: "medium", Status: "ip-and-asn", ObservedAt: result.ObservedAt,
 	}
 	if result != want {
@@ -511,7 +514,7 @@ func TestNetworkLookupUsesTheWANAddressAndItsNetwork(t *testing.T) {
 }
 
 // A private WAN address, behind another router or carrier NAT, falls back to
-// the HTTPS lookup, and an address outside every catalog network falls back
+// the edge lookup, and an address outside every catalog network falls back
 // to reverse DNS.
 func TestNetworkLookupFallsBackFromAPrivateWANAddress(t *testing.T) {
 	fast := publicIPServer(t, 0)
@@ -523,13 +526,91 @@ func TestNetworkLookupFallsBackFromAPrivateWANAddress(t *testing.T) {
 	}
 }
 
+// The edge names the network behind a private WAN address, so no reverse DNS
+// lookup is needed; the request identifies the program by its user agent.
+func TestNetworkLookupTakesTheASNFromTheEdge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertEqual(t, "user agent", r.UserAgent(), testUserAgent)
+		assertEqual(t, "accept", r.Header.Get("Accept"), "application/json")
+		_, _ = w.Write([]byte(`{"ip":"11.22.33.44","asn":"AS1136","as_name":"KPN B.V.","country_code":"NL","provider":"kpn"}`))
+	}))
+	t.Cleanup(server.Close)
+	result := lookupNetwork(context.Background(), testSources(server, blockingPTR))
+	want := NetworkIdentity{
+		IP: "11.22.33.44", IPSource: ipSourceHTTPS, ASN: "AS1136", ASNSource: asnSourceEdge, Provider: "kpn", Method: "asn",
+		Confidence: "medium", Status: "ip-and-asn", HTTPSMillis: result.HTTPSMillis, ObservedAt: result.ObservedAt,
+	}
+	if result != want {
+		t.Fatalf("edge lookup:\n got %+v\nwant %+v", result, want)
+	}
+}
+
+// A public WAN address outside every built-in network still asks the edge,
+// which may know the network from fresher data.
+func TestNetworkLookupAsksTheEdgeForAnUnlistedWANAddress(t *testing.T) {
+	server := edgeServer(t, `{"ip":"11.22.33.44","asn":"AS1136"}`)
+	sources := testSources(server, blockingPTR)
+	sources.egress = func() (netip.Addr, error) { return netip.MustParseAddr("11.22.33.44"), nil }
+	result := lookupNetwork(context.Background(), sources)
+	if result.IP != "11.22.33.44" || result.IPSource != ipSourceWAN || result.ASN != "AS1136" || result.ASNSource != asnSourceEdge || result.Provider != "kpn" {
+		t.Fatalf("unlisted WAN address: %+v", result)
+	}
+}
+
+// An ASN without a provider profile is still reported, and reverse DNS gets
+// its turn at naming the provider.
+func TestNetworkLookupKeepsAnUnknownASNAndTriesReverseDNS(t *testing.T) {
+	server := edgeServer(t, `{"ip":"11.22.33.44","asn":"AS64496"}`)
+	called := false
+	result := lookupNetwork(context.Background(), testSources(server, func(context.Context, string) ([]string, error) {
+		called = true
+
+		return []string{"customer.kpn.net."}, nil
+	}))
+	if !called || result.ASN != "AS64496" || result.Status != "ip-and-asn" || result.PTR != "customer.kpn.net." || result.Provider != "kpn" || result.Method != "ptr-suffix" {
+		t.Fatalf("unknown ASN: %+v", result)
+	}
+}
+
+// When the edge is down, a public WAN address still gets its reverse DNS
+// lookup, and both failures are reported.
+func TestNetworkLookupSurvivesAnEdgeFailureWithAWANAddress(t *testing.T) {
+	server := edgeServer(t, `{"ip":"11.22.33.44","asn":"AS1136"}`)
+	server.Close()
+	sources := testSources(server, blockingPTR)
+	sources.egress = func() (netip.Addr, error) { return netip.MustParseAddr("11.22.33.44"), nil }
+	result := lookupNetwork(context.Background(), sources)
+	if result.IP != "11.22.33.44" || result.IPSource != ipSourceWAN || result.Status != "ip-only" {
+		t.Fatalf("edge failure: %+v", result)
+	}
+	if !strings.HasPrefix(result.LookupError, "request edge identity:") || !strings.Contains(result.LookupError, "; reverse DNS lookup:") {
+		t.Fatalf("edge failure error: %q", result.LookupError)
+	}
+}
+
+func TestNetworkLookupRejectsAMalformedEdgeASN(t *testing.T) {
+	server := edgeServer(t, `{"ip":"11.22.33.44","asn":"1136"}`)
+	result := lookupNetwork(context.Background(), testSources(server, blockingPTR))
+	if result.IP != "" || result.Status != "unavailable" || !strings.Contains(result.LookupError, `ASN "1136"`) {
+		t.Fatalf("malformed ASN: %+v", result)
+	}
+}
+
+func edgeServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+	t.Cleanup(server.Close)
+
+	return server
+}
+
 func publicIPServer(t *testing.T, delay time.Duration) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 		case <-time.After(delay):
-			_, _ = w.Write([]byte("11.22.33.44"))
+			_, _ = w.Write([]byte(`{"ip":"11.22.33.44","asn":null}`))
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -541,7 +622,7 @@ func publicIPServer(t *testing.T, delay time.Duration) *httptest.Server {
 func TestNetworkLookupSlowHTTPSLeavesTheDNSBudgetUntouched(t *testing.T) {
 	slow := publicIPServer(t, 10*lookupTestBudget)
 	result := lookupNetwork(context.Background(), testSources(slow, blockingPTR))
-	if result.IP != "" || result.Status != "unavailable" || !strings.HasPrefix(result.LookupError, "request public IP:") {
+	if result.IP != "" || result.Status != "unavailable" || !strings.HasPrefix(result.LookupError, "request edge identity:") {
 		t.Fatalf("slow HTTPS: %+v", result)
 	}
 	if result.HTTPSMillis < lookupTestBudget.Milliseconds() || result.PTRMillis != 0 {
@@ -573,16 +654,17 @@ func TestNetworkLookupReportsCallerCancellation(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	result := lookupNetwork(cancelled, testSources(fast, blockingPTR))
-	if result.IP != "" || !strings.HasPrefix(result.LookupError, "request public IP:") || !strings.Contains(result.LookupError, context.Canceled.Error()) {
+	if result.IP != "" || !strings.HasPrefix(result.LookupError, "request edge identity:") || !strings.Contains(result.LookupError, context.Canceled.Error()) {
 		t.Fatalf("cancelled caller: %+v", result)
 	}
 }
 
 func TestNetworkLookupIsBoundedAndUsesPTR(t *testing.T) {
 	for _, test := range []lookupCase{
-		{name: "public address", body: "11.22.33.44", called: true, ip: "11.22.33.44", provider: "kpn", method: "ptr-suffix"},
-		{name: "private address", body: "192.168.1.1", called: false, ip: "", provider: "unknown", method: "none"},
-		{name: "oversized body", body: strings.Repeat("1", 66), called: false, ip: "", provider: "unknown", method: "none"},
+		{name: "public address", body: `{"ip":"11.22.33.44"}`, called: true, ip: "11.22.33.44", provider: "kpn", method: "ptr-suffix"},
+		{name: "private address", body: `{"ip":"192.168.1.1"}`, called: false, ip: "", provider: "unknown", method: "none"},
+		{name: "oversized body", body: `{"ip":"11.22.33.44","as_name":"` + strings.Repeat("x", edgeBodyLimit) + `"}`, called: false, ip: "", provider: "unknown", method: "none"},
+		{name: "not JSON", body: "11.22.33.44", called: false, ip: "", provider: "unknown", method: "none"},
 	} {
 		t.Run(test.name, func(t *testing.T) { runLookupCase(t, test) })
 	}

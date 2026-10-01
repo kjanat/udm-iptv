@@ -12,7 +12,7 @@ import (
 
 func TestProviderSuggestionUsesEvidence(t *testing.T) {
 	for provider, want := range map[string]string{"kpn": "kpn", "xs4all": "xs4all", "freedom": "freedom", "tweak": "tweak", "unknown": "", "custom": ""} {
-		identity := telemetry.NetworkIdentity{Provider: provider, Method: "ptr-suffix", Confidence: "low", Status: "ip-and-ptr"}
+		identity := telemetry.NetworkIdentity{Provider: provider, Method: "ptr-suffix", Confidence: "low", Status: "ip-and-ptr", PTR: "customer.example.net."}
 		if got := suggestedProvider(identity); got != want {
 			t.Errorf("%s: %s", provider, got)
 		}

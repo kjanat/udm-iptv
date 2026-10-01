@@ -110,7 +110,7 @@ These reports are not anonymous.
 
 Every report carries a random installation ID that stays the same, so your settings history and your failures are linked to one router.
 
-Network identity is on by default. It adds your full public IP address, the autonomous system announcing it and its reverse-DNS hostname. The address comes from your WAN connection, or from ipify when that address is not public; the provider match is built into the program, and your DNS resolver is asked only when no built-in network matches.
+Network identity is on by default. It adds your full public IP address, the autonomous system announcing it and its reverse-DNS hostname. The address comes from your WAN connection and the provider match is built into the program; when that does not name a provider, the maintainer's edge service at udm-iptv.kjanat.dev is asked for the address and its network, and your DNS resolver only when that does not name one either.
 
 Never sent: passwords, packet captures.
 

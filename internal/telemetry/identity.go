@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ type NetworkIdentity struct {
 	IP          string    `json:"public_ip,omitempty"`
 	IPSource    string    `json:"ip_source,omitempty"`
 	ASN         string    `json:"asn,omitempty"`
+	ASNSource   string    `json:"asn_source,omitempty"`
 	PTR         string    `json:"ptr,omitempty"`
 	Provider    string    `json:"detected_provider"`
 	Method      string    `json:"detection_method"`
@@ -41,15 +43,29 @@ const (
 	ipSourceHTTPS = "https"
 )
 
+// Where the ASN came from.
 const (
-	// httpsLookupTimeout bounds the public IP request on its own.
+	asnSourceTable = "table"
+	asnSourceEdge  = "edge"
+)
+
+const (
+	// httpsLookupTimeout bounds the edge request on its own.
 	httpsLookupTimeout = 3 * time.Second
 	// ptrLookupTimeout bounds the reverse DNS lookup on its own.
 	ptrLookupTimeout = 3 * time.Second
-	// ipv4TextLimit bounds the IP address response; the longest IPv4 text is 15 bytes.
-	ipv4TextLimit    = 65
-	publicIPEndpoint = "https://api.ipify.org"
+	// edgeBodyLimit bounds the edge response; its JSON body stays well under 1 KiB.
+	edgeBodyLimit    = 4096
+	publicIPEndpoint = "https://udm-iptv.kjanat.dev/"
 )
+
+var asnPattern = regexp.MustCompile(`^AS[1-9][0-9]{0,9}$`)
+
+// edgeIdentity is the JSON body the udm-iptv edge returns to a non-browser client.
+type edgeIdentity struct {
+	IP  string `json:"ip"`
+	ASN string `json:"asn"`
+}
 
 // lookupBudget is the time each phase of the lookup gets.
 type lookupBudget struct {
@@ -62,12 +78,13 @@ func defaultLookupBudget() lookupBudget {
 
 // lookupSources are the ways an identity lookup learns the address and its owner.
 type lookupSources struct {
-	egress   func() (netip.Addr, error)
-	client   *http.Client
-	endpoint string
-	ptr      func(context.Context, string) ([]string, error)
-	catalog  config.Catalog
-	budget   lookupBudget
+	egress    func() (netip.Addr, error)
+	client    *http.Client
+	endpoint  string
+	userAgent string
+	ptr       func(context.Context, string) ([]string, error)
+	catalog   config.Catalog
+	budget    lookupBudget
 }
 
 func (r *Reporter) networkEnabled() bool {
@@ -85,56 +102,88 @@ func (r *Reporter) networkEnabled() bool {
 	return value.Telemetry.Enabled && value.Telemetry.NetworkIdentity
 }
 
-// LookupNetwork performs no request until explicitly invoked by the application.
-// The WAN address is read from the kernel; ipify is asked only when that
-// address is not public. The provider comes from the networks built into the
-// binary, and reverse DNS through the system resolver is the fallback. Each
-// remote phase has its own deadline; no credentials are used.
-func LookupNetwork(parent context.Context) NetworkIdentity {
+// NetworkLookup returns the lookup the application runs when asked. The WAN
+// address is read from the kernel and matched against the networks built into
+// the binary. When that does not name the provider, the udm-iptv edge is asked
+// for the address and the autonomous system announcing it, identified by a
+// udm-iptv/<version> user agent. Reverse DNS through the system resolver is the
+// last resort. Each remote phase has its own deadline; no credentials are used.
+func NetworkLookup(version string) func(context.Context) NetworkIdentity {
 	client := &http.Client{
 		Transport:     HTTPTransport(http.DefaultTransport),
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-
-	return lookupNetwork(parent, lookupSources{
-		egress: network.EgressAddress, client: client, endpoint: publicIPEndpoint,
+	sources := lookupSources{
+		egress: network.EgressAddress, client: client, endpoint: publicIPEndpoint, userAgent: "udm-iptv/" + version,
 		ptr: net.DefaultResolver.LookupAddr, catalog: config.DefaultCatalog(), budget: defaultLookupBudget(),
-	})
+	}
+
+	return func(parent context.Context) NetworkIdentity { return lookupNetwork(parent, sources) }
 }
 
 func lookupNetwork(parent context.Context, sources lookupSources) NetworkIdentity {
 	result := NetworkIdentity{Status: "unavailable", ObservedAt: time.Now().UTC()}
-	address, ok := localEgress(sources.egress)
-	if ok {
-		result.IPSource = ipSourceWAN
-	} else {
-		started := time.Now()
-		var err error
-		address, err = publicIP(parent, sources.client, sources.endpoint, sources.budget.https)
-		result.HTTPSMillis = time.Since(started).Milliseconds()
-		if err != nil {
-			result.LookupError = fmt.Sprintf("%v after %d ms", err, result.HTTPSMillis)
+	if address, ok := localEgress(sources.egress); ok {
+		result.IP, result.IPSource = address.String(), ipSourceWAN
+		if _, asn, found := sources.catalog.ProviderByAddress(address); found {
+			result.ASN, result.ASNSource = asn, asnSourceTable
 			return cleanIdentity(sources.catalog, result)
 		}
-		result.IPSource = ipSourceHTTPS
 	}
-	result.IP, result.Status = address.String(), "ip-only"
-	if _, asn, found := sources.catalog.ProviderByAddress(address); found {
-		result.ASN = asn
+	started := time.Now()
+	edge, err := edgeLookup(parent, sources)
+	result.HTTPSMillis = time.Since(started).Milliseconds()
+	if err != nil {
+		result.LookupError = fmt.Sprintf("%v after %d ms", err, result.HTTPSMillis)
+		if result.IP == "" {
+			return cleanIdentity(sources.catalog, result)
+		}
+		return cleanIdentity(sources.catalog, pointerLookup(parent, sources, result))
+	}
+	result = mergeEdge(sources.catalog, result, edge)
+	if _, known := sources.catalog.ProviderByASN(result.ASN); known {
 		return cleanIdentity(sources.catalog, result)
 	}
+
+	return cleanIdentity(sources.catalog, pointerLookup(parent, sources, result))
+}
+
+// mergeEdge takes the edge's address when the kernel offered none or a
+// different one, and its ASN, or the built-in table's for that address.
+func mergeEdge(catalog config.Catalog, result NetworkIdentity, edge edgeAnswer) NetworkIdentity {
+	if result.IP != edge.ip.String() {
+		result.IP, result.IPSource = edge.ip.String(), ipSourceHTTPS
+	}
+	if edge.ASN != "" {
+		result.ASN, result.ASNSource = edge.ASN, asnSourceEdge
+	} else if _, asn, found := catalog.ProviderByAddress(edge.ip); found {
+		result.ASN, result.ASNSource = asn, asnSourceTable
+	}
+
+	return result
+}
+
+func pointerLookup(parent context.Context, sources lookupSources, result NetworkIdentity) NetworkIdentity {
 	ctx, cancel := context.WithTimeout(parent, sources.budget.ptr)
 	defer cancel()
 	started := time.Now()
 	names, err := sources.ptr(ctx, result.IP)
 	result.PTRMillis = time.Since(started).Milliseconds()
 	if err != nil {
-		result.LookupError = fmt.Sprintf("reverse DNS lookup: %v after %d ms", err, result.PTRMillis)
+		result.LookupError = joinErrors(result.LookupError, fmt.Sprintf("reverse DNS lookup: %v after %d ms", err, result.PTRMillis))
 	} else if len(names) != 0 {
 		result.PTR = names[0]
 	}
 
-	return cleanIdentity(sources.catalog, result)
+	return result
+}
+
+func joinErrors(first, second string) string {
+	if first == "" {
+		return second
+	}
+
+	return first + "; " + second
 }
 
 func localEgress(egress func() (netip.Addr, error)) (netip.Addr, bool) {
@@ -149,40 +198,60 @@ func localEgress(egress func() (netip.Addr, error)) (netip.Addr, bool) {
 	return address, true
 }
 
-func publicIP(parent context.Context, client *http.Client, endpoint string, timeout time.Duration) (netip.Addr, error) {
-	ctx, cancel := context.WithTimeout(parent, timeout)
+// edgeAnswer is the edge's view of this connection, with its address parsed.
+type edgeAnswer struct {
+	ip  netip.Addr
+	ASN string
+}
+
+func edgeLookup(parent context.Context, sources lookupSources) (edgeAnswer, error) {
+	ctx, cancel := context.WithTimeout(parent, sources.budget.https)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, sources.endpoint, nil)
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("create IP lookup request: %w", err)
+		return edgeAnswer{}, fmt.Errorf("create edge lookup request: %w", err)
 	}
-	response, err := client.Do(request)
+	request.Header.Set("User-Agent", sources.userAgent)
+	request.Header.Set("Accept", "application/json")
+	response, err := sources.client.Do(request)
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("request public IP: %w", err)
+		return edgeAnswer{}, fmt.Errorf("request edge identity: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return netip.Addr{}, fmt.Errorf("%w %s", errPublicIPStatus, response.Status)
+		return edgeAnswer{}, fmt.Errorf("%w %s", errEdgeStatus, response.Status)
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, ipv4TextLimit))
+	data, err := io.ReadAll(io.LimitReader(response.Body, edgeBodyLimit+1))
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("read public IP response: %w", err)
+		return edgeAnswer{}, fmt.Errorf("read edge identity response: %w", err)
 	}
-	if len(data) > ipv4TextLimit-1 {
-		return netip.Addr{}, errPublicIPTooLong
-	}
-	address, err := netip.ParseAddr(strings.TrimSpace(string(data)))
-	if err != nil || !publicAddress(address) {
-		return netip.Addr{}, fmt.Errorf("%w: %q", errPublicIPInvalid, data)
+	if len(data) > edgeBodyLimit {
+		return edgeAnswer{}, errEdgeTooLong
 	}
 
-	return address, nil
+	return parseEdge(data)
+}
+
+func parseEdge(data []byte) (edgeAnswer, error) {
+	var body edgeIdentity
+	if err := json.Unmarshal(data, &body); err != nil {
+		return edgeAnswer{}, fmt.Errorf("%w: %w", errEdgeInvalid, err)
+	}
+	address, err := netip.ParseAddr(body.IP)
+	if err != nil || !publicAddress(address) {
+		return edgeAnswer{}, fmt.Errorf("%w: address %q", errEdgeInvalid, body.IP)
+	}
+	if body.ASN != "" && !asnPattern.MatchString(body.ASN) {
+		return edgeAnswer{}, fmt.Errorf("%w: ASN %q", errEdgeInvalid, body.ASN)
+	}
+
+	return edgeAnswer{ip: address.Unmap(), ASN: body.ASN}, nil
 }
 
 var (
-	errPublicIPStatus  = errors.New("public IP lookup returned")
-	errPublicIPTooLong = errors.New("public IP response exceeds expected address length")
-	errPublicIPInvalid = errors.New("invalid public IP response")
+	errEdgeStatus  = errors.New("edge identity lookup returned")
+	errEdgeTooLong = errors.New("edge identity response exceeds the expected size")
+	errEdgeInvalid = errors.New("invalid edge identity response")
 )
 
 func publicAddress(address netip.Addr) bool {
@@ -222,19 +291,32 @@ func cleanIdentity(catalog config.Catalog, value NetworkIdentity) NetworkIdentit
 		return result
 	}
 	result.IP, result.Status = address.Unmap().String(), "ip-only"
-	if provider, ok := catalog.ProviderByASN(value.ASN); ok {
-		result.ASN, result.Status = value.ASN, "ip-and-asn"
-		result.Provider, result.Method, result.Confidence = provider.ID, "asn", "medium"
-		return result
+	switch {
+	case asnPattern.MatchString(value.ASN):
+		result.ASN, result.ASNSource, result.Status = value.ASN, value.ASNSource, "ip-and-asn"
+		if provider, ok := catalog.ProviderByASN(value.ASN); ok {
+			result.Provider, result.Method, result.Confidence = provider.ID, "asn", "medium"
+			return result
+		}
+	case value.ASN != "":
+		result.LookupError = joinErrors(result.LookupError, fmt.Sprintf("invalid ASN: %q", value.ASN))
 	}
-	if !validPointerName(value.PTR) {
-		if value.PTR != "" {
-			result.LookupError = fmt.Sprintf("invalid reverse DNS hostname: %q", value.PTR)
+
+	return cleanPointer(catalog, result, value.PTR)
+}
+
+func cleanPointer(catalog config.Catalog, result NetworkIdentity, pointer string) NetworkIdentity {
+	if !validPointerName(pointer) {
+		if pointer != "" {
+			result.LookupError = joinErrors(result.LookupError, fmt.Sprintf("invalid reverse DNS hostname: %q", pointer))
 		}
 		return result
 	}
-	result.PTR, result.Status = value.PTR, "ip-and-ptr"
-	if provider, ok := catalog.ProviderByPointerName(value.PTR); ok {
+	result.PTR = pointer
+	if result.ASN == "" {
+		result.Status = "ip-and-ptr"
+	}
+	if provider, ok := catalog.ProviderByPointerName(pointer); ok {
 		result.Provider, result.Method, result.Confidence = provider.ID, "ptr-suffix", "low"
 	}
 

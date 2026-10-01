@@ -106,8 +106,8 @@ func (application *Application) suggestProvider(ctx context.Context, settings co
 }
 
 func suggestedProvider(identity telemetry.NetworkIdentity) string {
-	byNetwork := identity.Method == "asn" && identity.Confidence == "medium" && identity.Status == "ip-and-asn"
-	byName := identity.Method == "ptr-suffix" && identity.Confidence == "low" && identity.Status == "ip-and-ptr"
+	byNetwork := identity.Method == "asn" && identity.Confidence == "medium" && identity.ASN != ""
+	byName := identity.Method == "ptr-suffix" && identity.Confidence == "low" && identity.PTR != ""
 	if !byNetwork && !byName {
 		return ""
 	}

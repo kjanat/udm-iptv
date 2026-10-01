@@ -60,7 +60,7 @@ func Execute(version string) error {
 		Out:             ui.Styled(os.Stdout),
 		In:              os.Stdin,
 		Err:             ui.Styled(os.Stderr),
-		networkIdentity: telemetry.LookupNetwork,
+		networkIdentity: telemetry.NetworkLookup(version),
 	}
 	return executeRoot(application.root())
 }

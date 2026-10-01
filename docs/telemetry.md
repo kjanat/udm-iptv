@@ -56,7 +56,7 @@ A persistent installation ID correlates enabled operational reporting even when 
 
 ## Privacy
 
-Network identity lookup reads your WAN address from the kernel and matches it against the provider networks built into the program, extracted from IPinfo Lite. ipify is asked for the address only when the WAN address is not public, and your DNS resolver for its PTR only when no built-in network matches.
+Network identity lookup reads your WAN address from the kernel and matches it against the provider networks built into the program, extracted from IPinfo Lite. When that does not name a provider, the maintainer's edge service at `udm-iptv.kjanat.dev` is asked for the address and its autonomous system, as Cloudflare sees them; the request carries a `udm-iptv/<version>` user agent and nothing else about you. Your DNS resolver is asked for the PTR only when neither names a provider. The `asn_source` field says whether the ASN came from the built-in table or the edge.
 Sentry also sees your connection's public IP during reporting.
 Disabling network identity removes the IP, ASN and PTR fields and the lookups.
 
