@@ -9,7 +9,7 @@
 - [x] `vcs.modified: true`: `/dist/` in `.gitignore`
 - [x] Logs without installation ID: present after all
 - [x] Breadcrumbs, integrations, contexts, modules: on
-- [x] Outgoing HTTP as spans: `sentryhttpclient` around the upgrade and ipify clients
+- [x] Outgoing HTTP as spans: `sentryhttpclient` around the upgrade and identity lookup clients
 - [x] Proxy and udhcpc output as Sentry logs: `sentryslog`
 - [x] Installer steps as child spans
 - [x] Failure diagnostics as attachment

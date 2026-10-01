@@ -161,7 +161,7 @@ func claimNetwork(value config.Config) (netlink.Link, Owner, func() error, error
 	return link, owner, func() error {
 		removeIgnoringError(filepath.Join(runtimeDir, ownerFile))
 
-		return errors.Join(network.RemoveLink(value, link), release())
+		return errors.Join(network.RemoveStaticRoutes(link), network.RemoveLink(value, link), release())
 	}, nil
 }
 

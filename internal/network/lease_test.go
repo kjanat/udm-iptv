@@ -432,7 +432,7 @@ func TestStaticRoutesAddOnceAndKeepTheirOwn(t *testing.T) {
 	if !reflect.DeepEqual(fixture.changes, []string{"replace-route", "replace-route"}) || len(fixture.routes) != 3 {
 		t.Fatalf("first application: %v / %v", fixture.changes, describeRoutes(fixture.routes))
 	}
-	assertOnLinkStaticRoutes(t, fixture.routes[1:])
+	assertMarkedStaticRoutes(t, fixture.routes[1:])
 	fixture.changes = nil
 	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
 		t.Fatal(err)
@@ -442,12 +442,68 @@ func TestStaticRoutesAddOnceAndKeepTheirOwn(t *testing.T) {
 	}
 }
 
-func assertOnLinkStaticRoutes(t *testing.T, routes []netlink.Route) {
+func assertMarkedStaticRoutes(t *testing.T, routes []netlink.Route) {
 	t.Helper()
 	for _, route := range routes {
-		if route.LinkIndex != 52 || len(route.Gw) != 0 || route.Protocol != unix.RTPROT_STATIC {
+		if route.LinkIndex != 52 || len(route.Gw) != 0 || int(route.Protocol) != routeProtocolStatic {
 			t.Fatalf("static route attributes: %+v", route)
 		}
+	}
+}
+
+// A route an earlier version installed with the plain static protocol on
+// the same interface is replaced by a marked one.
+func TestStaticRoutesAdoptUnmarkedRoutesOnTheirInterface(t *testing.T) {
+	t.Parallel()
+	value := config.Config{}
+	value.WAN.StaticRoutes = []string{"213.75.112.0/21"}
+	legacy, err := dhcpRoute(52, "213.75.112.0/21", "0.0.0.0", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Protocol = unix.RTPROT_STATIC
+	fixture := &leaseFixture{routes: []netlink.Route{legacy}}
+	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fixture.changes, []string{"delete-route", "replace-route"}) || len(fixture.routes) != 1 {
+		t.Fatalf("adoption: %v / %v", fixture.changes, describeRoutes(fixture.routes))
+	}
+	assertMarkedStaticRoutes(t, fixture.routes)
+}
+
+// Marked routes that are no longer configured, or sit on another interface
+// after the uplink changed, are removed; a stop removes them all.
+func TestStaticRoutesRetireTheirOwnObsoleteRoutes(t *testing.T) {
+	t.Parallel()
+	value := config.Config{}
+	value.WAN.StaticRoutes = []string{"213.75.112.0/21"}
+	moved, err := dhcpRoute(7, "213.75.112.0/21", "0.0.0.0", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropped, err := dhcpRoute(52, "217.166.0.0/16", "0.0.0.0", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := dhcpRoute(7, "198.51.100.0/24", "192.0.2.254", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved.Protocol, dropped.Protocol = routeProtocolStatic, routeProtocolStatic
+	fixture := &leaseFixture{routes: []netlink.Route{moved, dropped, foreign}}
+	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
+		t.Fatal(err)
+	}
+	if got := describeRoutes(fixture.routes); !slices.Equal(got, []string{"198.51.100.0/24 via 192.0.2.254 metric 0", "213.75.112.0/21 on-link metric 0"}) {
+		t.Fatalf("after reconfiguration: %v", got)
+	}
+	assertMarkedStaticRoutes(t, fixture.routes[1:])
+	if err := removeStaticRoutes(ownedLink(), fixture.ops()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fixture.routes, []netlink.Route{foreign}) {
+		t.Fatalf("after stop: %v", describeRoutes(fixture.routes))
 	}
 }
 

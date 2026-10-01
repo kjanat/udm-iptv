@@ -464,38 +464,94 @@ func staticAddress(prefix netip.Prefix) *netlink.Addr {
 	}}
 }
 
-// ApplyStaticRoutes installs the configured unicast routes on link.
+// routeProtocolStatic marks the configured routes this program installs; rt_protos assigns nothing above 192.
+const routeProtocolStatic = 200
+
+// ApplyStaticRoutes installs the configured unicast routes on link and
+// retires the ones this program installed that are no longer configured.
 func ApplyStaticRoutes(value config.Config, link netlink.Link) error {
 	return applyStaticRoutes(value, link, systemOperations())
+}
+
+// RemoveStaticRoutes deletes every route this program installed from the configuration.
+func RemoveStaticRoutes(link netlink.Link) error {
+	return removeStaticRoutes(link, systemOperations())
 }
 
 var errForeignStaticRoute = errors.New("configured route collides with a route this program did not install; remove that route or drop the destination from the configuration")
 
 func applyStaticRoutes(value config.Config, link netlink.Link, ops leaseOperations) error {
-	current, err := ops.routes(netlink.FAMILY_V4, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
+	desired, err := staticRoutes(value, link.Attrs().Index)
 	if err != nil {
-		return fmt.Errorf("read the routing table: %w", err)
+		return err
 	}
-	for _, raw := range value.WAN.StaticRoutes {
-		prefix, err := netip.ParsePrefix(raw)
-		if err != nil {
-			return fmt.Errorf("parse static route %s: %w", raw, err)
-		}
-		destination := &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), ipv4HostBits)}
-		route := netlink.Route{LinkIndex: link.Attrs().Index, Dst: destination, Protocol: unix.RTPROT_STATIC}
-		switch staticRouteState(current, route) {
+	current, err := pruneStaticRoutes(desired, ops)
+	if err != nil {
+		return err
+	}
+	for _, route := range desired {
+		existing, state := staticRouteState(current, route)
+		switch state {
 		case routeInstalled:
 			continue
 		case routeForeign:
-			return fmt.Errorf("%w: %s", errForeignStaticRoute, raw)
+			return fmt.Errorf("%w: %s", errForeignStaticRoute, route.Dst)
+		case routeAdoptable:
+			if err := ops.deleteRoute(&existing); err != nil {
+				return fmt.Errorf("retire the unmarked static route %s: %w", route.Dst, err)
+			}
 		case routeAbsent:
 		}
 		if err := ops.addRoute(&route); err != nil {
-			return fmt.Errorf("apply static route %s: %w", raw, err)
+			return fmt.Errorf("apply static route %s: %w", route.Dst, err)
 		}
 	}
 
 	return nil
+}
+
+func removeStaticRoutes(link netlink.Link, ops leaseOperations) error {
+	_, err := pruneStaticRoutes(nil, ops)
+	if err != nil {
+		return fmt.Errorf("remove the static routes of %s: %w", link.Attrs().Name, err)
+	}
+
+	return nil
+}
+
+func staticRoutes(value config.Config, linkIndex int) ([]netlink.Route, error) {
+	routes := make([]netlink.Route, 0, len(value.WAN.StaticRoutes))
+	for _, raw := range value.WAN.StaticRoutes {
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse static route %s: %w", raw, err)
+		}
+		destination := &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), ipv4HostBits)}
+		routes = append(routes, netlink.Route{LinkIndex: linkIndex, Dst: destination, Protocol: routeProtocolStatic})
+	}
+
+	return routes, nil
+}
+
+// pruneStaticRoutes deletes the routes carrying this program's protocol that
+// are not in desired, on any interface, and returns the routes left.
+func pruneStaticRoutes(desired []netlink.Route, ops leaseOperations) ([]netlink.Route, error) {
+	current, err := ops.routes(netlink.FAMILY_V4, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return nil, fmt.Errorf("read the routing table: %w", err)
+	}
+	kept := current[:0:0]
+	for _, existing := range current {
+		if int(existing.Protocol) != routeProtocolStatic || slices.ContainsFunc(desired, func(route netlink.Route) bool { return leaseRouteKey(route) == leaseRouteKey(existing) }) {
+			kept = append(kept, existing)
+			continue
+		}
+		if err := ops.deleteRoute(&existing); err != nil {
+			return nil, fmt.Errorf("remove static route %s: %w", existing.Dst, err)
+		}
+	}
+
+	return kept, nil
 }
 
 type routeState int
@@ -503,25 +559,33 @@ type routeState int
 const (
 	routeAbsent routeState = iota
 	routeInstalled
+	routeAdoptable
 	routeForeign
 )
 
-// staticRouteState says whether route is already in current as this program
-// installs it, on its interface without a gateway, or whether another route
-// to the same destination at the same metric is there instead.
-func staticRouteState(current []netlink.Route, route netlink.Route) routeState {
+// staticRouteState finds the route in current to the same destination at the
+// same metric. One carrying this program's protocol on the same interface is
+// installed; an on-link route on the same interface with the plain static
+// protocol is one an earlier version installed and is adopted; anything else
+// belongs to another owner.
+func staticRouteState(current []netlink.Route, route netlink.Route) (netlink.Route, routeState) {
 	for _, existing := range current {
 		if destinationKey(existing) != destinationKey(route) {
 			continue
 		}
-		if existing.LinkIndex == route.LinkIndex && len(existing.Gw) == 0 {
-			return routeInstalled
+		switch {
+		case existing.LinkIndex != route.LinkIndex || len(existing.Gw) != 0:
+			return existing, routeForeign
+		case int(existing.Protocol) == routeProtocolStatic:
+			return existing, routeInstalled
+		case existing.Protocol == unix.RTPROT_STATIC:
+			return existing, routeAdoptable
+		default:
+			return existing, routeForeign
 		}
-
-		return routeForeign
 	}
 
-	return routeAbsent
+	return netlink.Route{}, routeAbsent
 }
 
 func destinationKey(route netlink.Route) string {

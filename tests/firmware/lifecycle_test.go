@@ -139,8 +139,10 @@ systemctl daemon-reload`)
 	if err == nil {
 		h.t.Fatalf("upgrade with a failing service succeeded:\n%s", output)
 	}
-	if !strings.Contains(output, "previous installation was restored") {
-		h.t.Fatalf("upgrade failure does not report the restore:\n%s", output)
+	for _, detail := range []string{"previous installation was restored", "run udm-iptv upgrade again"} {
+		if !strings.Contains(output, detail) {
+			h.t.Fatalf("upgrade failure report lacks %q:\n%s", detail, output)
+		}
 	}
 	h.inside(name, "test", "!", "-e", "/run/udm-iptv-fail-once")
 	h.inside(name, "test", "!", "-e", "/data/udm-iptv/bin/.udm-iptv.previous")
@@ -156,7 +158,7 @@ systemctl daemon-reload`)
 
 func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
 	h.t.Helper()
-	h.aptInstall(name, "/package.deb")
+	h.aptInstall(name, "--reinstall", "/package.deb")
 	h.healthy(name)
 	version := strings.TrimSpace(h.inside(name, binary, "version"))
 	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
@@ -176,11 +178,11 @@ var kpnDestinations = []string{"213.75.0.0/16", "217.166.0.0/16", "195.121.0.0/1
 
 // aptInstall installs a package and fails on anything debconf complains
 // about, which apt prints without failing.
-func (h *firmwareHarness) aptInstall(name, path string) {
+func (h *firmwareHarness) aptInstall(name string, args ...string) {
 	h.t.Helper()
-	output := h.inside(name, "apt-get", "install", "-y", path)
+	output := h.inside(name, append([]string{"apt-get", "install", "-y"}, args...)...)
 	if strings.Contains(output, "debconf:") {
-		h.t.Fatalf("debconf complained during apt-get install %s:\n%s", path, output)
+		h.t.Fatalf("debconf complained during apt-get install %s:\n%s", strings.Join(args, " "), output)
 	}
 }
 

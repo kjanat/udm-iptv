@@ -26,6 +26,14 @@ unconfigured, disable UniFi's IGMP Proxy, then run:
 dpkg --configure udm-iptv
 ```
 
+## Failed package upgrade
+
+When the new service fails to start during a package upgrade, the previous
+executable, unit and runtime are put back and started again, and apt reports
+the failure. dpkg then records the new version while the previous one runs,
+which `udm-iptv status` shows. Fix the reported cause, then run
+`udm-iptv upgrade` again.
+
 ## Diagnostic capture status
 
 Each capture keeps a private `.status.json` file alongside its text or JSONL output.

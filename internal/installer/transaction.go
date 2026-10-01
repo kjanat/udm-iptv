@@ -34,6 +34,8 @@ type recoveryPath struct {
 	present bool
 }
 
+var errPackageRecordAhead = errors.New("dpkg still records the new package version while the previous executable runs; fix the cause, then run udm-iptv upgrade again")
+
 // previousExecutable is where the Debian preinst keeps the executable dpkg
 // is about to replace, since postinst runs only after the new one is in place.
 func previousExecutable(plan Plan) string {
@@ -61,15 +63,25 @@ func (backend SystemBackend) Begin(ctx context.Context, plan Plan) (Installation
 	if err != nil {
 		return InstallationTransaction{}, err
 	}
-	return InstallationTransaction{finish: func(ctx context.Context, cause error) error {
+	return InstallationTransaction{finish: backend.finishTransaction(snapshot, sources)}, nil
+}
+
+// finishTransaction discards the snapshot on success and restores it on
+// failure, then removes the preinst's copies either way. A restored package
+// upgrade leaves dpkg's record ahead of the executable, which the error says.
+func (backend SystemBackend) finishTransaction(snapshot installationSnapshot, sources map[string]string) func(context.Context, error) error {
+	return func(ctx context.Context, cause error) error {
 		err := snapshot.finish(ctx, cause, stopReplacementService, backend.recoverInstallation)
+		if cause != nil && len(sources) != 0 {
+			err = errors.Join(err, errPackageRecordAhead)
+		}
 		for _, source := range sources {
 			if removeErr := os.Remove(source); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				err = errors.Join(err, fmt.Errorf("remove the previous executable copy %s: %w", source, removeErr))
 			}
 		}
 		return err
-	}}, nil
+	}
 }
 
 // recoverySources says where a replaced file is copied from when that is
