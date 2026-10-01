@@ -123,6 +123,30 @@ func TestValidateWANAddressing(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsTheUplinkAsLAN(t *testing.T) {
+	t.Parallel()
+	untagged := withPorts(Default())
+	untagged.WAN.Interface, untagged.WAN.VLAN = "br0", 0
+	if err := untagged.Validate(); !errors.Is(err, errLANIsUplink) {
+		t.Fatalf("untagged uplink accepted as LAN: %v", err)
+	}
+	tagged := withPorts(Default())
+	tagged.WAN.VLAN, tagged.WAN.VLANInterface = 4, "iptv"
+	tagged.LAN.Interfaces = []string{"br0", "iptv"}
+	if err := tagged.Validate(); !errors.Is(err, errLANIsUplink) {
+		t.Fatalf("VLAN uplink accepted as LAN: %v", err)
+	}
+	parent := withPorts(Default())
+	parent.WAN.VLAN, parent.WAN.VLANInterface = 4, "iptv"
+	parent.LAN.Interfaces = []string{"eth8"}
+	if err := parent.Validate(); err != nil {
+		t.Fatalf("VLAN parent rejected as LAN: %v", err)
+	}
+	if err := tagged.validateProfile(); !errors.Is(err, errLANIsUplink) {
+		t.Fatalf("profile check accepted the uplink as LAN: %v", err)
+	}
+}
+
 func TestImportLegacyInfersExactProviderProfile(t *testing.T) {
 	t.Parallel()
 	legacy := filepath.Join(t.TempDir(), "udm-iptv.conf")

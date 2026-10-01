@@ -52,6 +52,7 @@ var (
 	errDHCPWithStatic       = errors.New("DHCP and a static address are mutually exclusive")
 	errRoutePolicy          = errors.New("DHCP route policy must be no-default, allow-default or none")
 	errInvalidLANInterface  = errors.New("invalid LAN interface")
+	errLANIsUplink          = errors.New("LAN interface is the IPTV uplink")
 	errInvalidNetworkPrefix = errors.New("invalid network prefix")
 	errNotAnInterfaceName   = errors.New("is not a valid Linux interface name")
 )
@@ -279,6 +280,7 @@ var configChecks = []func(Config) error{
 	validateProxy,
 	validateWANAddressing,
 	validateLANNames,
+	validateLANTarget,
 	validatePrefixLists,
 }
 
@@ -289,6 +291,7 @@ var profileChecks = []func(Config) error{
 	validateVLAN,
 	validateProxy,
 	validateWANAddressing,
+	validateLANTarget,
 	validatePrefixLists,
 }
 
@@ -429,6 +432,15 @@ func validateLANNames(value Config) error {
 		if !validInterface(name) {
 			return fmt.Errorf("%w %q", errInvalidLANInterface, name)
 		}
+	}
+
+	return nil
+}
+
+func validateLANTarget(value Config) error {
+	target := value.Target()
+	if target != "" && slices.Contains(value.LAN.Interfaces, target) {
+		return fmt.Errorf("%w %q", errLANIsUplink, target)
 	}
 
 	return nil

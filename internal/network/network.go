@@ -466,18 +466,68 @@ func staticAddress(prefix netip.Prefix) *netlink.Addr {
 
 // ApplyStaticRoutes installs the configured unicast routes on link.
 func ApplyStaticRoutes(value config.Config, link netlink.Link) error {
+	return applyStaticRoutes(value, link, systemOperations())
+}
+
+var errForeignStaticRoute = errors.New("configured route collides with a route this program did not install; remove that route or drop the destination from the configuration")
+
+func applyStaticRoutes(value config.Config, link netlink.Link, ops leaseOperations) error {
+	current, err := ops.routes(netlink.FAMILY_V4, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return fmt.Errorf("read the routing table: %w", err)
+	}
 	for _, raw := range value.WAN.StaticRoutes {
 		prefix, err := netip.ParsePrefix(raw)
 		if err != nil {
 			return fmt.Errorf("parse static route %s: %w", raw, err)
 		}
 		destination := &net.IPNet{IP: prefix.Addr().AsSlice(), Mask: net.CIDRMask(prefix.Bits(), ipv4HostBits)}
-		if err := netlink.RouteReplace(&netlink.Route{LinkIndex: link.Attrs().Index, Dst: destination, Protocol: unix.RTPROT_STATIC}); err != nil {
+		route := netlink.Route{LinkIndex: link.Attrs().Index, Dst: destination, Protocol: unix.RTPROT_STATIC}
+		switch staticRouteState(current, route) {
+		case routeInstalled:
+			continue
+		case routeForeign:
+			return fmt.Errorf("%w: %s", errForeignStaticRoute, raw)
+		case routeAbsent:
+		}
+		if err := ops.addRoute(&route); err != nil {
 			return fmt.Errorf("apply static route %s: %w", raw, err)
 		}
 	}
 
 	return nil
+}
+
+type routeState int
+
+const (
+	routeAbsent routeState = iota
+	routeInstalled
+	routeForeign
+)
+
+// staticRouteState says whether route is already in current as this program
+// installs it, on its interface without a gateway, or whether another route
+// to the same destination at the same metric is there instead.
+func staticRouteState(current []netlink.Route, route netlink.Route) routeState {
+	for _, existing := range current {
+		if destinationKey(existing) != destinationKey(route) {
+			continue
+		}
+		if existing.LinkIndex == route.LinkIndex && len(existing.Gw) == 0 {
+			return routeInstalled
+		}
+
+		return routeForeign
+	}
+
+	return routeAbsent
+}
+
+func destinationKey(route netlink.Route) string {
+	route.LinkIndex = 0
+
+	return leaseRouteKey(route)
 }
 
 // ResetLease clears DHCP routes and IPv4 addresses only on an owned link.
@@ -725,11 +775,14 @@ func leaseRoutes(lease Lease, linkIndex, prefixLength int, policy config.RoutePo
 	var routes []netlink.Route
 	add := func(destination, gateway string, priority int) error {
 		route, err := dhcpRoute(linkIndex, destination, gateway, priority)
-		if err == nil {
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(routes, func(known netlink.Route) bool { return leaseRouteIdentity(known) == leaseRouteIdentity(route) }) {
 			routes = append(routes, route)
 		}
 
-		return err
+		return nil
 	}
 	if len(lease.StaticRoutes) > 0 {
 		if err := addStaticRoutes(add, lease.StaticRoutes, prefixLength, metric, policy.AllowsDefault()); err != nil {

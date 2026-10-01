@@ -272,6 +272,13 @@ func routePolicyCases() []routePolicyCase {
 			policy:       config.RoutesAllowDefault,
 			want:         []string{"192.0.2.1/32 on-link metric 252", "213.75.112.0/21 via 192.0.2.1 metric 252"},
 		},
+		{
+			name:         "host lease adds the gateway once for several destinations",
+			staticRoutes: []string{"213.75.112.0/21", "192.0.2.1", "217.166.0.0/16", "192.0.2.1"},
+			prefixLength: 32,
+			policy:       config.RoutesAllowDefault,
+			want:         []string{"192.0.2.1/32 on-link metric 252", "213.75.112.0/21 via 192.0.2.1 metric 252", "217.166.0.0/16 via 192.0.2.1 metric 253"},
+		},
 		{name: "router option stays off when no default is permitted", prefixLength: 24, policy: config.RoutesNoDefault},
 		{
 			name:         "router option when a default is permitted",
@@ -370,6 +377,78 @@ func borrowedFixture() (*leaseFixture, leaseOperations) {
 	ops.link = func(string) (netlink.Link, error) { return borrowedLink(), nil }
 
 	return fixture, ops
+}
+
+// A host lease on a borrowed link needs the gateway route once, since a
+// second add of the same route is refused by the kernel.
+func TestBorrowedHostLeaseSharesOneGatewayRoute(t *testing.T) {
+	t.Parallel()
+	fixture, ops := borrowedFixture()
+	lease := testLease()
+	lease.Mask = "32"
+	lease.StaticRoutes = []string{"213.75.112.0/21", "192.0.2.1", "217.166.0.0/16", "192.0.2.1"}
+	if err := applyLeaseChange(&lease, Lease{}, config.RoutesAllowDefault, ops); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"192.0.2.1/32 on-link metric 252", "213.75.112.0/21 via 192.0.2.1 metric 252", "217.166.0.0/16 via 192.0.2.1 metric 253"}
+	if got := describeRoutes(fixture.routes); !slices.Equal(got, want) {
+		t.Fatalf("routes: %v", got)
+	}
+	if len(lease.ManagedRoutes) != len(want) {
+		t.Fatalf("managed routes: %v", describeRoutes(lease.ManagedRoutes))
+	}
+}
+
+func TestStaticRoutesLeaveForeignRoutesAlone(t *testing.T) {
+	t.Parallel()
+	value := config.Config{}
+	value.WAN.StaticRoutes = []string{"213.75.112.0/21"}
+	foreign, err := dhcpRoute(7, "213.75.112.0/21", "192.0.2.254", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign.Protocol = unix.RTPROT_STATIC
+	fixture := &leaseFixture{routes: []netlink.Route{foreign}}
+	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); !errors.Is(err, errForeignStaticRoute) {
+		t.Fatalf("foreign route replaced: %v", err)
+	}
+	if len(fixture.changes) != 0 || !reflect.DeepEqual(fixture.routes, []netlink.Route{foreign}) {
+		t.Fatalf("foreign route changed: %v / %v", fixture.changes, fixture.routes)
+	}
+}
+
+func TestStaticRoutesAddOnceAndKeepTheirOwn(t *testing.T) {
+	t.Parallel()
+	value := config.Config{}
+	value.WAN.StaticRoutes = []string{"213.75.112.0/21", "217.166.0.0/16"}
+	other, err := dhcpRoute(7, "213.75.112.0/21", "192.0.2.254", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := &leaseFixture{routes: []netlink.Route{other}}
+	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fixture.changes, []string{"replace-route", "replace-route"}) || len(fixture.routes) != 3 {
+		t.Fatalf("first application: %v / %v", fixture.changes, describeRoutes(fixture.routes))
+	}
+	assertOnLinkStaticRoutes(t, fixture.routes[1:])
+	fixture.changes = nil
+	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.changes) != 0 || len(fixture.routes) != 3 {
+		t.Fatalf("second application: %v / %v", fixture.changes, describeRoutes(fixture.routes))
+	}
+}
+
+func assertOnLinkStaticRoutes(t *testing.T, routes []netlink.Route) {
+	t.Helper()
+	for _, route := range routes {
+		if route.LinkIndex != 52 || len(route.Gw) != 0 || route.Protocol != unix.RTPROT_STATIC {
+			t.Fatalf("static route attributes: %+v", route)
+		}
+	}
 }
 
 // A lease on an interface the firmware owns, such as an untagged uplink, must

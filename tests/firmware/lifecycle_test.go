@@ -125,6 +125,35 @@ dpkg-deb -Zxz --root-owner-group -b /run/previous-package /run/previous.deb`)
 	h.assertStaleRecord(name)
 }
 
+// failUpgradeOnce upgrades while the service refuses its first start, which
+// is the new installation's. The previous installation has to be running
+// again afterwards, with dpkg naming the failed configuration.
+func (h *firmwareHarness) failUpgradeOnce(name string) {
+	h.t.Helper()
+	before := strings.TrimSpace(h.inside(name, "sha256sum", binary))
+	h.inside(name, "sh", "-ec", `mkdir -p /run/systemd/system/udm-iptv.service.d
+printf '[Service]\nExecStartPre=/bin/sh -c "if [ -e /run/udm-iptv-fail-once ]; then rm /run/udm-iptv-fail-once; exit 1; fi"\n' > /run/systemd/system/udm-iptv.service.d/fail-once.conf
+touch /run/udm-iptv-fail-once
+systemctl daemon-reload`)
+	output, err := h.tryDocker("exec", name, "apt-get", "install", "-y", "/package.deb")
+	if err == nil {
+		h.t.Fatalf("upgrade with a failing service succeeded:\n%s", output)
+	}
+	if !strings.Contains(output, "previous installation was restored") {
+		h.t.Fatalf("upgrade failure does not report the restore:\n%s", output)
+	}
+	h.inside(name, "test", "!", "-e", "/run/udm-iptv-fail-once")
+	h.inside(name, "test", "!", "-e", "/data/udm-iptv/bin/.udm-iptv.previous")
+	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${db:Status-Status}' udm-iptv)" = half-configured`)
+	if after := strings.TrimSpace(h.inside(name, "sha256sum", binary)); after != before {
+		h.t.Fatalf("executable after the failed upgrade: %s, before: %s", after, before)
+	}
+	h.healthy(name)
+	h.assertNetwork(name, "iptv", "198.51.100.2/24", kpnDestinations)
+	h.inside(name, "rm", "/run/systemd/system/udm-iptv.service.d/fail-once.conf")
+	h.inside(name, "systemctl", "daemon-reload")
+}
+
 func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
 	h.t.Helper()
 	h.aptInstall(name, "/package.deb")
@@ -345,6 +374,8 @@ func TestFirmwareLifecycle(t *testing.T) {
 	first, second := h.id+"-from", h.id+"-to"
 	t.Log("Install the Debian package on the previous firmware")
 	h.installPreviousPackage(first, from)
+	t.Log("An upgrade whose service fails to start restores the previous installation")
+	h.failUpgradeOnce(first)
 	t.Log("Upgrade to the current Debian package")
 	version, originalConfig := h.upgradePackage(first)
 	t.Log("A failed service must report diagnostics for install, start and restart")

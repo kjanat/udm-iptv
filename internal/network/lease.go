@@ -54,6 +54,7 @@ func applyDesiredLeaseRoutes(link netlink.Link, current, desired []netlink.Route
 		if err := write(&route); err != nil {
 			return fmt.Errorf("apply DHCP route %s: %w", route.Dst, err)
 		}
+		installed[leaseRouteIdentity(route)] = true
 		*tracked = slices.DeleteFunc(*tracked, func(old netlink.Route) bool { return leaseRouteKey(old) == leaseRouteKey(route) })
 		*tracked = append(*tracked, route)
 	}
