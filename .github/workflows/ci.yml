@@ -145,27 +145,13 @@ jobs:
     name: Classify changes
     runs-on: ubuntu-latest
     timeout-minutes: 1
-    outputs: { firmware: "${{ steps.classify.outputs.firmware }}" }
+    outputs: { firmware: "${{ steps.classify.outputs.matched }}" }
     steps:
-      - name: Checkout Sources
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { persist-credentials: false, fetch-depth: 0 }
+      - *Checkout
       - name: Decide whether the firmware suite has to run
         id: classify
-        env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.event.after || github.sha }}
-        run: |
-          firmware=true
-          if [[ -n "${BEFORE}" && "${BEFORE}" != 0000000000000000000000000000000000000000 ]] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            changed=$(git diff --name-only "${BEFORE}" "${AFTER}")
-            printf 'Changed files:\n%s\n' "${changed}"
-            if ! grep -Eq '^(cmd/|internal/|tests/|packaging/|patches/|go\.(mod|sum)$|\.github/workflows/(ci|build)\.yml$)' <<< "${changed}"; then
-              firmware=false
-            fi
-          fi
-          echo "firmware=${firmware}" >> "${GITHUB_OUTPUT}"
-          echo "firmware suite: ${firmware}"
+        uses: ./.github/actions/pushed-paths
+        with: { pattern: '^(cmd/|internal/|tests/|packaging/|patches/|go\.(mod|sum)$|\.github/(workflows/(ci|build)\.yml|actions/pushed-paths/)' }
 
   catalog:
     name: Resolve published firmware

@@ -31,27 +31,15 @@ jobs:
     name: Classify changes
     runs-on: ubuntu-latest
     timeout-minutes: 1
-    outputs: { relevant: "${{ steps.classify.outputs.relevant }}" }
+    outputs: { relevant: "${{ steps.classify.outputs.matched }}" }
     steps:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { persist-credentials: false, fetch-depth: 0 }
+        with: { persist-credentials: false }
       - name: Decide whether this push touched the fixture
         id: classify
-        env:
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.event.after || github.sha }}
-        run: |
-          relevant=true
-          if [[ -n "${BEFORE}" && "${BEFORE}" != 0000000000000000000000000000000000000000 ]] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            changed=$(git diff --name-only "${BEFORE}" "${AFTER}")
-            printf 'Changed files:\n%s\n' "${changed}"
-            if ! grep -Eq '^(tests/multicast/|patches/improxy/|\.github/workflows/multicast\.yml$)' <<< "${changed}"; then
-              relevant=false
-            fi
-          fi
-          echo "relevant=${relevant}" >> "${GITHUB_OUTPUT}"
-          echo "fixture: ${relevant}"
+        uses: ./.github/actions/pushed-paths
+        with: { pattern: '^(tests/multicast/|patches/improxy/|\.github/(workflows/multicast\.yml|actions/pushed-paths/))' }
 
   smoke:
     needs: changes
