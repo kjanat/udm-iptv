@@ -152,12 +152,13 @@ jobs:
         with: { persist-credentials: false, fetch-depth: 0 }
       - name: Decide whether the firmware suite has to run
         id: classify
-        env: { BASE: "${{ github.event.pull_request.base.sha || github.event.before }}" }
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after || github.sha }}
         run: |
           firmware=true
-          if [[ -n "${BASE}" ]] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
-            start=$(git merge-base "${BASE}" HEAD)
-            changed=$(git diff --name-only "${start}" HEAD)
+          if [[ -n "${BEFORE}" && "${BEFORE}" != 0000000000000000000000000000000000000000 ]] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            changed=$(git diff --name-only "${BEFORE}" "${AFTER}")
             printf 'Changed files:\n%s\n' "${changed}"
             if ! grep -Eq '^(cmd/|internal/|tests/|packaging/|patches/|go\.(mod|sum)$|\.github/workflows/(ci|build)\.yml$)' <<< "${changed}"; then
               firmware=false
