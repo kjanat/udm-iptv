@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 /** @typedef {{id: string, isResolved: boolean, path: string, comments: {nodes: Array<{body: string, viewerDidAuthor: boolean}>}}} ReviewThread */
 /** @typedef {{repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: boolean, endCursor: string | null}, nodes: ReviewThread[]}}}}} ReviewThreadsResponse */
 /** @typedef {Pick<import('@actions/github-script').AsyncFunctionArguments, 'github' | 'context' | 'core'>} RunArguments */
+/** @typedef {{id: number, state: string, body: string | null}} Review */
 /** @typedef {{character: '`' | '~', length: number} | null} Fence */
 
 /** @type {Array<[RegExp, Lang]>} */
@@ -24,6 +25,20 @@ const LANGS = [
 
 const CONTRAST_GUIDANCE =
 	'Check whether the comparison explains a real constraint. If it does, keep it; otherwise describe the chosen behavior directly.';
+
+const DETERMINER = '(?:the|a|an|its|their|this|that|these|those|each|every|any)';
+const INNER_DETERMINER = '(?:the|a|an|its|their|this|these|those|each|every|any)';
+const AUXILIARY = '(?:is|are|was|were|be|been|being|has|have|had|will|can|could|should|would|may|might|must|do|does|did|not|and|or)';
+const ING_ADJECTIVE =
+	'(?!(?:following|remaining|existing|missing|pending|underlying|corresponding|resulting|during|string|setting|thing|something|nothing|anything|everything|warning|morning|evening|building|meaning|beginning|ending|listing|according)\\b)';
+const OBJECT_OR_PREPOSITION = '(?:it|them|its|their|the|a|an|this|that|these|those|to|from|with|on|in|at|by|for|under|behind|over)';
+const POST_MODIFIER = new RegExp(
+	`\\b${DETERMINER}\\s+\\w+\\s+${INNER_DETERMINER}\\s+\\w+\\s+\\w+(?:s|ed)\\b`
+		+ `|\\b${DETERMINER}\\s+\\w+\\s+that\\s+(?!\\w+s\\b)\\w+\\s+\\w+(?:s|ed)\\b`
+		+ `|\\b${DETERMINER}\\s+(?:(?!${AUXILIARY}\\b)\\w+\\s+){1,2}?${ING_ADJECTIVE}\\w+ing\\s+${OBJECT_OR_PREPOSITION}\\b`
+		+ `|\\b${DETERMINER}\\s+(?:(?!${AUXILIARY}\\b)\\w+\\s+){1,3}?\\w+ed\\s+by\\b`,
+	'i',
+);
 
 /** @type {Array<[string, RegExp, string]>} */
 const TELLS = [
@@ -65,6 +80,11 @@ const TELLS = [
 		'hedge',
 		/\b(?:not (?:yet )?verified|unverified|may (?:be|have|not|still|already)|might|possibly|probably|likely|appears? to|seems? to|cannot (?:be )?(?:confirm|verif|prov|establish)\w*|does not prove|remains? unknown|not (?:been )?(?:checked|proven|confirmed|established))\b/i,
 		'State the fact the code establishes. A qualifier such as "may" or "not verified" leaves the reader to guess what was checked.',
+	],
+	[
+		'participial post-modifier',
+		POST_MODIFIER,
+		'Write a possessive or a plain relative clause: "its origin", "the marker that the daemon writes".',
 	],
 	[
 		'paste artifact',
@@ -136,6 +156,25 @@ function tellsIn(text) {
 		reasons.push(name);
 	}
 	return reasons;
+}
+
+/** @typedef {{label: string, text: string, reasons: string[]}} ProseFinding */
+
+/** @param {string} label @param {string} text @returns {ProseFinding[]} */
+export function proseFindings(label, text) {
+	const reasons = tellsIn(text);
+	return reasons.length === 0 ? [] : [{ label, text, reasons }];
+}
+
+const SUBJECT_LIMIT = 50;
+const LONG_SUBJECT = `subject longer than ${SUBJECT_LIMIT} characters`;
+
+/** @param {string} label @param {string} message @returns {ProseFinding[]} */
+export function commitFindings(label, message) {
+	const reasons = tellsIn(message);
+	const subject = message.split('\n', 1)[0];
+	if (subject.length > SUBJECT_LIMIT) reasons.unshift(LONG_SUBJECT);
+	return reasons.length === 0 ? [] : [{ label, text: message, reasons }];
 }
 
 /** @param {PendingGroup} group @param {string} nextLine @param {string[] | undefined} sourceLines */
@@ -302,6 +341,9 @@ function guidanceFor(reason) {
 	if (/^\d+ lines$/.test(reason)) {
 		return 'This is a length-only flag. Check whether each line adds useful context; a necessary explanation can stay.';
 	}
+	if (reason === LONG_SUBJECT) {
+		return `Keep the first line of a commit message to ${SUBJECT_LIMIT} characters and put the rest in the body.`;
+	}
 	return TELLS.find(([name]) => name === reason)?.[2] ?? 'Review the flagged wording in context.';
 }
 
@@ -319,6 +361,54 @@ export function bodyFor(group) {
 /** @param {unknown} error */
 function errorMessage(error) {
 	return error instanceof Error ? error.message : String(error);
+}
+
+const PROSE_MARKER = '<!-- actionlint-comment-cop:prose -->';
+
+/** @param {ProseFinding[]} findings */
+export function proseBody(findings) {
+	const sections = findings.map(finding => {
+		const quoted = finding.text.trim().split('\n').map(line => `> ${line}`).join('\n');
+		const guidance = [...new Set(finding.reasons.map(guidanceFor))].join('\n');
+		return `**${finding.label}**, flagged for: ${finding.reasons.join(', ')}.\n\n${quoted}\n\n${guidance}`;
+	});
+	return `${PROSE_MARKER}\nComment Cop found this wording in the commit messages or the description. `
+		+ `Reword the commits and push again; this review clears itself on the next run.\n\n${sections.join('\n\n')}`;
+}
+
+/** @param {Pick<RunArguments, 'github' | 'core'>} args @param {string} owner @param {string} repo @param {number} pullNumber @param {string} headSha @param {ProseFinding[]} findings */
+async function reportProse({ github, core }, owner, repo, pullNumber, headSha, findings) {
+	try {
+		const reviews = await github.paginate(github.rest.pulls.listReviews, {
+			owner,
+			repo,
+			pull_number: pullNumber,
+			per_page: 100,
+		});
+		const open = reviews.filter(review =>
+			review.state === 'CHANGES_REQUESTED' && typeof review.body === 'string' && review.body.startsWith(PROSE_MARKER)
+		);
+		const body = proseBody(findings);
+		const current = findings.length > 0 ? open.find(review => review.body === body) : undefined;
+		for (const review of open) {
+			if (review === current) continue;
+			await github.rest.pulls.dismissReview({
+				owner,
+				repo,
+				pull_number: pullNumber,
+				review_id: review.id,
+				message: findings.length === 0 ? 'Comment Cop: the commit messages and the description are clean.' : 'Comment Cop: superseded.',
+			});
+		}
+		if (findings.length > 0 && current === undefined) {
+			await github.rest.pulls.createReview({ owner, repo, pull_number: pullNumber, commit_id: headSha, event: 'REQUEST_CHANGES', body });
+		}
+	} catch (error) {
+		core.warning(`Could not report Comment Cop prose findings: ${errorMessage(error)}`);
+	}
+	if (findings.length > 0) {
+		core.setFailed(`Comment Cop: ${findings.length} finding(s) in the commit messages or the description.`);
+	}
 }
 
 /** @param {unknown} value @param {string} name */
@@ -371,6 +461,18 @@ export default async function run({ github, context, core }) {
 		}
 		groups.push(...groupsFromPatch(file.filename, file.patch, source));
 	}
+
+	const commits = await github.paginate(github.rest.pulls.listCommits, {
+		owner,
+		repo,
+		pull_number: pullNumber,
+		per_page: 100,
+	});
+	const prose = [
+		...commits.flatMap(commit => commitFindings(`commit ${commit.sha.slice(0, 7)}`, commit.commit.message)),
+		...proseFindings('pull request description', pullRequest.body ?? ''),
+	];
+	await reportProse({ github, core }, owner, repo, pullNumber, headSha, prose);
 
 	const presentKeys = new Set(groups.map(keyFor));
 	const seenKeys = new Set();
@@ -450,7 +552,9 @@ export default async function run({ github, context, core }) {
 		}
 	}
 
-	core.info(`Comment Cop: ${posted} posted, ${resolved} stale threads resolved, ${groups.length} present.`);
+	core.info(
+		`Comment Cop: ${posted} posted, ${resolved} stale threads resolved, ${groups.length} present, ${prose.length} in commit messages and the description.`,
+	);
 }
 
 const git = (/** @type {string[]} */ args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 1 << 28 });
@@ -503,8 +607,27 @@ export function scanLocal(base) {
 		console.log(`${group.path}:${group.start}-${group.end} [${group.reasons.join(', ')}]`);
 		console.log(`${group.text}\n`);
 	}
-	console.log(`comment-cop: ${groups.length === 0 ? 'clean' : `${groups.length} finding(s)`}.`);
-	return groups.length === 0 ? 0 : 1;
+	const prose = localCommitFindings(from);
+	for (const finding of prose) {
+		console.log(`${finding.label} [${finding.reasons.join(', ')}]`);
+		console.log(`${finding.text.trim()}\n`);
+	}
+	const total = groups.length + prose.length;
+	console.log(`comment-cop: ${total === 0 ? 'clean' : `${total} finding(s)`}.`);
+	return total === 0 ? 0 : 1;
+}
+
+/** @param {string} from */
+function localCommitFindings(from) {
+	const parts = git(['log', '--format=%H%x00%B%x00', `${from}..HEAD`]).split('\0');
+	/** @type {ProseFinding[]} */
+	const findings = [];
+	for (let index = 0; index + 1 < parts.length; index += 2) {
+		const sha = parts[index].trim();
+		if (sha === '') continue;
+		findings.push(...commitFindings(`commit ${sha.slice(0, 7)}`, parts[index + 1]));
+	}
+	return findings;
 }
 
 if (import.meta.main) {

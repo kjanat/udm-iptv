@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 
-import run, { bodyFor, groupsFromPatch, keyFor } from './comment-cop.mjs';
+import run, { bodyFor, commitFindings, groupsFromPatch, keyFor, proseBody, proseFindings } from './comment-cop.mjs';
 
 /** @typedef {Parameters<Parameters<typeof run>[0]['github']['rest']['pulls']['createReview']>[0]} ReviewParams */
 
@@ -124,6 +124,45 @@ test('flags hedging in comments and Markdown', () => {
 
 	assert.deepEqual(comment.map(group => group.reasons), [['hedge']]);
 	assert.deepEqual(prose.map(group => group.reasons), [['hedge']]);
+});
+
+test('flags participial post-modifiers and reduced relative clauses', () => {
+	for (
+		const text of [
+			'The marker the daemon writes is owned state.',
+			'A page lists its import map and the origin serving it.',
+			'Keep a build of the commit deployed by the workflow.',
+			'Count the pages that version ships.',
+			'Count the pages this version ships.',
+		]
+	) {
+		assert.deepEqual(proseFindings('commit 1234567', text).map(finding => finding.reasons), [['participial post-modifier']], text);
+	}
+	for (
+		const text of [
+			'The marker that the daemon writes is owned state.',
+			'A page lists its import map and its origin.',
+			'The following page lists the remaining addresses.',
+			'The test failed.',
+			'The daemon is running on the uplink.',
+			'A finding posts a review that requests changes.',
+		]
+	) {
+		assert.deepEqual(proseFindings('commit 1234567', text), [], text);
+	}
+});
+
+test('flags a commit subject over fifty characters', () => {
+	const long = `ci: ${'x'.repeat(47)}\n\nBody.`;
+	assert.deepEqual(commitFindings('commit 1234567', long).map(finding => finding.reasons), [[
+		'subject longer than 50 characters',
+	]]);
+	assert.deepEqual(commitFindings('commit 1234567', `ci: ${'x'.repeat(46)}\n\nBody.`), []);
+	const both = `${'x'.repeat(51)}\n\nKeep the origin serving it.`;
+	assert.deepEqual(commitFindings('commit 1234567', both).map(finding => finding.reasons), [[
+		'subject longer than 50 characters',
+		'participial post-modifier',
+	]]);
 });
 
 test('flags tells inside Go string literals', () => {
@@ -275,14 +314,22 @@ const firstGroup = {
 	reasons: ['filler phrase'],
 };
 
+const cleanCommit = { sha: 'c'.repeat(40), commit: { message: 'docs: add a policy\n\nPlain body.' } };
+const flaggedCommit = { sha: 'b'.repeat(40), commit: { message: 'Keep the origin serving it\n\nBody.' } };
+
 /** @param {string[]} seenBodies @param {Error | undefined} submitError */
-function reviewHarness(seenBodies = [], submitError = undefined, files = reviewFiles) {
+function reviewHarness(seenBodies = [], submitError = undefined, files = reviewFiles, commits = [cleanCommit], reviews = []) {
 	const createReview = mock.fn(async (/** @type {ReviewParams} */ params) => {
 		if (submitError) throw submitError;
 		return params;
 	});
+	const listFiles = mock.fn();
+	const listCommits = mock.fn();
+	const listReviews = mock.fn();
+	const dismissReview = mock.fn(async params => params);
 	const warning = mock.fn();
 	const info = mock.fn();
+	const setFailed = mock.fn();
 	const graphql = mock.fn(async () => ({
 		repository: {
 			pullRequest: {
@@ -300,25 +347,73 @@ function reviewHarness(seenBodies = [], submitError = undefined, files = reviewF
 	}));
 	const args = {
 		github: {
-			rest: { pulls: { listFiles: mock.fn(), createReview } },
-			paginate: mock.fn(async () => files),
+			rest: { pulls: { listFiles, listCommits, listReviews, dismissReview, createReview } },
+			paginate: mock.fn(async (/** @type {unknown} */ fn) => {
+				if (fn === listFiles) return files;
+				if (fn === listCommits) return commits;
+				if (fn === listReviews) return reviews;
+				return [];
+			}),
 			request: mock.fn(async () => ({ data: 'Plain Markdown with no code fences.' })),
 			graphql,
 		},
 		context: {
 			repo: { owner: 'owner', repo: 'repo' },
-			payload: { pull_request: { number: 42, head: { sha: 'a'.repeat(40) } } },
+			payload: { pull_request: { number: 42, head: { sha: 'a'.repeat(40) }, body: 'Plain description.' } },
 		},
-		core: { warning, info },
+		core: { warning, info, setFailed },
 	};
 	return {
 		args: /** @type {Parameters<typeof run>[0]} */ (/** @type {unknown} */ (args)),
 		createReview,
+		dismissReview,
 		warning,
 		info,
+		setFailed,
 		graphql,
 	};
 }
+
+/** @param {ReturnType<typeof reviewHarness>} h */
+const requestedChanges = h =>
+	h.createReview.mock.calls.map(call => call.arguments[0]).filter(params => params.event === 'REQUEST_CHANGES');
+
+test('requests changes for commit messages and the description, fails the job, and clears itself', async () => {
+	const h = reviewHarness([], undefined, [], [flaggedCommit, cleanCommit]);
+	h.args.context.payload.pull_request.body = 'Describes the change, not the diff.';
+	await run(h.args);
+
+	const [review, ...others] = requestedChanges(h);
+	assert.equal(others.length, 0);
+	assert.equal(review.commit_id, 'a'.repeat(40));
+	assert.match(review.body, /^<!-- actionlint-comment-cop:prose -->/);
+	assert.match(review.body, /\*\*commit bbbbbbb\*\*, flagged for: participial post-modifier\./);
+	assert.match(review.body, /\*\*pull request description\*\*, flagged for: "X, not Y"\./);
+	assert.doesNotMatch(review.body, /ccccccc/);
+	assert.deepEqual(h.setFailed.mock.calls[0].arguments, ['Comment Cop: 2 finding(s) in the commit messages or the description.']);
+	assert.match(h.info.mock.calls[0].arguments[0], /2 in commit messages and the description/);
+
+	const existing = [{ id: 7, state: 'CHANGES_REQUESTED', body: review.body }];
+	const unchanged = reviewHarness([], undefined, [], [flaggedCommit, cleanCommit], existing);
+	unchanged.args.context.payload.pull_request.body = 'Describes the change, not the diff.';
+	await run(unchanged.args);
+	assert.equal(requestedChanges(unchanged).length, 0);
+	assert.equal(unchanged.dismissReview.mock.callCount(), 0);
+	assert.equal(unchanged.setFailed.mock.callCount(), 1);
+
+	const clean = reviewHarness([], undefined, [], [cleanCommit], existing);
+	await run(clean.args);
+	assert.equal(requestedChanges(clean).length, 0);
+	assert.deepEqual(clean.dismissReview.mock.calls[0].arguments[0], {
+		owner: 'owner',
+		repo: 'repo',
+		pull_number: 42,
+		review_id: 7,
+		message: 'Comment Cop: the commit messages and the description are clean.',
+	});
+	assert.equal(clean.setFailed.mock.callCount(), 0);
+	assert.equal(proseBody([]).startsWith('<!-- actionlint-comment-cop:prose -->'), true);
+});
 
 test('submits comments across files and line ranges in one review', async () => {
 	const h = reviewHarness();
