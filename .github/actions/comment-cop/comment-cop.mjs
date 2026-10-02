@@ -393,6 +393,9 @@ export function proseBody(findings) {
 const INLINE_BODY = 'Please review the flagged wording in the inline comments.';
 const SECONDARY_LIMIT = /secondary rate limit/i;
 const DEFAULT_RETRY_SECONDS = 60;
+const COMMENT_BATCH = 20;
+const BATCH_PAUSE_MS = 20_000;
+const RUN_COMMENT_LIMIT = 400;
 
 /** @param {unknown} error */
 function retryAfterSeconds(error) {
@@ -566,22 +569,33 @@ export default async function run({ github, context, core }, sleep = delay) {
 			? { start_line: group.start, start_side: RIGHT }
 			: {}),
 	}));
+	/** @type {Array<typeof comments | undefined>} */
+	const batches = [];
+	for (let start = 0; start < Math.min(comments.length, RUN_COMMENT_LIMIT); start += COMMENT_BATCH) {
+		batches.push(comments.slice(start, start + COMMENT_BATCH));
+	}
 	const body = prose.length > 0 ? proseBody(prose) : INLINE_BODY;
 	const current = prose.length > 0 && comments.length === 0 ? openProse.find(review => review.body === body) : undefined;
-	const post = comments.length > 0 || (prose.length > 0 && current === undefined);
-	let submitted = false;
-	if (post) {
-		submitted = await submitReview({ github, core }, {
+	if (batches.length === 0 && prose.length > 0 && current === undefined) batches.push(undefined);
+	let posted = 0;
+	let firstSubmitted = batches.length === 0;
+	for (let index = 0; index < batches.length; index++) {
+		if (index > 0) await sleep(BATCH_PAUSE_MS);
+		const batch = batches[index];
+		const submitted = await submitReview({ github, core }, {
 			owner,
 			repo,
 			pull_number: pullNumber,
 			commit_id: headSha,
-			event: prose.length > 0 ? 'REQUEST_CHANGES' : 'COMMENT',
-			body,
-			...(comments.length > 0 ? { comments } : {}),
+			event: index === 0 && prose.length > 0 ? 'REQUEST_CHANGES' : 'COMMENT',
+			body: index === 0 ? body : `Comment Cop, part ${index + 1} of ${batches.length}.`,
+			...(batch === undefined ? {} : { comments: batch }),
 		}, sleep);
+		if (!submitted) break;
+		if (index === 0) firstSubmitted = true;
+		posted += batch?.length ?? 0;
 	}
-	const keepOpen = prose.length > 0 && post && !submitted;
+	const keepOpen = prose.length > 0 && !firstSubmitted;
 	for (const review of openProse) {
 		if (review === current || keepOpen) continue;
 		try {
@@ -600,9 +614,8 @@ export default async function run({ github, context, core }, sleep = delay) {
 		core.setFailed(`Comment Cop: ${prose.length} finding(s) in the commit messages or the description.`);
 	}
 
-	const posted = submitted ? comments.length : 0;
 	core.info(
-		`Comment Cop: ${posted} posted, ${resolved} stale threads resolved, ${groups.length} present, ${prose.length} in commit messages and the description.`,
+		`Comment Cop: ${posted} posted, ${comments.length - posted} left for the next run, ${resolved} stale threads resolved, ${groups.length} present, ${prose.length} in commit messages and the description.`,
 	);
 }
 

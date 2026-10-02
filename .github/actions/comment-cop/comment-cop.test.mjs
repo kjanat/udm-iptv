@@ -480,6 +480,39 @@ test('falls back to a minute when the limit response names no retry-after', asyn
 	assert.equal(h.createReview.mock.callCount(), 2);
 });
 
+/** @param {number} count */
+const manyFiles = count =>
+	Array.from({ length: count }, (_, i) => ({
+		filename: `docs/page-${i}.md`,
+		status: 'modified',
+		contents_url: `page-${i}`,
+		patch: '@@ -0,0 +1,1 @@\n+Use the cache rather than fetching again.',
+	}));
+
+test('posts inline comments in paced batches of twenty behind the verdict', async () => {
+	const h = reviewHarness([], [], manyFiles(45), [flaggedCommit]);
+	await run(h.args, h.sleep);
+
+	const params = h.createReview.mock.calls.map(call => call.arguments[0]);
+	assert.deepEqual(params.map(p => [p.event, p.comments?.length]), [['REQUEST_CHANGES', 20], ['COMMENT', 20], ['COMMENT', 5]]);
+	assert.match(params[0].body, /^<!-- actionlint-comment-cop:prose -->/);
+	assert.equal(params[1].body, 'Comment Cop, part 2 of 3.');
+	assert.equal(params[2].body, 'Comment Cop, part 3 of 3.');
+	assert.deepEqual(h.sleep.mock.calls.map(call => call.arguments), [[20_000], [20_000]]);
+	assert.match(h.info.mock.calls[0].arguments[0], /45 posted, 0 left for the next run/);
+});
+
+test('stops after a refused batch and leaves the rest for the next run', async () => {
+	const limit = limitError('You have exceeded a secondary rate limit', '5');
+	const h = reviewHarness([], [undefined, limit, limit], manyFiles(45));
+	await run(h.args, h.sleep);
+
+	assert.equal(h.createReview.mock.callCount(), 3);
+	assert.deepEqual(h.sleep.mock.calls.map(call => call.arguments), [[20_000], [5_000]]);
+	assert.equal(h.setFailed.mock.callCount(), 1);
+	assert.match(h.info.mock.calls[0].arguments[0], /20 posted, 25 left for the next run/);
+});
+
 test('fails the job and keeps the open review when the retry is refused too', async () => {
 	const limit = limitError('You have exceeded a secondary rate limit', '5');
 	const existing = [{ id: 7, state: 'CHANGES_REQUESTED', body: 'stale' }];
