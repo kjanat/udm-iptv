@@ -115,7 +115,7 @@ func TestRejectSymlinkedStateDirectory(t *testing.T) {
 }
 
 func TestRemoveStatePreservesUnrelatedFiles(t *testing.T) {
-	owned := []string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "diagnostics", "sigstore"}
+	owned := []string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "static-routes.owned", "diagnostics", "sigstore"}
 	unrelated := []string{"bin/unrelated", "notes.txt"}
 	configured := []string{"runtime", "config.json", "custom.json", "telemetry-errors.rate"}
 	for _, test := range []struct {
@@ -131,7 +131,7 @@ func TestRemoveStatePreservesUnrelatedFiles(t *testing.T) {
 			root := stateRoot(t, directory)
 			populateState(t, root,
 				[]string{"bin", "runtime", "diagnostics", "sigstore", "sigstore/tuf"},
-				[]string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "bin/unrelated", "runtime/proxy", "diagnostics/capture", "sigstore/tuf/root.json", "config.json", "custom.json", "telemetry-errors.rate", "notes.txt"})
+				[]string{"bin/udm-iptv", "bin/udhcpc-hook", "bin/.udm-iptv.previous-example", "static-routes.owned", "bin/unrelated", "runtime/proxy", "diagnostics/capture", "sigstore/tuf/root.json", "config.json", "custom.json", "telemetry-errors.rate", "notes.txt"})
 			if err := removeStateFiles(root, filepath.Join(directory, "custom.json"), UninstallOptions{KeepConfig: test.keep}); err != nil {
 				t.Fatal(err)
 			}

@@ -467,6 +467,10 @@ func staticAddress(prefix netip.Prefix) *netlink.Addr {
 // routeProtocolStatic marks the configured routes this program installs; rt_protos assigns nothing above 192.
 const routeProtocolStatic = 200
 
+// StaticRoutesOwnedFile is the state directory entry the daemon writes once
+// its configured routes carry routeProtocolStatic.
+const StaticRoutesOwnedFile = "static-routes.owned"
+
 // ApplyStaticRoutes installs the configured unicast routes on link and
 // retires the ones this program installed that are no longer configured.
 // With adopt set, an unmarked on-link route to a configured destination on

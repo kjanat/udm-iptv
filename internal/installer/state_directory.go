@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/kjanat/udm-iptv/internal/network"
 )
 
 var (
@@ -106,7 +108,7 @@ func removeStateFiles(root *os.Root, configPath string, options UninstallOptions
 func ownedStateFiles(root *os.Root, configPath string, options UninstallOptions) []string {
 	// The lock inode survives removal, including after its holder releases it:
 	// another process may already have opened that inode before taking flock.
-	files := []string{"bin/udhcpc-hook"}
+	files := []string{"bin/udhcpc-hook", network.StaticRoutesOwnedFile}
 	if !options.FromPackage {
 		files = append(files, "bin/udm-iptv")
 	}

@@ -387,13 +387,10 @@ func (application *Daemon) startDHCPConnection(ctx context.Context, value config
 	return dhcp, lost, nil
 }
 
-// staticRoutesOwned marks a state directory whose configured routes carry
-// this program's protocol. Before it exists, the first start takes over the
+// Before the ownership marker exists, the first start takes over the
 // unmarked routes an earlier version left on the uplink.
-const staticRoutesOwned = "static-routes.owned"
-
 func (application *Daemon) staticRouteAdoption() (bool, func() error) {
-	marker := filepath.Join(application.StateDir, staticRoutesOwned)
+	marker := filepath.Join(application.StateDir, network.StaticRoutesOwnedFile)
 	if _, err := os.Stat(marker); err == nil {
 		return false, func() error { return nil }
 	}
