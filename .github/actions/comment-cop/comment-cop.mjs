@@ -51,6 +51,12 @@ const TELLS = [
 	['"X, not Y"', /,[\s]+not\s+\S/, CONTRAST_GUIDANCE],
 	['"X rather than Y"', /\brather than\b/i, CONTRAST_GUIDANCE],
 	['"X instead of Y"', /\b(?:instead of|as opposed to)\b/i, CONTRAST_GUIDANCE],
+	['"X, no longer Y"', /\b(?:no longer|in place of|and not)\b|(?<!\b(?:leaves?|left)\b(?:\s+\w+){0,8}\s)\balone\b/i, CONTRAST_GUIDANCE],
+	[
+		'narrated history',
+		/(?:^|[.;:]\s+)(?:before|previously|until now|so far),\s|\bused to\b/im,
+		'Describe the behavior as it is now. The diff already shows what it replaced.',
+	],
 	['"not just X but Y"', /\bnot (?:just|merely|only|because)\b[^.]{0,80}?\bbut\b/i, CONTRAST_GUIDANCE],
 	[
 		'emphatic cleft',
@@ -161,9 +167,12 @@ function tellsIn(text) {
 
 /** @typedef {{kind: 'commit' | 'description', label: string, text: string, reasons: string[]}} ProseFinding */
 
+/** @param {string} text */
+const unwrapped = text => text.replace(/[ \t]*\n[ \t]*/g, ' ');
+
 /** @param {string} label @param {string} text @returns {ProseFinding[]} */
 export function proseFindings(label, text) {
-	const reasons = tellsIn(text);
+	const reasons = tellsIn(unwrapped(text));
 	return reasons.length === 0 ? [] : [{ kind: 'description', label, text, reasons }];
 }
 
@@ -172,7 +181,7 @@ const LONG_SUBJECT = `subject longer than ${SUBJECT_LIMIT} characters`;
 
 /** @param {string} label @param {string} message @returns {ProseFinding[]} */
 export function commitFindings(label, message) {
-	const reasons = tellsIn(message);
+	const reasons = tellsIn(unwrapped(message));
 	const subject = message.split('\n', 1)[0];
 	if (subject.length > SUBJECT_LIMIT) reasons.unshift(LONG_SUBJECT);
 	return reasons.length === 0 ? [] : [{ kind: 'commit', label, text: message, reasons }];

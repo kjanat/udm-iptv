@@ -152,6 +152,39 @@ test('flags participial post-modifiers and reduced relative clauses', () => {
 	}
 });
 
+test('flags comparisons without a marker phrase and narrated history', () => {
+	for (
+		const [text, reason] of [
+			['The importer maps it to none and no longer collapses it into the weaker setting.', '"X, no longer Y"'],
+			['Ownership comes from dpkg-query alone.', '"X, no longer Y"'],
+			['Nothing lets it read a default in place of an answer.', '"X, no longer Y"'],
+			['The lock is held through cleanup and not released early.', '"X, no longer Y"'],
+			['Before, the failure surfaced later as a connection error.', 'narrated history'],
+			['It reads the record. Previously, the hook patched the event.', 'narrated history'],
+			['That value used to come from the hook.', 'narrated history'],
+		]
+	) {
+		assert.deepEqual(proseFindings('commit 1234567', text).map(finding => finding.reasons), [[reason]], text);
+	}
+	for (
+		const text of [
+			'WithInterfaces leaves a LAN list it is given alone.',
+			'The hook sets the address before it installs the routes.',
+			'Run the check before the change.',
+		]
+	) {
+		assert.deepEqual(proseFindings('commit 1234567', text), [], text);
+	}
+});
+
+test('sees a tell that a wrapped line splits', () => {
+	const message = 'fix: restart on a lost lease\n\nA lost lease restarts the service instead\nof leaving an active unit with no address.';
+	assert.deepEqual(commitFindings('commit 1234567', message).map(finding => finding.reasons), [['"X instead of Y"']]);
+	assert.deepEqual(proseFindings('pull request description', 'Reads the record\nrather than the file.').map(f => f.reasons), [[
+		'"X rather than Y"',
+	]]);
+});
+
 test('flags a commit subject over fifty characters', () => {
 	const long = `ci: ${'x'.repeat(47)}\n\nBody.`;
 	assert.deepEqual(commitFindings('commit 1234567', long).map(finding => finding.reasons), [[
