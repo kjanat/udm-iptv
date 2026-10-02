@@ -156,9 +156,37 @@ systemctl daemon-reload`)
 	h.inside(name, "systemctl", "daemon-reload")
 }
 
+// repairUpgrade repeats the upgrade the way `udm-iptv upgrade` does once dpkg
+// records the package version: through dpkg, which unpacks the package again.
+func (h *firmwareHarness) repairUpgrade(name string) {
+	h.t.Helper()
+	h.inside(name, "dpkg", "-i", "/package.deb")
+	h.healthy(name)
+	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
+	h.inside(name, "test", "!", "-e", "/data/udm-iptv/bin/.udm-iptv.previous")
+	h.assertPackageConfigured(name)
+	h.assertPackageRecord(name, strings.TrimSpace(h.inside(name, binary, "version")))
+	h.assertNetwork(name, "iptv", "198.51.100.2/24", kpnDestinations)
+}
+
+// A package upgrade whose new service fails to start must leave the previous
+// installation running, and the repeated upgrade must complete it.
+func TestFirmwareFailedPackageUpgrade(t *testing.T) {
+	from, _ := firmwareImages(t)
+	h := newFirmwareHarness(t)
+	h.requirePersistenceContract(from)
+	name := h.id + "-failed-upgrade"
+	t.Log("Install the previous Debian package")
+	h.installPreviousPackage(name, from)
+	t.Log("Upgrade while the new service refuses to start")
+	h.failUpgradeOnce(name)
+	t.Log("Repeat the upgrade")
+	h.repairUpgrade(name)
+}
+
 func (h *firmwareHarness) upgradePackage(name string) (string, []byte) {
 	h.t.Helper()
-	h.aptInstall(name, "--reinstall", "/package.deb")
+	h.aptInstall(name, "/package.deb")
 	h.healthy(name)
 	version := strings.TrimSpace(h.inside(name, binary, "version"))
 	h.inside(name, "sh", "-ec", `test "$(dpkg-query -W -f='${Version}' udm-iptv)" = "$(dpkg-deb -f /package.deb Version)"`)
@@ -376,8 +404,6 @@ func TestFirmwareLifecycle(t *testing.T) {
 	first, second := h.id+"-from", h.id+"-to"
 	t.Log("Install the Debian package on the previous firmware")
 	h.installPreviousPackage(first, from)
-	t.Log("An upgrade whose service fails to start restores the previous installation")
-	h.failUpgradeOnce(first)
 	t.Log("Upgrade to the current Debian package")
 	version, originalConfig := h.upgradePackage(first)
 	t.Log("A failed service must report diagnostics for install, start and restart")

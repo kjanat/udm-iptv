@@ -384,8 +384,8 @@ func TestPackageManagedUpgradeInstallsThePackage(t *testing.T) {
 	if fetched != packageAssetName() || filepath.Base(installed) != packageAssetName() {
 		t.Fatalf("fetched %q, installed %q", fetched, installed)
 	}
-	if !strings.Contains(out.String(), "apt-get") {
-		t.Fatalf("output does not say how the package is installed: %q", out.String())
+	if !strings.Contains(out.String(), "Installing the package...") {
+		t.Fatalf("output does not say the package is installed: %q", out.String())
 	}
 }
 
@@ -526,7 +526,7 @@ func TestDryRunDescribesThePlanWithoutInstalling(t *testing.T) {
 		record  installer.PackageRecord
 		want    string
 	}{
-		"package":    {"5.0.0-preview.5", installer.PackageRecord{Status: "installed", Version: "5.0.0~preview.5"}, "Would download " + packageAssetName() + " and install it with apt-get.\n"},
+		"package":    {"5.0.0-preview.5", installer.PackageRecord{Status: "installed", Version: "5.0.0~preview.5"}, "Would download " + packageAssetName() + " and install the package.\n"},
 		"standalone": {"5.0.0-preview.5", installer.PackageRecord{}, "Would download " + standaloneAssetName() + ", replace /data/udm-iptv/bin/udm-iptv and restart udm-iptv.service.\n"},
 		"up to date": {"5.0.0-preview.6", installer.PackageRecord{}, "udm-iptv 5.0.0-preview.6 is already installed. Use --force to reinstall.\n"},
 	} {

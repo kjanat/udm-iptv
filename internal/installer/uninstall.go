@@ -246,9 +246,17 @@ func aptRemove(ctx context.Context, action string, out, errOut io.Writer) error 
 	return runApt(ctx, out, errOut, false, action, "-y", packageName)
 }
 
-// InstallPackage delegates a verified local package to apt. Its maintainer
-// scripts acquire the installation lock; callers must not hold that lock.
+// InstallPackage delegates a verified local package to apt, or to dpkg when
+// dpkg already records the package's version. Its maintainer scripts acquire
+// the installation lock; callers must not hold that lock.
 func InstallPackage(ctx context.Context, packagePath string, allowDowngrade bool, out, errOut io.Writer) error {
+	recorded, err := packageVersionRecorded(ctx, packagePath)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return runPackageTool(ctx, out, errOut, false, "dpkg", "-i", packagePath)
+	}
 	arguments := []string{"install", "-y"}
 	if allowDowngrade {
 		arguments = append(arguments, "--allow-downgrades")
@@ -256,12 +264,29 @@ func InstallPackage(ctx context.Context, packagePath string, allowDowngrade bool
 	return runApt(ctx, out, errOut, false, append(arguments, packagePath)...)
 }
 
+func packageVersionRecorded(ctx context.Context, packagePath string) (bool, error) {
+	record, err := QueryPackage(ctx)
+	if err != nil || !record.Owned() {
+		return false, err
+	}
+	output, err := exec.CommandContext(ctx, "dpkg-deb", "-f", packagePath, "Version").Output()
+	if err != nil {
+		return false, fmt.Errorf("read the version of %s: %w", packagePath, err)
+	}
+
+	return strings.TrimSpace(string(output)) == record.Version, nil
+}
+
 func runApt(ctx context.Context, out, errOut io.Writer, keepData bool, arguments ...string) error {
-	apt := exec.CommandContext(ctx, "apt-get", arguments...)
-	apt.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "UDM_IPTV_REMOVE_KEEP_DATA="+strconv.FormatBool(keepData))
-	apt.Stdout, apt.Stderr = out, errOut
-	if err := apt.Run(); err != nil {
-		return fmt.Errorf("apt-get %s: %w", strings.Join(arguments, " "), err)
+	return runPackageTool(ctx, out, errOut, keepData, "apt-get", arguments...)
+}
+
+func runPackageTool(ctx context.Context, out, errOut io.Writer, keepData bool, tool string, arguments ...string) error {
+	command := exec.CommandContext(ctx, tool, arguments...)
+	command.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "UDM_IPTV_REMOVE_KEEP_DATA="+strconv.FormatBool(keepData))
+	command.Stdout, command.Stderr = out, errOut
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("%s %s: %w", tool, strings.Join(arguments, " "), err)
 	}
 
 	return nil

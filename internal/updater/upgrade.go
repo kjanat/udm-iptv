@@ -138,7 +138,7 @@ func (application *Upgrader) describe(candidate upgradeCandidate, plan upgradePl
 		return err
 	}
 	if plan.viaPackage {
-		return writef(application.Out, "Would download %s and install it with apt-get.\n", assets.name)
+		return writef(application.Out, "Would download %s and install the package.\n", assets.name)
 	}
 
 	return writef(application.Out, "Would download %s, replace %s and restart udm-iptv.service.\n", assets.name, installedTarget(application.StateDir))
@@ -274,7 +274,7 @@ func (application *Upgrader) applyPackageRelease(ctx context.Context, candidate 
 	if err != nil {
 		return err
 	}
-	if err := writeString(application.Out, "Installing the package with apt-get...\n"); err != nil {
+	if err := writeString(application.Out, "Installing the package...\n"); err != nil {
 		return err
 	}
 
