@@ -4,6 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 /** @typedef {'go' | 'js' | 'hash' | 'md'} Lang */
 /** @typedef {{path: string, start: number, end: number, text: string, reasons: string[]}} Group */
@@ -158,12 +159,12 @@ function tellsIn(text) {
 	return reasons;
 }
 
-/** @typedef {{label: string, text: string, reasons: string[]}} ProseFinding */
+/** @typedef {{kind: 'commit' | 'description', label: string, text: string, reasons: string[]}} ProseFinding */
 
 /** @param {string} label @param {string} text @returns {ProseFinding[]} */
 export function proseFindings(label, text) {
 	const reasons = tellsIn(text);
-	return reasons.length === 0 ? [] : [{ label, text, reasons }];
+	return reasons.length === 0 ? [] : [{ kind: 'description', label, text, reasons }];
 }
 
 const SUBJECT_LIMIT = 50;
@@ -174,7 +175,7 @@ export function commitFindings(label, message) {
 	const reasons = tellsIn(message);
 	const subject = message.split('\n', 1)[0];
 	if (subject.length > SUBJECT_LIMIT) reasons.unshift(LONG_SUBJECT);
-	return reasons.length === 0 ? [] : [{ label, text: message, reasons }];
+	return reasons.length === 0 ? [] : [{ kind: 'commit', label, text: message, reasons }];
 }
 
 /** @param {PendingGroup} group @param {string} nextLine @param {string[] | undefined} sourceLines */
@@ -365,49 +366,70 @@ function errorMessage(error) {
 
 const PROSE_MARKER = '<!-- actionlint-comment-cop:prose -->';
 
+/** @param {string} text */
+const quote = text => text.split('\n').map(line => `> ${line}`).join('\n');
+
+/** @param {ProseFinding} finding */
+function proseQuote(finding) {
+	if (finding.kind === 'description') {
+		return `<details>\n<summary>description</summary>\n\n${quote(finding.text.trim())}\n</details>`;
+	}
+	const [subject, ...rest] = finding.text.trim().split('\n');
+	const body = rest.join('\n').trim();
+	if (body === '') return quote(subject);
+	return `${quote(subject)}\n\n<details>\n<summary>body</summary>\n\n${quote(body)}\n</details>`;
+}
+
 /** @param {ProseFinding[]} findings */
 export function proseBody(findings) {
 	const sections = findings.map(finding => {
-		const quoted = finding.text.trim().split('\n').map(line => `> ${line}`).join('\n');
 		const guidance = [...new Set(finding.reasons.map(guidanceFor))].join('\n');
-		return `**${finding.label}**, flagged for: ${finding.reasons.join(', ')}.\n\n${quoted}\n\n${guidance}`;
+		return `${finding.label}, flagged for: ${finding.reasons.join(', ')}.\n\n${proseQuote(finding)}\n\n${guidance}`;
 	});
 	return `${PROSE_MARKER}\nComment Cop found this wording in the commit messages or the description. `
 		+ `Reword the commits and push again; this review clears itself on the next run.\n\n${sections.join('\n\n')}`;
 }
 
-/** @param {Pick<RunArguments, 'github' | 'core'>} args @param {string} owner @param {string} repo @param {number} pullNumber @param {string} headSha @param {ProseFinding[]} findings */
-async function reportProse({ github, core }, owner, repo, pullNumber, headSha, findings) {
+const INLINE_BODY = 'Please review the flagged wording in the inline comments.';
+const SECONDARY_LIMIT = /secondary rate limit/i;
+const DEFAULT_RETRY_SECONDS = 60;
+
+/** @param {unknown} error */
+function retryAfterSeconds(error) {
+	if (typeof error !== 'object' || error === null) return undefined;
+	const status = 'status' in error ? error.status : undefined;
+	if (status !== 403 && status !== 429) return undefined;
+	const response = 'response' in error ? error.response : undefined;
+	const headers = typeof response === 'object' && response !== null && 'headers' in response ? response.headers : undefined;
+	const header = typeof headers === 'object' && headers !== null && 'retry-after' in headers ? headers['retry-after'] : undefined;
+	const seconds = Number.parseInt(String(header), 10);
+	if (Number.isFinite(seconds) && seconds > 0) return seconds;
+	return SECONDARY_LIMIT.test(errorMessage(error)) ? DEFAULT_RETRY_SECONDS : undefined;
+}
+
+/** @typedef {Parameters<RunArguments['github']['rest']['pulls']['createReview']>[0]} ReviewParams */
+/** @typedef {(ms: number) => Promise<unknown>} Sleep */
+
+/** @param {Pick<RunArguments, 'github' | 'core'>} args @param {ReviewParams} params @param {Sleep} sleep */
+async function submitReview({ github, core }, params, sleep) {
 	try {
-		const reviews = await github.paginate(github.rest.pulls.listReviews, {
-			owner,
-			repo,
-			pull_number: pullNumber,
-			per_page: 100,
-		});
-		const open = reviews.filter(review =>
-			review.state === 'CHANGES_REQUESTED' && typeof review.body === 'string' && review.body.startsWith(PROSE_MARKER)
-		);
-		const body = proseBody(findings);
-		const current = findings.length > 0 ? open.find(review => review.body === body) : undefined;
-		for (const review of open) {
-			if (review === current) continue;
-			await github.rest.pulls.dismissReview({
-				owner,
-				repo,
-				pull_number: pullNumber,
-				review_id: review.id,
-				message: findings.length === 0 ? 'Comment Cop: the commit messages and the description are clean.' : 'Comment Cop: superseded.',
-			});
-		}
-		if (findings.length > 0 && current === undefined) {
-			await github.rest.pulls.createReview({ owner, repo, pull_number: pullNumber, commit_id: headSha, event: 'REQUEST_CHANGES', body });
-		}
+		await github.rest.pulls.createReview(params);
+		return true;
 	} catch (error) {
-		core.warning(`Could not report Comment Cop prose findings: ${errorMessage(error)}`);
+		const seconds = retryAfterSeconds(error);
+		if (seconds === undefined) {
+			core.setFailed(`Could not submit Comment Cop review: ${errorMessage(error)}`);
+			return false;
+		}
+		core.warning(`GitHub asked Comment Cop to wait ${seconds}s before posting its review.`);
+		await sleep(seconds * 1000);
 	}
-	if (findings.length > 0) {
-		core.setFailed(`Comment Cop: ${findings.length} finding(s) in the commit messages or the description.`);
+	try {
+		await github.rest.pulls.createReview(params);
+		return true;
+	} catch (error) {
+		core.setFailed(`Could not submit Comment Cop review after waiting: ${errorMessage(error)}`);
+		return false;
 	}
 }
 
@@ -417,8 +439,8 @@ function requiredString(value, name) {
 	return value;
 }
 
-/** @param {RunArguments} args */
-export default async function run({ github, context, core }) {
+/** @param {RunArguments} args @param {Sleep} [sleep] */
+export default async function run({ github, context, core }, sleep = delay) {
 	const pullRequest = context.payload.pull_request;
 	if (pullRequest === undefined) throw new Error('pull_request payload is required');
 
@@ -470,14 +492,19 @@ export default async function run({ github, context, core }) {
 	});
 	const prose = [
 		...commits.flatMap(commit =>
-			commitFindings(
-				`[commit ${commit.sha.slice(0, 7)}](${context.serverUrl}/${owner}/${repo}/commit/${commit.sha})`,
-				commit.commit.message,
-			)
+			commitFindings(`Commit ${context.serverUrl}/${owner}/${repo}/commit/${commit.sha}`, commit.commit.message)
 		),
 		...proseFindings('pull request description', pullRequest.body ?? ''),
 	];
-	await reportProse({ github, core }, owner, repo, pullNumber, headSha, prose);
+	const reviews = await github.paginate(github.rest.pulls.listReviews, {
+		owner,
+		repo,
+		pull_number: pullNumber,
+		per_page: 100,
+	});
+	const openProse = reviews.filter(review =>
+		review.state === 'CHANGES_REQUESTED' && typeof review.body === 'string' && review.body.startsWith(PROSE_MARKER)
+	);
 
 	const presentKeys = new Set(groups.map(keyFor));
 	const seenKeys = new Set();
@@ -539,24 +566,41 @@ export default async function run({ github, context, core }) {
 			? { start_line: group.start, start_side: RIGHT }
 			: {}),
 	}));
-	let posted = 0;
-	if (comments.length > 0) {
+	const body = prose.length > 0 ? proseBody(prose) : INLINE_BODY;
+	const current = prose.length > 0 && comments.length === 0 ? openProse.find(review => review.body === body) : undefined;
+	const post = comments.length > 0 || (prose.length > 0 && current === undefined);
+	let submitted = false;
+	if (post) {
+		submitted = await submitReview({ github, core }, {
+			owner,
+			repo,
+			pull_number: pullNumber,
+			commit_id: headSha,
+			event: prose.length > 0 ? 'REQUEST_CHANGES' : 'COMMENT',
+			body,
+			...(comments.length > 0 ? { comments } : {}),
+		}, sleep);
+	}
+	const keepOpen = prose.length > 0 && post && !submitted;
+	for (const review of openProse) {
+		if (review === current || keepOpen) continue;
 		try {
-			await github.rest.pulls.createReview({
+			await github.rest.pulls.dismissReview({
 				owner,
 				repo,
 				pull_number: pullNumber,
-				commit_id: headSha,
-				event: 'COMMENT',
-				body: 'Please review the flagged wording in the inline comments.',
-				comments,
+				review_id: review.id,
+				message: prose.length === 0 ? 'Comment Cop: the commit messages and the description are clean.' : 'Comment Cop: superseded.',
 			});
-			posted = comments.length;
 		} catch (error) {
-			core.warning(`Could not submit Comment Cop review: ${errorMessage(error)}`);
+			core.warning(`Could not dismiss Comment Cop review ${review.id}: ${errorMessage(error)}`);
 		}
 	}
+	if (prose.length > 0) {
+		core.setFailed(`Comment Cop: ${prose.length} finding(s) in the commit messages or the description.`);
+	}
 
+	const posted = submitted ? comments.length : 0;
 	core.info(
 		`Comment Cop: ${posted} posted, ${resolved} stale threads resolved, ${groups.length} present, ${prose.length} in commit messages and the description.`,
 	);

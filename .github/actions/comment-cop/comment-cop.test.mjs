@@ -317,12 +317,15 @@ const firstGroup = {
 const cleanCommit = { sha: 'c'.repeat(40), commit: { message: 'docs: add a policy\n\nPlain body.' } };
 const flaggedCommit = { sha: 'b'.repeat(40), commit: { message: 'Keep the origin serving it\n\nBody.' } };
 
-/** @param {string[]} seenBodies @param {Error | undefined} submitError */
-function reviewHarness(seenBodies = [], submitError = undefined, files = reviewFiles, commits = [cleanCommit], reviews = []) {
+/** @param {string[]} seenBodies @param {Error[]} submitErrors */
+function reviewHarness(seenBodies = [], submitErrors = [], files = reviewFiles, commits = [cleanCommit], reviews = []) {
+	const pending = [...submitErrors];
 	const createReview = mock.fn(async (/** @type {ReviewParams} */ params) => {
-		if (submitError) throw submitError;
+		const error = pending.shift();
+		if (error) throw error;
 		return params;
 	});
+	const sleep = mock.fn(async () => undefined);
 	const listFiles = mock.fn();
 	const listCommits = mock.fn();
 	const listReviews = mock.fn();
@@ -372,41 +375,54 @@ function reviewHarness(seenBodies = [], submitError = undefined, files = reviewF
 		info,
 		setFailed,
 		graphql,
+		sleep,
 	};
 }
+
+/** @param {string} message @param {string | undefined} retryAfter */
+const limitError = (message, retryAfter) =>
+	Object.assign(new Error(message), {
+		status: 403,
+		response: { headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter } },
+	});
 
 /** @param {ReturnType<typeof reviewHarness>} h */
 const requestedChanges = h =>
 	h.createReview.mock.calls.map(call => call.arguments[0]).filter(params => params.event === 'REQUEST_CHANGES');
 
 test('requests changes for commit messages and the description, fails the job, and clears itself', async () => {
-	const h = reviewHarness([], undefined, [], [flaggedCommit, cleanCommit]);
+	const h = reviewHarness([], [], [], [flaggedCommit, cleanCommit]);
 	h.args.context.payload.pull_request.body = 'Describes the change, not the diff.';
-	await run(h.args);
+	await run(h.args, h.sleep);
 
 	const [review, ...others] = requestedChanges(h);
 	assert.equal(others.length, 0);
+	assert.equal(h.createReview.mock.callCount(), 1);
 	assert.equal(review.commit_id, 'a'.repeat(40));
+	assert.equal(review.comments, undefined);
 	assert.match(review.body, /^<!-- actionlint-comment-cop:prose -->/);
 	assert.match(
 		review.body,
-		/\*\*\[commit bbbbbbb\]\(https:\/\/github\.com\/owner\/repo\/commit\/b{40}\)\*\*, flagged for: participial post-modifier\./,
+		/^Commit https:\/\/github\.com\/owner\/repo\/commit\/b{40}, flagged for: participial post-modifier\.\n\n> Keep the origin serving it\n\n<details>\n<summary>body<\/summary>\n\n> Body\.\n<\/details>\n\nWrite a possessive/m,
 	);
-	assert.match(review.body, /\*\*pull request description\*\*, flagged for: "X, not Y"\./);
+	assert.match(
+		review.body,
+		/^pull request description, flagged for: "X, not Y"\.\n\n<details>\n<summary>description<\/summary>\n\n> Describes the change, not the diff\.\n<\/details>\n\nCheck whether/m,
+	);
 	assert.doesNotMatch(review.body, /ccccccc/);
 	assert.deepEqual(h.setFailed.mock.calls[0].arguments, ['Comment Cop: 2 finding(s) in the commit messages or the description.']);
 	assert.match(h.info.mock.calls[0].arguments[0], /2 in commit messages and the description/);
 
 	const existing = [{ id: 7, state: 'CHANGES_REQUESTED', body: review.body }];
-	const unchanged = reviewHarness([], undefined, [], [flaggedCommit, cleanCommit], existing);
+	const unchanged = reviewHarness([], [], [], [flaggedCommit, cleanCommit], existing);
 	unchanged.args.context.payload.pull_request.body = 'Describes the change, not the diff.';
-	await run(unchanged.args);
+	await run(unchanged.args, unchanged.sleep);
 	assert.equal(requestedChanges(unchanged).length, 0);
 	assert.equal(unchanged.dismissReview.mock.callCount(), 0);
 	assert.equal(unchanged.setFailed.mock.callCount(), 1);
 
-	const clean = reviewHarness([], undefined, [], [cleanCommit], existing);
-	await run(clean.args);
+	const clean = reviewHarness([], [], [], [cleanCommit], existing);
+	await run(clean.args, clean.sleep);
 	assert.equal(requestedChanges(clean).length, 0);
 	assert.deepEqual(clean.dismissReview.mock.calls[0].arguments[0], {
 		owner: 'owner',
@@ -417,6 +433,65 @@ test('requests changes for commit messages and the description, fails the job, a
 	});
 	assert.equal(clean.setFailed.mock.callCount(), 0);
 	assert.equal(proseBody([]).startsWith('<!-- actionlint-comment-cop:prose -->'), true);
+});
+
+test('quotes a bodiless commit subject without a details block', () => {
+	const body = proseBody(commitFindings('Commit https://github.com/owner/repo/commit/1', 'Keep the origin serving it'));
+	assert.match(body, /\.\n\n> Keep the origin serving it\n\nWrite a possessive/);
+	assert.doesNotMatch(body, /<details>/);
+});
+
+test('posts prose findings and inline comments as one review', async () => {
+	const h = reviewHarness([], [], reviewFiles, [flaggedCommit]);
+	await run(h.args, h.sleep);
+
+	assert.equal(h.createReview.mock.callCount(), 1);
+	const params = h.createReview.mock.calls[0].arguments[0];
+	assert.equal(params.event, 'REQUEST_CHANGES');
+	assert.match(params.body, /^<!-- actionlint-comment-cop:prose -->/);
+	assert.ok(params.comments);
+	assert.equal(params.comments.length, 3);
+	assert.match(h.info.mock.calls[0].arguments[0], /3 posted, .*1 in commit messages/);
+
+	const existing = [{ id: 7, state: 'CHANGES_REQUESTED', body: params.body }];
+	const again = reviewHarness([], [], reviewFiles, [flaggedCommit], existing);
+	await run(again.args, again.sleep);
+	assert.equal(again.createReview.mock.callCount(), 1);
+	assert.equal(again.dismissReview.mock.calls[0].arguments[0].review_id, 7);
+	assert.equal(again.dismissReview.mock.calls[0].arguments[0].message, 'Comment Cop: superseded.');
+});
+
+test('waits for retry-after and posts the review once GitHub allows it', async () => {
+	const h = reviewHarness([], [limitError('You have exceeded a secondary rate limit', '30')]);
+	await run(h.args, h.sleep);
+
+	assert.equal(h.createReview.mock.callCount(), 2);
+	assert.deepEqual(h.sleep.mock.calls[0].arguments, [30_000]);
+	assert.deepEqual(h.warning.mock.calls[0].arguments, ['GitHub asked Comment Cop to wait 30s before posting its review.']);
+	assert.equal(h.setFailed.mock.callCount(), 0);
+	assert.match(h.info.mock.calls[0].arguments[0], /3 posted/);
+});
+
+test('falls back to a minute when the limit response names no retry-after', async () => {
+	const h = reviewHarness([], [limitError('You have exceeded a secondary rate limit', undefined)]);
+	await run(h.args, h.sleep);
+
+	assert.deepEqual(h.sleep.mock.calls[0].arguments, [60_000]);
+	assert.equal(h.createReview.mock.callCount(), 2);
+});
+
+test('fails the job and keeps the open review when the retry is refused too', async () => {
+	const limit = limitError('You have exceeded a secondary rate limit', '5');
+	const existing = [{ id: 7, state: 'CHANGES_REQUESTED', body: 'stale' }];
+	const h = reviewHarness([], [limit, limit], reviewFiles, [flaggedCommit], existing);
+	await run(h.args, h.sleep);
+
+	assert.equal(h.createReview.mock.callCount(), 2);
+	assert.equal(h.dismissReview.mock.callCount(), 0);
+	assert.deepEqual(h.setFailed.mock.calls[0].arguments, [
+		'Could not submit Comment Cop review after waiting: You have exceeded a secondary rate limit',
+	]);
+	assert.match(h.info.mock.calls[0].arguments[0], /0 posted/);
 });
 
 test('submits comments across files and line ranges in one review', async () => {
@@ -491,11 +566,12 @@ test('does not submit an empty review when the diff has no findings', async () =
 	assert.match(h.info.mock.calls[0].arguments[0], /0 posted/);
 });
 
-test('reports a failed batch without submitting individual reviews', async () => {
-	const h = reviewHarness([], new Error('Review rejected'));
-	await run(h.args);
+test('fails the job on a refused review without retrying', async () => {
+	const h = reviewHarness([], [new Error('Review rejected')]);
+	await run(h.args, h.sleep);
 
 	assert.equal(h.createReview.mock.callCount(), 1);
-	assert.deepEqual(h.warning.mock.calls[0].arguments, ['Could not submit Comment Cop review: Review rejected']);
+	assert.equal(h.sleep.mock.callCount(), 0);
+	assert.deepEqual(h.setFailed.mock.calls[0].arguments, ['Could not submit Comment Cop review: Review rejected']);
 	assert.match(h.info.mock.calls[0].arguments[0], /0 posted/);
 });
