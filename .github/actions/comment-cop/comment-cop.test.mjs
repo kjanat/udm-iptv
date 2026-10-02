@@ -359,6 +359,7 @@ function reviewHarness(seenBodies = [], submitError = undefined, files = reviewF
 		},
 		context: {
 			repo: { owner: 'owner', repo: 'repo' },
+			serverUrl: 'https://github.com',
 			payload: { pull_request: { number: 42, head: { sha: 'a'.repeat(40) }, body: 'Plain description.' } },
 		},
 		core: { warning, info, setFailed },
@@ -387,7 +388,10 @@ test('requests changes for commit messages and the description, fails the job, a
 	assert.equal(others.length, 0);
 	assert.equal(review.commit_id, 'a'.repeat(40));
 	assert.match(review.body, /^<!-- actionlint-comment-cop:prose -->/);
-	assert.match(review.body, /\*\*commit bbbbbbb\*\*, flagged for: participial post-modifier\./);
+	assert.match(
+		review.body,
+		/\*\*\[commit bbbbbbb\]\(https:\/\/github\.com\/owner\/repo\/commit\/b{40}\)\*\*, flagged for: participial post-modifier\./,
+	);
 	assert.match(review.body, /\*\*pull request description\*\*, flagged for: "X, not Y"\./);
 	assert.doesNotMatch(review.body, /ccccccc/);
 	assert.deepEqual(h.setFailed.mock.calls[0].arguments, ['Comment Cop: 2 finding(s) in the commit messages or the description.']);

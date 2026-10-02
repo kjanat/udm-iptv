@@ -469,7 +469,12 @@ export default async function run({ github, context, core }) {
 		per_page: 100,
 	});
 	const prose = [
-		...commits.flatMap(commit => commitFindings(`commit ${commit.sha.slice(0, 7)}`, commit.commit.message)),
+		...commits.flatMap(commit =>
+			commitFindings(
+				`[commit ${commit.sha.slice(0, 7)}](${context.serverUrl}/${owner}/${repo}/commit/${commit.sha})`,
+				commit.commit.message,
+			)
+		),
 		...proseFindings('pull request description', pullRequest.body ?? ''),
 	];
 	await reportProse({ github, core }, owner, repo, pullNumber, headSha, prose);
