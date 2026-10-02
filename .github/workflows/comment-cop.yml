@@ -1,11 +1,15 @@
 # yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
 ---
 name: Comment Cop
-on: { pull_request_target: { types: [opened, synchronize, reopened, ready_for_review] } }
+on:
+  pull_request: { types: [opened, synchronize, reopened] }
+  pull_request_target: { types: [opened, synchronize, reopened] }
 permissions: { contents: write, pull-requests: write }
 jobs:
   comment-cop:
-    if: github.repository == 'kjanat/udm-iptv' && !github.event.pull_request.draft
+    if: >-
+      github.repository == 'kjanat/udm-iptv'
+      && (github.event_name == 'pull_request') == (github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency: { group: "comment-cop-${{ github.event.pull_request.number }}", cancel-in-progress: false, queue: max }
