@@ -38,7 +38,7 @@ jobs:
         with: { persist-credentials: false }
       - name: Decide whether this push touched the fixture
         id: classify
-        uses: ./.github/actions/pushed-paths
+        uses: $/.github/actions/pushed-paths
         with: { pattern: '^(tests/multicast/|patches/improxy/|\.github/(workflows/multicast\.yml|actions/pushed-paths/))' }
 
   smoke:

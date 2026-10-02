@@ -150,7 +150,7 @@ jobs:
       - *Checkout
       - name: Decide whether the firmware suite has to run
         id: classify
-        uses: ./.github/actions/pushed-paths
+        uses: $/.github/actions/pushed-paths
         with: { pattern: '^(cmd/|internal/|tests/|packaging/|patches/|go\.(mod|sum)$|\.github/(workflows/(ci|build)\.yml|actions/pushed-paths/)' }
 
   catalog:
