@@ -52,6 +52,7 @@ nfpms:
         templates: ./packaging/deb/templates
       fields: { Bugs: https://github.com/kjanat/udm-iptv/issues }
 
+snapshot: { version_template: "{{ incpatch .Version }}-SNAPSHOT-{{ .ShortCommit }}" }
 checksum: { name_template: SHA256SUMS }
 changelog: { disable: true }
 release: { draft: true, name_template: "udm-iptv {{ .Tag }}" }
