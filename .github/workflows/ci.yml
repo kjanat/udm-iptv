@@ -141,8 +141,35 @@ jobs:
               dpkg-deb --contents "${package}" | grep -E '/data/udm-iptv/bin/udm-iptv$'
               dpkg-deb --contents "${package}" | grep -E '/usr/share/doc/udm-iptv/copyright$'
 
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs: { firmware: "${{ steps.classify.outputs.firmware }}" }
+    steps:
+      - name: Checkout Sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false, fetch-depth: 0 }
+      - name: Decide whether the firmware suite has to run
+        id: classify
+        env: { BASE: "${{ github.event.pull_request.base.sha || github.event.before }}" }
+        run: |
+          firmware=true
+          if [[ -n "${BASE}" ]] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            start=$(git merge-base "${BASE}" HEAD)
+            changed=$(git diff --name-only "${start}" HEAD)
+            printf 'Changed files:\n%s\n' "${changed}"
+            if ! grep -Eq '^(cmd/|internal/|tests/|packaging/|patches/|go\.(mod|sum)$|\.github/workflows/(ci|build)\.yml$)' <<< "${changed}"; then
+              firmware=false
+            fi
+          fi
+          echo "firmware=${firmware}" >> "${GITHUB_OUTPUT}"
+          echo "firmware suite: ${firmware}"
+
   catalog:
     name: Resolve published firmware
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true'
     runs-on: ubuntu-latest
     permissions: { contents: *r, packages: *r }
     outputs: { matrix: "${{ steps.catalog.outputs.matrix }}" }
@@ -194,15 +221,18 @@ jobs:
   ci-passed:
     name: CI passed
     if: ${{ always() }}
-    needs: [build, test, actionlint, integration, fmt, lint, package, catalog, firmware]
+    needs: [build, test, actionlint, integration, fmt, lint, package, changes, catalog, firmware]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
       - name: Require every dependency to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          FIRMWARE: ${{ needs.changes.outputs.firmware }}
         run: |
-          printf '%s\n' "${RESULTS}" | jq -e '
-            keys == ["actionlint", "build", "catalog", "firmware", "fmt", "integration", "lint", "package", "test"]
-            and all(.[]; .result == "success")
+          printf '%s\n' "${RESULTS}" | jq -e --arg firmware "${FIRMWARE}" '
+            keys == ["actionlint", "build", "catalog", "changes", "firmware", "fmt", "integration", "lint", "package", "test"]
+            and all(to_entries[];
+              .value.result == "success"
+              or ($firmware == "false" and (.key == "catalog" or .key == "firmware") and .value.result == "skipped"))
           '
