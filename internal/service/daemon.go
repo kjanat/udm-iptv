@@ -341,23 +341,7 @@ func proxyArguments(value config.Config) []string {
 // address, returning the channel that reports the mode's later failures.
 func (application *Daemon) startConnection(ctx context.Context, value config.Config, addressing config.Addressing, link netlink.Link, owner string) (*managedProcess, <-chan error, error) {
 	if addressing.DHCP() {
-		_, _ = sdnotify.SdNotify(false, "STATUS=Waiting for the IPTV DHCP lease")
-		if err := network.ResetLease(link); err != nil {
-			return nil, nil, fmt.Errorf("reset previous DHCP lease: %w", err)
-		}
-		if err := network.ApplyStaticRoutes(value, link); err != nil {
-			return nil, nil, fmt.Errorf("apply the configured IPTV routes: %w", err)
-		}
-		dhcp, err := application.startDHCP(ctx, value, owner)
-		if err != nil {
-			return dhcp, nil, err
-		}
-		lost, err := watchLeaseAddress(ctx, link)
-		if err != nil {
-			return dhcp, nil, fmt.Errorf("watch the IPTV DHCP address: %w", err)
-		}
-
-		return dhcp, lost, nil
+		return application.startDHCPConnection(ctx, value, link, owner)
 	}
 	var staticFailure <-chan error
 	if addressing.Static().IsValid() {
@@ -368,11 +352,59 @@ func (application *Daemon) startConnection(ctx context.Context, value config.Con
 		}
 	}
 
-	if err := network.ApplyStatic(value, addressing, link); err != nil {
+	adopt, ownRoutes := application.staticRouteAdoption()
+	if err := network.ApplyStatic(value, addressing, link, adopt); err != nil {
 		return nil, staticFailure, fmt.Errorf("apply the static IPTV network: %w", err)
+	}
+	if err := ownRoutes(); err != nil {
+		return nil, staticFailure, err
 	}
 
 	return nil, staticFailure, nil
+}
+
+func (application *Daemon) startDHCPConnection(ctx context.Context, value config.Config, link netlink.Link, owner string) (*managedProcess, <-chan error, error) {
+	_, _ = sdnotify.SdNotify(false, "STATUS=Waiting for the IPTV DHCP lease")
+	if err := network.ResetLease(link); err != nil {
+		return nil, nil, fmt.Errorf("reset previous DHCP lease: %w", err)
+	}
+	adopt, ownRoutes := application.staticRouteAdoption()
+	if err := network.ApplyStaticRoutes(value, link, adopt); err != nil {
+		return nil, nil, fmt.Errorf("apply the configured IPTV routes: %w", err)
+	}
+	if err := ownRoutes(); err != nil {
+		return nil, nil, err
+	}
+	dhcp, err := application.startDHCP(ctx, value, owner)
+	if err != nil {
+		return dhcp, nil, err
+	}
+	lost, err := watchLeaseAddress(ctx, link)
+	if err != nil {
+		return dhcp, nil, fmt.Errorf("watch the IPTV DHCP address: %w", err)
+	}
+
+	return dhcp, lost, nil
+}
+
+// staticRoutesOwned marks a state directory whose configured routes carry
+// this program's protocol. Before it exists, the first start takes over the
+// unmarked routes an earlier version left on the uplink.
+const staticRoutesOwned = "static-routes.owned"
+
+func (application *Daemon) staticRouteAdoption() (bool, func() error) {
+	marker := filepath.Join(application.StateDir, staticRoutesOwned)
+	if _, err := os.Stat(marker); err == nil {
+		return false, func() error { return nil }
+	}
+
+	return true, func() error {
+		if err := atomicfile.Write(marker, []byte{}, filemode.PrivateFile); err != nil {
+			return fmt.Errorf("record the configured route ownership: %w", err)
+		}
+
+		return nil
+	}
 }
 
 func startStaticReconciler(ctx context.Context, value config.Config, addressing config.Addressing, link netlink.Link) (<-chan error, error) {
@@ -412,7 +444,7 @@ func restoreStaticAddress(ctx context.Context, value config.Config, addressing c
 			if !staticAddressDeleted(addressing.Static(), link.Attrs().Index, update) {
 				continue
 			}
-			if err := network.ApplyStatic(value, addressing, link); err != nil {
+			if err := network.ApplyStatic(value, addressing, link, false); err != nil {
 				reportFailure(failures, err)
 
 				return

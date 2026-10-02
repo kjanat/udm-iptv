@@ -29,7 +29,7 @@ func TestExistingAddressingDoesNotReplaceAddress(t *testing.T) {
 	// No link exists at this index. Existing addressing without routes must not
 	// make any netlink mutation, even though no address was provided.
 	link := &netlink.Dummy{Index: -1}
-	if err := ApplyStatic(config.Config{}, config.Addressing{}, link); err != nil {
+	if err := ApplyStatic(config.Config{}, config.Addressing{}, link, false); err != nil {
 		t.Fatal(err)
 	}
 }

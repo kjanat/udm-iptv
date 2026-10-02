@@ -409,7 +409,7 @@ func TestStaticRoutesLeaveForeignRoutesAlone(t *testing.T) {
 	}
 	foreign.Protocol = unix.RTPROT_STATIC
 	fixture := &leaseFixture{routes: []netlink.Route{foreign}}
-	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); !errors.Is(err, errForeignStaticRoute) {
+	if err := applyStaticRoutes(value, ownedLink(), true, fixture.ops()); !errors.Is(err, errForeignStaticRoute) {
 		t.Fatalf("foreign route replaced: %v", err)
 	}
 	if len(fixture.changes) != 0 || !reflect.DeepEqual(fixture.routes, []netlink.Route{foreign}) {
@@ -426,7 +426,7 @@ func TestStaticRoutesAddOnceAndKeepTheirOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture := &leaseFixture{routes: []netlink.Route{other}}
-	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
+	if err := applyStaticRoutes(value, ownedLink(), true, fixture.ops()); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(fixture.changes, []string{"replace-route", "replace-route"}) || len(fixture.routes) != 3 {
@@ -434,7 +434,7 @@ func TestStaticRoutesAddOnceAndKeepTheirOwn(t *testing.T) {
 	}
 	assertMarkedStaticRoutes(t, fixture.routes[1:])
 	fixture.changes = nil
-	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
+	if err := applyStaticRoutes(value, ownedLink(), true, fixture.ops()); err != nil {
 		t.Fatal(err)
 	}
 	if len(fixture.changes) != 0 || len(fixture.routes) != 3 {
@@ -463,7 +463,13 @@ func TestStaticRoutesAdoptUnmarkedRoutesOnTheirInterface(t *testing.T) {
 	}
 	legacy.Protocol = unix.RTPROT_STATIC
 	fixture := &leaseFixture{routes: []netlink.Route{legacy}}
-	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
+	if err := applyStaticRoutes(value, ownedLink(), false, fixture.ops()); !errors.Is(err, errForeignStaticRoute) {
+		t.Fatalf("unmarked route adopted after the adoption window: %v", err)
+	}
+	if len(fixture.changes) != 0 {
+		t.Fatalf("refused adoption changed routes: %v", fixture.changes)
+	}
+	if err := applyStaticRoutes(value, ownedLink(), true, fixture.ops()); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(fixture.changes, []string{"delete-route", "replace-route"}) || len(fixture.routes) != 1 {
@@ -492,7 +498,7 @@ func TestStaticRoutesRetireTheirOwnObsoleteRoutes(t *testing.T) {
 	}
 	moved.Protocol, dropped.Protocol = routeProtocolStatic, routeProtocolStatic
 	fixture := &leaseFixture{routes: []netlink.Route{moved, dropped, foreign}}
-	if err := applyStaticRoutes(value, ownedLink(), fixture.ops()); err != nil {
+	if err := applyStaticRoutes(value, ownedLink(), true, fixture.ops()); err != nil {
 		t.Fatal(err)
 	}
 	if got := describeRoutes(fixture.routes); !slices.Equal(got, []string{"198.51.100.0/24 via 192.0.2.254 metric 0", "213.75.112.0/21 on-link metric 0"}) {

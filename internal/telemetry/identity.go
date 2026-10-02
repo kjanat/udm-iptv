@@ -39,8 +39,8 @@ const unknown = "unknown"
 
 // Where the public address came from.
 const (
-	ipSourceWAN   = "wan"
-	ipSourceHTTPS = "https"
+	ipSourceWAN  = "wan"
+	ipSourceEdge = "edge"
 )
 
 // Where the ASN came from.
@@ -152,7 +152,7 @@ func lookupNetwork(parent context.Context, sources lookupSources) NetworkIdentit
 // different one, and its ASN, or the built-in table's for that address.
 func mergeEdge(catalog config.Catalog, result NetworkIdentity, edge edgeAnswer) NetworkIdentity {
 	if result.IP != edge.ip.String() {
-		result.IP, result.IPSource = edge.ip.String(), ipSourceHTTPS
+		result.IP, result.IPSource = edge.ip.String(), ipSourceEdge
 	}
 	if edge.ASN != "" {
 		result.ASN, result.ASNSource = edge.ASN, asnSourceEdge

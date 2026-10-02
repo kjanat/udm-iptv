@@ -163,7 +163,7 @@ func TestResolvedStaticAddressInKernel(t *testing.T) {
 	// Startup and restoration use the same resolved host address. Applying it
 	// repeatedly must neither mask the host bits nor duplicate the address.
 	for range 2 {
-		if err := ApplyStatic(value, addressing, link); err != nil {
+		if err := ApplyStatic(value, addressing, link, false); err != nil {
 			t.Fatal(err)
 		}
 		assertStaticHost(t, link)
@@ -171,7 +171,7 @@ func TestResolvedStaticAddressInKernel(t *testing.T) {
 	// Existing addressing preserves that address while adding configured routes.
 	value.WAN.StaticAddress = ""
 	value.WAN.StaticRoutes = []string{"198.51.100.0/24"}
-	if err := ApplyStatic(value, config.Addressing{}, link); err != nil {
+	if err := ApplyStatic(value, config.Addressing{}, link, false); err != nil {
 		t.Fatal(err)
 	}
 	assertStaticHost(t, link)

@@ -268,6 +268,7 @@ func settingsForm(catalog config.Catalog, value *config.Config, ports []Port, as
 		value.Proxy.SourceRanges = splitList(fields.sources)
 		value.LAN.Interfaces = resolveLAN(*selectedLAN)
 		config.NormalizeAddressing(value)
+		config.NormalizeProxy(value)
 
 		if len(proxies) > 0 {
 			if err := proxies[0].Validate(value.Proxy.Program); err != nil {
@@ -364,6 +365,7 @@ func configure(ctx context.Context, value *config.Config, catalog config.Catalog
 		return err
 	}
 	config.NormalizeAddressing(&draft)
+	config.NormalizeProxy(&draft)
 	*value = draft
 
 	return nil
@@ -541,14 +543,6 @@ func uplinkPages(value *config.Config, note string, fields *formValues) []*page 
 	}
 }
 
-func igmpVersionDescription(proxy string) string {
-	if proxy == config.ProxyIgmpproxy {
-		return "igmpproxy sends IGMPv2 queries whatever is chosen here."
-	}
-
-	return "IGMPv3 works for most current receivers."
-}
-
 func multicastPages(value *config.Config, fields *formValues, proxies ...proxyinventory.Inventory) []*page {
 	return []*page{
 		newPage(newPrefixInputs(&fields.nat)).title("IPTV destinations"),
@@ -561,12 +555,6 @@ func multicastPages(value *config.Config, fields *formValues, proxies ...proxyin
 					huh.NewOption("IPv4 and IPv6 (legacy MLDv1)", mldVersion1),
 				).Value(&value.Proxy.MLDVersion),
 			newProxySelect(value, proxies...),
-			huh.NewSelect[int]().Key("igmp").Title("IGMP version").
-				DescriptionFunc(func() string { return igmpVersionDescription(value.Proxy.Program) }, &value.Proxy.Program).
-				Options(
-					huh.NewOption("IGMPv3 (recommended)", config.DefaultIGMPVersion),
-					huh.NewOption("IGMPv2", igmpVersion2),
-				).Value(&value.Proxy.IGMPVersion),
 			huh.NewConfirm().Key("quickleave").Title("Enable quickleave?").
 				Description("Off when several TVs share one interface.").
 				Affirmative("Yes").Negative("No").Value(&value.Proxy.QuickLeave),
@@ -574,6 +562,14 @@ func multicastPages(value *config.Config, fields *formValues, proxies ...proxyin
 				Description("Temporary. Leave off during normal use.").
 				Affirmative("Yes").Negative("No").Value(&value.Proxy.Debug),
 		).title("Multicast"),
+		newPage(
+			huh.NewSelect[int]().Key("igmp").Title("IGMP version").
+				Description("IGMPv3 works for most current receivers. igmpproxy always queries with IGMPv2, so this page is skipped for it.").
+				Options(
+					huh.NewOption("IGMPv3 (recommended)", config.DefaultIGMPVersion),
+					huh.NewOption("IGMPv2", igmpVersion2),
+				).Value(&value.Proxy.IGMPVersion),
+		).title("IGMP version").hide(func() bool { return value.Proxy.Program == config.ProxyIgmpproxy }),
 		newPage(
 			huh.NewInput().Key("proxy-sources").Title("Allowed multicast sources").
 				Description("Networks igmpproxy accepts multicast video from. Write each one as an address and prefix length such as 213.75.0.0/16, separated by spaces or commas. 0.0.0.0/0 accepts every source.").

@@ -110,6 +110,31 @@ func TestInstallationSnapshotRestoresTheRecordedSource(t *testing.T) {
 	assertRecoveryFixture(t, binary, "previous", filemode.Executable)
 }
 
+// A package upgrade keeps dpkg's record at the new version after the restore,
+// which the error says, and the preinst's copy goes either way.
+func TestPackageUpgradeFinishReportsTheRecordAheadAndRemovesTheCopy(t *testing.T) {
+	t.Parallel()
+	nothing := func(context.Context) error { return nil }
+	for _, cause := range []error{nil, errInjectedPlanStep} {
+		directory := t.TempDir()
+		binary, previous := filepath.Join(directory, "binary"), filepath.Join(directory, ".udm-iptv.previous")
+		writeRecoveryFixture(t, binary, "rejected", filemode.Executable)
+		writeRecoveryFixture(t, previous, "previous", filemode.Executable)
+		sources := map[string]string{binary: previous}
+		snapshot, err := snapshotInstallation(directory, []string{binary}, sources)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = finishTransaction(snapshot, sources, nothing, nothing)(t.Context(), cause)
+		if errors.Is(err, errPackageRecordAhead) != (cause != nil) || (cause != nil && !errors.Is(err, cause)) {
+			t.Fatalf("cause %v: %v", cause, err)
+		}
+		if _, statErr := os.Lstat(previous); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("cause %v: previous copy kept: %v", cause, statErr)
+		}
+	}
+}
+
 func TestFailedRecoveryKeepsSnapshot(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()

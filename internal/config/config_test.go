@@ -123,6 +123,21 @@ func TestValidateWANAddressing(t *testing.T) {
 	}
 }
 
+func TestNormalizeProxyPinsIgmpproxyToIGMPv2(t *testing.T) {
+	t.Parallel()
+	value := withPorts(Default())
+	value.Proxy.Program, value.Proxy.IGMPVersion = ProxyIgmpproxy, DefaultIGMPVersion
+	NormalizeProxy(&value)
+	if value.Proxy.IGMPVersion != IgmpproxyIGMPVersion {
+		t.Fatalf("igmpproxy keeps IGMPv%d", value.Proxy.IGMPVersion)
+	}
+	value.Proxy.Program, value.Proxy.IGMPVersion = ProxyImproxy, DefaultIGMPVersion
+	NormalizeProxy(&value)
+	if value.Proxy.IGMPVersion != DefaultIGMPVersion {
+		t.Fatalf("improxy lost IGMPv%d", DefaultIGMPVersion)
+	}
+}
+
 func TestValidateRejectsTheUplinkAsLAN(t *testing.T) {
 	t.Parallel()
 	untagged := withPorts(Default())

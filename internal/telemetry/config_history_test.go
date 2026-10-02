@@ -434,7 +434,7 @@ func runLookupCase(t *testing.T, test lookupCase) {
 		return []string{"customer.kpn.net."}, nil
 	}))
 	assertEqual(t, "PTR lookup performed", called, test.called)
-	assertEqual(t, "IP source", result.IPSource, map[bool]string{true: ipSourceHTTPS, false: ""}[test.ip != ""])
+	assertEqual(t, "IP source", result.IPSource, map[bool]string{true: ipSourceEdge, false: ""}[test.ip != ""])
 	assertEqual(t, "public IP", result.IP, test.ip)
 	assertEqual(t, "detected provider", result.Provider, test.provider)
 	assertEqual(t, "detection method", result.Method, test.method)
@@ -521,7 +521,7 @@ func TestNetworkLookupFallsBackFromAPrivateWANAddress(t *testing.T) {
 	sources := testSources(fast, noPTR)
 	sources.egress = func() (netip.Addr, error) { return netip.MustParseAddr("192.168.1.1"), nil }
 	result := lookupNetwork(context.Background(), sources)
-	if result.IP != "11.22.33.44" || result.IPSource != ipSourceHTTPS || result.ASN != "" || result.Status != "ip-only" {
+	if result.IP != "11.22.33.44" || result.IPSource != ipSourceEdge || result.ASN != "" || result.Status != "ip-only" {
 		t.Fatalf("private WAN fallback: %+v", result)
 	}
 }
@@ -537,7 +537,7 @@ func TestNetworkLookupTakesTheASNFromTheEdge(t *testing.T) {
 	t.Cleanup(server.Close)
 	result := lookupNetwork(context.Background(), testSources(server, blockingPTR))
 	want := NetworkIdentity{
-		IP: "11.22.33.44", IPSource: ipSourceHTTPS, ASN: "AS1136", ASNSource: asnSourceEdge, Provider: "kpn", Method: "asn",
+		IP: "11.22.33.44", IPSource: ipSourceEdge, ASN: "AS1136", ASNSource: asnSourceEdge, Provider: "kpn", Method: "asn",
 		Confidence: "medium", Status: "ip-and-asn", HTTPSMillis: result.HTTPSMillis, ObservedAt: result.ObservedAt,
 	}
 	if result != want {

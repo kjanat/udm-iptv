@@ -63,15 +63,15 @@ func (backend SystemBackend) Begin(ctx context.Context, plan Plan) (Installation
 	if err != nil {
 		return InstallationTransaction{}, err
 	}
-	return InstallationTransaction{finish: backend.finishTransaction(snapshot, sources)}, nil
+	return InstallationTransaction{finish: finishTransaction(snapshot, sources, stopReplacementService, backend.recoverInstallation)}, nil
 }
 
 // finishTransaction discards the snapshot on success and restores it on
 // failure, then removes the preinst's copies either way. A restored package
 // upgrade leaves dpkg's record ahead of the executable, which the error says.
-func (backend SystemBackend) finishTransaction(snapshot installationSnapshot, sources map[string]string) func(context.Context, error) error {
+func finishTransaction(snapshot installationSnapshot, sources map[string]string, stop, recoverService func(context.Context) error) func(context.Context, error) error {
 	return func(ctx context.Context, cause error) error {
-		err := snapshot.finish(ctx, cause, stopReplacementService, backend.recoverInstallation)
+		err := snapshot.finish(ctx, cause, stop, recoverService)
 		if cause != nil && len(sources) != 0 {
 			err = errors.Join(err, errPackageRecordAhead)
 		}

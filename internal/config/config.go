@@ -427,6 +427,16 @@ func NormalizeAddressing(value *Config) {
 	}
 }
 
+// IgmpproxyIGMPVersion is the only IGMP version igmpproxy queries with.
+const IgmpproxyIGMPVersion = 2
+
+// NormalizeProxy records the IGMP version igmpproxy will use whatever was chosen.
+func NormalizeProxy(value *Config) {
+	if value.Proxy.Program == ProxyIgmpproxy {
+		value.Proxy.IGMPVersion = IgmpproxyIGMPVersion
+	}
+}
+
 func validateLANNames(value Config) error {
 	for _, name := range value.LAN.Interfaces {
 		if !validInterface(name) {

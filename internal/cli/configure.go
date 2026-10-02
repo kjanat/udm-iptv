@@ -70,8 +70,9 @@ func startingPoint(command *cobra.Command, value config.Config, fresh bool, seed
 var ErrNotConfigured = errors.New("udm-iptv is not configured; run udm-iptv install or udm-iptv configure set")
 
 var (
-	errNothingToSet   = errors.New("no setting given; pass at least one flag")
-	errUnknownSetting = errors.New("unknown setting")
+	errNothingToSet         = errors.New("no setting given; pass at least one flag")
+	errUnknownSetting       = errors.New("unknown setting")
+	errIGMPVersionIgmpproxy = errors.New("igmpproxy queries with IGMPv2 only; --igmp-version applies to improxy")
 )
 
 const (
@@ -201,6 +202,10 @@ func (f *configureFlags) apply(command *cobra.Command, value *config.Config) err
 	if !flags.Changed("static-address") {
 		config.NormalizeAddressing(value)
 	}
+	if flags.Changed("igmp-version") && value.Proxy.Program == config.ProxyIgmpproxy && f.igmpVersion != config.IgmpproxyIGMPVersion {
+		return errIGMPVersionIgmpproxy
+	}
+	config.NormalizeProxy(value)
 
 	return nil
 }

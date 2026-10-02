@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 
@@ -90,6 +91,30 @@ func applyOneFlag(t *testing.T, name string) string {
 	}
 
 	return string(data)
+}
+
+// igmpproxy queries with IGMPv2 whatever is asked, so asking for anything
+// else is an error and a plain igmpproxy choice records version 2.
+func TestConfigureIGMPVersionFollowsTheProxy(t *testing.T) {
+	t.Parallel()
+	flags, command := boundConfigureFlags()
+	for name, setting := range map[string]string{"proxy": config.ProxyIgmpproxy, "igmp-version": "3", "proxy-source": "0.0.0.0/0"} {
+		if err := command.Flags().Set(name, setting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	value := config.Default()
+	if err := flags.apply(command, &value); !errors.Is(err, errIGMPVersionIgmpproxy) {
+		t.Fatalf("IGMPv3 accepted for igmpproxy: %v", err)
+	}
+	flags, command = boundConfigureFlags()
+	if err := command.Flags().Set("proxy", config.ProxyIgmpproxy); err != nil {
+		t.Fatal(err)
+	}
+	value = config.Default()
+	if err := flags.apply(command, &value); err != nil || value.Proxy.IGMPVersion != config.IgmpproxyIGMPVersion {
+		t.Fatalf("igmpproxy recorded IGMPv%d, %v", value.Proxy.IGMPVersion, err)
+	}
 }
 
 // TestConfigureOverridesWriteDistinctFields catches a table row wired to the

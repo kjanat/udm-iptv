@@ -2,6 +2,8 @@
 ---
 name: UniFi OS
 on:
+  push: { branches: [master, go] }
+  pull_request:
   schedule: [{ cron: "17 3 * * *" }]
   workflow_dispatch:
     inputs:
@@ -14,15 +16,13 @@ on:
         type: choice
         default: all
         options: [all, release, beta, pinned]
-concurrency: { group: unifi-os-publish, cancel-in-progress: false }
+concurrency: { group: "unifi-os-${{ github.ref }}", cancel-in-progress: false }
 permissions: { contents: read }
 jobs:
   build:
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     uses: $/.github/workflows/build.yml
 
   catalog:
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     name: Catalog firmware
     runs-on: ubuntu-latest
     outputs:
@@ -37,7 +37,7 @@ jobs:
         id: catalog
         env:
           MODEL: ${{ inputs.model || 'all' }}
-          REQUESTED_TRACK: ${{ inputs.track || 'all' }}
+          REQUESTED_TRACK: ${{ inputs.track || ((github.event_name == 'push' || github.event_name == 'pull_request') && 'release') || 'all' }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/unifi-os
         run: |
           tracks=(release beta pinned)
@@ -87,6 +87,7 @@ jobs:
         env: { UDM_IPTV_FIRMWARE_EVIDENCE: "${{ runner.temp }}/firmware-evidence" }
         run: go test -tags firmware -v -count=1 -timeout=20m ./tests/firmware
       - name: Publish and verify image aliases
+        if: github.event_name != 'push' && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         env: { GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}" }
         run: go run ./cmd/firmware --track "${TRACK}" publish
       - name: Upload firmware evidence

@@ -445,7 +445,7 @@ func EgressAddress() (netip.Addr, error) {
 // ApplyStatic sets the configured static address and static routes on link.
 // On an owned link it also retires any IPv4 address a previous configuration
 // left behind.
-func ApplyStatic(value config.Config, addressing config.Addressing, link netlink.Link) error {
+func ApplyStatic(value config.Config, addressing config.Addressing, link netlink.Link, adopt bool) error {
 	if prefix := addressing.Static(); prefix.IsValid() {
 		address := staticAddress(prefix)
 		if err := netlink.AddrReplace(link, address); err != nil {
@@ -455,7 +455,7 @@ func ApplyStatic(value config.Config, addressing config.Addressing, link netlink
 			return fmt.Errorf("retire the previous static address: %w", err)
 		}
 	}
-	return ApplyStaticRoutes(value, link)
+	return ApplyStaticRoutes(value, link, adopt)
 }
 
 func staticAddress(prefix netip.Prefix) *netlink.Addr {
@@ -469,8 +469,10 @@ const routeProtocolStatic = 200
 
 // ApplyStaticRoutes installs the configured unicast routes on link and
 // retires the ones this program installed that are no longer configured.
-func ApplyStaticRoutes(value config.Config, link netlink.Link) error {
-	return applyStaticRoutes(value, link, systemOperations())
+// With adopt set, an unmarked on-link route to a configured destination on
+// link is taken over.
+func ApplyStaticRoutes(value config.Config, link netlink.Link, adopt bool) error {
+	return applyStaticRoutes(value, link, adopt, systemOperations())
 }
 
 // RemoveStaticRoutes deletes every route this program installed from the configuration.
@@ -480,7 +482,7 @@ func RemoveStaticRoutes(link netlink.Link) error {
 
 var errForeignStaticRoute = errors.New("configured route collides with a route this program did not install; remove that route or drop the destination from the configuration")
 
-func applyStaticRoutes(value config.Config, link netlink.Link, ops leaseOperations) error {
+func applyStaticRoutes(value config.Config, link netlink.Link, adopt bool, ops leaseOperations) error {
 	desired, err := staticRoutes(value, link.Attrs().Index)
 	if err != nil {
 		return err
@@ -490,21 +492,32 @@ func applyStaticRoutes(value config.Config, link netlink.Link, ops leaseOperatio
 		return err
 	}
 	for _, route := range desired {
-		existing, state := staticRouteState(current, route)
-		switch state {
-		case routeInstalled:
-			continue
-		case routeForeign:
+		if err := installStaticRoute(current, route, adopt, ops); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func installStaticRoute(current []netlink.Route, route netlink.Route, adopt bool, ops leaseOperations) error {
+	existing, state := staticRouteState(current, route)
+	switch state {
+	case routeInstalled:
+		return nil
+	case routeForeign:
+		return fmt.Errorf("%w: %s", errForeignStaticRoute, route.Dst)
+	case routeAdoptable:
+		if !adopt {
 			return fmt.Errorf("%w: %s", errForeignStaticRoute, route.Dst)
-		case routeAdoptable:
-			if err := ops.deleteRoute(&existing); err != nil {
-				return fmt.Errorf("retire the unmarked static route %s: %w", route.Dst, err)
-			}
-		case routeAbsent:
 		}
-		if err := ops.addRoute(&route); err != nil {
-			return fmt.Errorf("apply static route %s: %w", route.Dst, err)
+		if err := ops.deleteRoute(&existing); err != nil {
+			return fmt.Errorf("retire the unmarked static route %s: %w", route.Dst, err)
 		}
+	case routeAbsent:
+	}
+	if err := ops.addRoute(&route); err != nil {
+		return fmt.Errorf("apply static route %s: %w", route.Dst, err)
 	}
 
 	return nil

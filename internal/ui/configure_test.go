@@ -151,14 +151,14 @@ func TestConfigurationPagesFollowAnswers(t *testing.T) {
 	}{
 		{
 			name: "kpn",
-			want: []string{"wan-port", "vlan", "dhcp-options", "vlan-interface", "lan", "nat", "mld", "telemetry"},
+			want: []string{"wan-port", "vlan", "dhcp-options", "vlan-interface", "lan", "nat", "mld", "igmp", "telemetry"},
 		},
 		{
 			name: "tagged-static",
 			edit: func(value *config.Config) {
 				value.WAN.DHCP = false
 			},
-			want: []string{"wan-port", "vlan", "vlan-interface", "lan", "nat", "mld", "telemetry"},
+			want: []string{"wan-port", "vlan", "vlan-interface", "lan", "nat", "mld", "igmp", "telemetry"},
 		},
 		{
 			name: "untagged-static-igmpproxy",
