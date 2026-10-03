@@ -6,12 +6,18 @@ project_name: udm-iptv
 builds:
   - id: udm-iptv
     main: ./cmd/udm-iptv
-    binary: udm-iptv
+    binary: "{{ .ProjectName }}"
     env: [CGO_ENABLED=0]
     goos: [linux]
     goarch: [arm64]
-    flags: [-trimpath, -buildvcs=true]
-    ldflags: ['-s -w -X main.version={{ .Version }} -X github.com/kjanat/udm-iptv/internal/telemetry.DSN={{ index .Env "SENTRY_DSN" }}']
+    flags:
+      - -trimpath
+      - -buildvcs=true
+    ldflags:
+      - -s
+      - -w
+      - -X main.version={{ .Version }}
+      - -X {{ .ModulePath }}/internal/telemetry.DSN={{ index .Env "SENTRY_DSN" }}
 
 archives:
   - id: binary
@@ -22,10 +28,10 @@ archives:
 nfpms:
   - id: debian
     ids: [udm-iptv]
-    package_name: udm-iptv
+    package_name: "{{ .ProjectName }}"
     file_name_template: "{{ .PackageName }}-{{ .Arch }}"
-    vendor: kjanat
-    homepage: https://github.com/kjanat/udm-iptv
+    vendor: '{{ if index .Env "GITHUB_REPOSITORY_OWNER" }}{{ .Env.GITHUB_REPOSITORY_OWNER }}{{ else }}{{ index (split .ModulePath "/") 1 }}{{ end }}'
+    homepage: '{{ if index .Env "GITHUB_REPOSITORY" }}{{ .Env.GITHUB_SERVER_URL }}/{{ .Env.GITHUB_REPOSITORY }}{{ else }}https://{{ .ModulePath }}{{ end }}'
     maintainer: Kaj Kowalski <info@kajkowalski.nl>
     description: Routed IPTV for UniFi OS.
     license: GPL-2.0-or-later
@@ -55,4 +61,4 @@ nfpms:
 snapshot: { version_template: "{{ incpatch .Version }}-SNAPSHOT-{{ .ShortCommit }}" }
 checksum: { name_template: SHA256SUMS }
 changelog: { disable: true }
-release: { draft: true, name_template: "udm-iptv {{ .Tag }}" }
+release: { draft: true, name_template: "{{ .ProjectName }} {{ .Tag }}" }
