@@ -3,56 +3,56 @@
 // For a full list of overridable settings, and general information on folder-specific settings,
 // see the documentation: https://zed.dev/docs/configuring-zed#settings-files
 {
-	"formatter": [
-		{
-			"external": {
-				"command": "dprint",
-				"arguments": ["fmt", "--stdin", "{buffer_path}"]
-			}
-		}
-	],
-	"prettier": { "allowed": false },
-	"file_types": {
-		"Shell Script": ["packaging/deb/pre*", "packaging/deb/post*", "**/packaging/deb/config"],
-		"Plain Text": ["packaging/deb/copyright"]
-	},
-	"languages": {
-		"JSON": {
-			"hard_tabs": false,
-			"tab_size": 2
-		},
-		"JSONC": {
-			"hard_tabs": false,
-			"tab_size": 2
-		}
-	},
-	"lsp": {
-		"gopls": {
-			"initialization_options": {
-				"buildFlags": ["-tags=integration,sentrylive,firmware"],
-				"vulncheck": "Imports",
-				"staticcheck": true,
-				"usePlaceholders": true,
-				"local": "github.com/kjanat/udm-iptv",
-				"hints": {
-					"ignoredError": true,
-					"parameterNames": true,
-					"constantValues": true,
-					"functionTypeParameters": true
-				}
-			}
-		},
-		"json-language-server": {
-			"settings": {
-				"json": {
-					"schemas": [
-						{
-							"fileMatch": ["ui-releases.json"],
-							"url": "./tests/vendor/ui-releases.schema.json"
-						}
-					]
-				}
-			}
-		}
-	}
+  "formatter": [
+    {
+      "external": {
+        "command": "dprint",
+        "arguments": ["fmt", "--stdin", "{buffer_path}"]
+      }
+    }
+  ],
+  "prettier": { "allowed": false },
+  "file_types": {
+    "Shell Script": ["packaging/deb/pre*", "packaging/deb/post*", "**/packaging/deb/config"],
+    "Plain Text": ["packaging/deb/copyright"]
+  },
+  "languages": {
+    "JSON": {
+      "hard_tabs": false,
+      "tab_size": 2
+    },
+    "JSONC": {
+      "hard_tabs": false,
+      "tab_size": 2
+    }
+  },
+  "lsp": {
+    "gopls": {
+      "initialization_options": {
+        "buildFlags": ["-tags=integration,sentrylive,firmware"],
+        "vulncheck": "Imports",
+        "staticcheck": true,
+        "usePlaceholders": true,
+        "local": "github.com/kjanat/udm-iptv",
+        "hints": {
+          "ignoredError": true,
+          "parameterNames": true,
+          "constantValues": true,
+          "functionTypeParameters": true
+        }
+      }
+    },
+    "json-language-server": {
+      "settings": {
+        "json": {
+          "schemas": [
+            {
+              "fileMatch": ["ui-releases.json"],
+              "url": "./tests/vendor/ui-releases.schema.json"
+            }
+          ]
+        }
+      }
+    }
+  }
 }

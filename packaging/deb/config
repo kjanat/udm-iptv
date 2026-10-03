@@ -1,0 +1,8 @@
+#!/bin/sh -e
+
+# shellcheck source=/dev/null
+. /usr/share/debconf/confmodule
+db_version 2.0
+db_capb backup
+db_input high udm-iptv/profile || true
+db_go

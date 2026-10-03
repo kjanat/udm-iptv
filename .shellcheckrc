@@ -6,5 +6,3 @@ source-path=SCRIPTDIR
 external-sources=true
 extended-analysis=true
 enable=all
-
-disable=SC2310

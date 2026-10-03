@@ -1,0 +1,206 @@
+package ui
+
+import (
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+)
+
+func TestWANPortSelection(t *testing.T) {
+	current := "eth8"
+	groups, selected := wanGroups(&current, []Port{
+		{Name: "eth8", Description: "connected, Internet route"},
+		{Name: "eth9", Description: "disconnected"},
+	})
+	form := wizardForm(groups...).Form
+	field := form.GetFocusedField()
+	field.Focus()
+	field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if *selected != "eth9" || current != "eth8" {
+		t.Fatal("selection must remain a draft")
+	}
+	form.NextGroup()
+	if form.State != huh.StateCompleted {
+		t.Fatal("selected port asked for manual name")
+	}
+
+	groups, selected = wanGroups(&current, nil)
+	if len(groups) != 1 {
+		t.Fatalf("manual entry became a page: %d pages", len(groups))
+	}
+	form = wizardForm(groups...).Form
+	field = form.GetFocusedField()
+	field.Focus()
+	field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if *selected != manualPort {
+		t.Fatal("manual fallback unavailable")
+	}
+	field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(form.Errors()) == 0 {
+		t.Fatal("the manual row must not pass as a port name")
+	}
+}
+
+func TestWANPortLabels(t *testing.T) {
+	current := "eth8"
+	groups, _ := wanGroups(&current, []Port{{Name: "eth8", Description: "example: connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true}})
+	form := wizardForm(groups...).Form
+	form.Init()
+	form.Update(tea.WindowSizeMsg{Width: 100, Height: 35})
+	view := form.View()
+	for _, text := range []string{"Which connection", "203.0.113.10/24", "Internet route", "manually"} {
+		if !strings.Contains(view, text) {
+			t.Fatalf("missing guidance %q", text)
+		}
+	}
+}
+
+func TestLANNetworkSelection(t *testing.T) {
+	groups, selected := lanGroups([]string{"br0"}, []Port{
+		{Name: "eth8", Description: "connected, Internet route", Addresses: []string{"203.0.113.10/24"}, AddressesKnown: true},
+		{Name: "br0", Addresses: []string{"192.168.1.1/24"}, AddressesKnown: true},
+		{Name: "br4", Addresses: []string{"192.168.4.1/24"}, AddressesKnown: true},
+		{Name: "eth0.10", Addresses: []string{"10.0.10.1/24"}, AddressesKnown: true},
+	})
+	form := wizardForm(groups...).Form
+	form.Init()
+	form.Update(tea.WindowSizeMsg{Width: 100, Height: 35})
+	view := form.View()
+	for _, text := range []string{"Which networks", "br0", "LAN", "192.168.1.1/24", "VLAN 4", "manually"} {
+		if !strings.Contains(view, text) {
+			t.Fatalf("missing guidance %q in %s", text, view)
+		}
+	}
+	if strings.Contains(view, "eth8") {
+		t.Fatal("WAN port listed as a TV network")
+	}
+	if !reflect.DeepEqual(*selected, []string{"br0"}) {
+		t.Fatalf("selection = %v", *selected)
+	}
+	form.NextGroup()
+	if form.State != huh.StateCompleted {
+		t.Fatal("selected networks asked for manual names")
+	}
+
+	groups, _ = lanGroups(nil, nil)
+	if len(groups) != 1 {
+		t.Fatalf("manual entry became a page: %d pages", len(groups))
+	}
+	form = wizardForm(groups...).Form
+	field := form.GetFocusedField()
+	field.Focus()
+	field.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(form.Errors()) == 0 {
+		t.Fatal("empty selection passed")
+	}
+	if got := resolveLAN([]string{manualPort, "br4", "br4"}); !reflect.DeepEqual(got, []string{"br4"}) {
+		t.Fatalf("resolved %v", got)
+	}
+}
+
+func TestNetworkLabelsPreserveKnownAddressesAndRole(t *testing.T) {
+	port := Port{Name: "eth8", AddressesKnown: true, Addresses: []string{"203.0.113.10/24", "2001:db8::1/64"}, Description: "connected, Internet route"}
+	for _, origin := range []string{"entered manually", "configured value"} {
+		label := networkLabel("eth8", []Port{port}, origin)
+		if label != port.label() {
+			t.Fatalf("%s discarded interface information: %q", origin, label)
+		}
+	}
+	if label := networkLabel("custom0", nil, "entered manually"); strings.Contains(label, "LAN") || !strings.Contains(label, "addresses unavailable") {
+		t.Fatalf("unknown interface mislabelled: %q", label)
+	}
+	pages, _ := lanGroups([]string{"br0"}, []Port{port})
+	wizard := wizardForm(pages...)
+	wizard.Form.Init()
+	field := wizard.Form.GetFocusedField()
+	pages[0].entry.accept(field, []string{"eth8"})
+	if view := field.View(); !strings.Contains(view, port.label()) || strings.Contains(view, "eth8 (LAN") {
+		t.Fatalf("adding a known interface discarded its label:\n%s", view)
+	}
+}
+
+func TestLANKindLabels(t *testing.T) {
+	for _, test := range []struct {
+		port Port
+		want string
+	}{
+		{Port{Name: "br0", AddressesKnown: true, Addresses: []string{"192.168.1.1/24"}}, "br0 (LAN, 192.168.1.1/24)"},
+		{Port{Name: "br4", AddressesKnown: true, Addresses: []string{"192.168.4.1/24"}}, "br4 (VLAN 4, 192.168.4.1/24)"},
+		{Port{Name: "eth0.10", AddressesKnown: true, Addresses: []string{"10.0.10.1/24"}}, "eth0.10 (VLAN 10, 10.0.10.1/24)"},
+	} {
+		if got := test.port.lanLabel(); got != test.want {
+			t.Fatalf("got %q, want %q", got, test.want)
+		}
+	}
+}
+
+func TestPortAddressLabels(t *testing.T) {
+	for _, test := range []struct {
+		port Port
+		want string
+	}{
+		{Port{Name: "eth8", AddressesKnown: true, Description: "link status unknown"}, "eth8"},
+		{Port{Name: "eth9"}, "eth9"},
+		{Port{Name: "br0", AddressesKnown: true, Addresses: []string{"192.168.1.1/24", "2001:db8::1/64"}}, "br0 (192.168.1.1/24, 2001:db8::1/64)"},
+	} {
+		if got := test.port.label(); got != test.want {
+			t.Fatalf("got %q, want %q", got, test.want)
+		}
+	}
+}
+
+func TestWANPortsOrderedByPublicAddressLinkNameAndVLAN(t *testing.T) {
+	ports := []Port{
+		{Name: "eth0.100", Description: "connected"},
+		{Name: "eth0.20", Description: "connected"},
+		{Name: "eth1", Description: "disconnected"},
+		{Name: "eth2", Description: "connected", Addresses: []string{"192.168.1.1/24"}},
+		{Name: "eth3", Description: "link status unknown"},
+		{Name: "ppp1", Description: "disconnected", Addresses: []string{"198.51.100.2/32"}},
+		{Name: "ppp0", Description: "connected", Addresses: []string{"2001:db8::2/64"}},
+	}
+	names := make([]string, 0, len(ports))
+	for _, port := range orderedWANPorts(ports) {
+		names = append(names, port.Name)
+	}
+	want := []string{"ppp0", "ppp1", "eth0.20", "eth0.100", "eth2", "eth1", "eth3"}
+	if !slices.Equal(names, want) || ports[0].Name != "eth0.100" {
+		t.Fatalf("port ordering = %q; want %q; input = %+v", names, want, ports)
+	}
+}
+
+func TestWANPublicFilterShortcut(t *testing.T) {
+	current := "eth8"
+	groups, selected := wanGroups(&current, []Port{
+		{Name: "eth8", Addresses: []string{"192.168.1.2/24"}},
+		{Name: "ppp0", Addresses: []string{"198.51.100.2/32"}},
+	})
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	frame.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	view := frame.View().Content
+	if strings.Contains(view, "eth8") || !strings.Contains(view, "ppp0") || *selected != "ppp0" || current != "eth8" {
+		t.Fatalf("public filter changed saved value or kept private port: %q, %q\n%s", current, *selected, view)
+	}
+	frame.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if view = frame.View().Content; !strings.Contains(view, "eth8") || !strings.Contains(view, "ppp0") {
+		t.Fatalf("toggle did not restore interfaces:\n%s", view)
+	}
+}
+
+func TestWANPublicFilterWithoutPublicAddresses(t *testing.T) {
+	current := "eth8"
+	groups, selected := wanGroups(&current, []Port{{Name: "eth8", Addresses: []string{"192.168.1.2/24", "fe80::1/64", "fd00::1/64"}}})
+	frame := NewFrame(wizardForm(groups...), "")
+	frame.Init()
+	frame.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	frame.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if *selected != "eth8" || !strings.Contains(frame.View().Content, "eth8") {
+		t.Fatal("public filter hid the only available interface")
+	}
+}

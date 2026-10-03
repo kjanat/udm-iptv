@@ -1,50 +1,47 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+---
 name: Build
-on: workflow_call
-concurrency:
-  group: unifi-os-${{ github.event.pull_request.number || github.ref }}-${{ github.workflow }}-build-validation
-  cancel-in-progress: true
+on:
+  workflow_call:
+    inputs:
+      release:
+        description: Build tagged release instead of snapshot.
+        type: boolean
+        default: false
+    outputs:
+      artifact:
+        description: Uploaded binaries and Debian package.
+        value: ${{ jobs.build.outputs.artifact }}
 permissions: { contents: read }
 jobs:
   build:
     name: Build udm-iptv Debian package
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, 'skip ci')"
+    outputs: { artifact: build-artifacts }
     steps:
-      - parallel: # Checkout sources and apt install
-          - name: Checkout Sources
-            uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-            with: { path: &WD udm-iptv }
-          - name: Setup Dependencies
-            run: sudo apt-get install devscripts debhelper build-essential
-      - parallel: # Run tests
-          - name: Test DHCP Route Hook
-            working-directory: *WD
-            run: sudo ./tests/udhcpc-hook.sh
-          - name: Test UniFi OS image publishing
-            working-directory: *WD
-            run: ./tests/unifi-os-publish.sh
-          - name: Test UniFi OS fixtures
-            working-directory: *WD
-            run: bash ./tests/unifi-os-fixtures.sh
-          - name: Test Bash Completion
-            working-directory: *WD
-            run: ./tests/bash-completion.sh
-          - name: Test installer asset selection
-            working-directory: *WD
-            run: ./tests/install-assets.sh
-          - name: Test Diagnostics
-            working-directory: *WD
-            run: ./tests/diagnostics.sh
-      - name: Build Package
-        working-directory: *WD
-        run: debuild -uc -us --lintian-opts --profile debian
+      - name: Checkout Sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache-dependency-path: go.sum }
+      - name: Build binaries and packages
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SENTRY_DSN: ${{ case(inputs.release == true, vars.SENTRY_DSN, '') }}
+        with:
+          distribution: goreleaser
+          version-file: .tool-versions
+          args: release --clean --skip=publish ${{ case(inputs.release == true, '', '--snapshot') }}
+      - name: Materialize binary release asset
+        run: install -m 0755 dist/udm-iptv_linux_arm64_v8.0/udm-iptv dist/udm-iptv-linux-arm64
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: build-validation-artifacts
+          name: build-artifacts
           if-no-files-found: error
           path: |
-            *.deb
-            *.build*
-            *.changes
-            *.dsc
+            dist/udm-iptv-linux-arm64
+            dist/*.deb
+            dist/SHA256SUMS

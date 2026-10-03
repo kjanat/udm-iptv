@@ -1,0 +1,4 @@
+golang        1.27.1
+golangci-lint 2.13.2
+goreleaser    2.18.1
+tombi         1.5.5
