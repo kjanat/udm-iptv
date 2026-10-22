@@ -126,3 +126,26 @@ func TestChildExitDuringShutdownIsNotAFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyArgumentsKeepImproxyBelowPacketTrace(t *testing.T) {
+	t.Parallel()
+	value := config.Default()
+	value.Proxy.Program = config.ProxyImproxy
+	if got := strings.Join(proxyArguments(value), " "); strings.Contains(got, "-d") {
+		t.Fatalf("improxy arguments without debug carry a log level: %q", got)
+	}
+	value.Proxy.Debug = true
+	got := strings.Join(proxyArguments(value), " ")
+	if !strings.Contains(got, "-d 3 ") {
+		t.Fatalf("improxy debug arguments = %q, want -d 3 (INFO)", got)
+	}
+	for _, trace := range []string{"-d 4", "-d 5"} {
+		if strings.Contains(got, trace) {
+			t.Fatalf("improxy debug arguments %q enable the per-packet trace", got)
+		}
+	}
+	value.Proxy.Program = config.ProxyIgmpproxy
+	if got := strings.Join(proxyArguments(value), " "); !strings.Contains(got, "-n -d -v") {
+		t.Fatalf("igmpproxy debug arguments = %q", got)
+	}
+}

@@ -320,11 +320,18 @@ func (application *Daemon) proxyCommand(ctx context.Context, value config.Config
 	return proxy, output, nil
 }
 
+// improxyDebugLogLevel is the -d value for debug mode. improxy numbers its
+// priorities from zero: FATAL 0, ERROR 1, WARNING 2, INFO 3, DEBUG 4. DEBUG
+// prints a line per forwarded data packet, which fills a UDM Pro's 1 GB log
+// partition within days. INFO reports joins, leaves, queries and querier
+// changes.
+const improxyDebugLogLevel = "3"
+
 func proxyArguments(value config.Config) []string {
 	if value.Proxy.Program == config.ProxyImproxy {
 		arguments := []string{}
 		if value.Proxy.Debug {
-			arguments = append(arguments, "-d", "5")
+			arguments = append(arguments, "-d", improxyDebugLogLevel)
 		}
 
 		return append(arguments, "-c", proxyConfigPath)
