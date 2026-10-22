@@ -95,7 +95,7 @@ jobs:
             with:
               version-file: *TV
               args: --build-tags firmware
-              only-new-issues: "${{ github.repository_owner != github.event.pull_request.head.repo.owner.login }}"
+              only-new-issues: "${{ github.event_name == 'pull_request' && github.repository_owner != github.event.pull_request.head.repo.owner.login }}"
           - name: Check Go vulnerabilities
             run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
           - name: Lint shell scripts
