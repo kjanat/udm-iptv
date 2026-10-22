@@ -60,7 +60,7 @@ func (application *Application) start(ctx context.Context) error {
 	if err := lifecycle.Start(ctx); err != nil {
 		return application.reportActivationFailure(ctx, fmt.Errorf("start %s: %w", service.Unit, err))
 	}
-	if err := application.waitHealthy(ctx, restartHealthStartup, restartHealthStable); err != nil {
+	if err := application.waitHealthy(ctx); err != nil {
 		return err
 	}
 

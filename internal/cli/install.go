@@ -290,7 +290,7 @@ func (application *Application) restart(ctx context.Context, verify bool) error 
 		return application.reportActivationFailure(ctx, fmt.Errorf("restart udm-iptv.service: %w", err))
 	}
 	if verify {
-		return application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
+		return application.waitHealthy(ctx)
 	}
 
 	return nil
@@ -328,9 +328,7 @@ func (application *Application) installBackend() installer.Backend {
 
 			return bashCompletionScript(root)
 		},
-		Health: func(ctx context.Context) error {
-			return application.waitHealthy(ctx, restartHealthStartup, restartHealthStable)
-		},
+		Health:  application.waitHealthy,
 		Failure: application.reportActivationFailure,
 		Saved:   func(value config.Config) { application.reportConfig = &value },
 		Healthy: func(value config.Config) { application.reportConfig, application.reportApplied = &value, true },

@@ -418,28 +418,40 @@ func (application *Application) saveConfiguration(command *cobra.Command, value 
 	if err != nil {
 		return err
 	}
-	return application.finishConfiguration(command.Context(), installed, previous, application.restart)
+	return application.finishConfiguration(command.Context(), installed, previous, application.restart, application.waitHealthy)
 }
 
-func (application *Application) finishConfiguration(ctx context.Context, installed bool, previous []byte, restart func(context.Context, bool) error) error {
-	// Reporting failure must not strand a persisted configuration before activation.
-	if err := application.activateConfiguration(ctx, installed, previous, restart); err != nil {
-		return err
-	}
-	return writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath)
+func (application *Application) finishConfiguration(ctx context.Context, installed bool, previous []byte, restart func(context.Context, bool) error, check func(context.Context) error) error {
+	// A broken output pipe must not strand a saved configuration before activation.
+	outputErr := writef(application.Out, "Configuration saved to %s.\n", application.ConfigPath)
+	activationErr := application.activateConfiguration(ctx, installed, previous, restart, check)
+	return errors.Join(outputErr, activationErr)
 }
 
-func (application *Application) activateConfiguration(ctx context.Context, installed bool, previous []byte, restart func(context.Context, bool) error) error {
+func (application *Application) activateConfiguration(ctx context.Context, installed bool, previous []byte, restart func(context.Context, bool) error, check func(context.Context) error) error {
 	if !installed {
-		return writeString(application.Out, "The service is not installed; udm-iptv install applies the configuration.\n")
+		return writeString(application.Out, "The service is not installed. Run udm-iptv install to apply the configuration.\n")
 	}
-	err := restart(ctx, true)
+	err, outputErr := application.restartConfiguration(ctx, restart, check)
 	application.reportApplied = err == nil
 	if err == nil || previous == nil {
-		return err
+		return errors.Join(err, outputErr)
 	}
 
-	return errors.Join(err, recoverConfiguration(ctx, application.ConfigPath, previous, application.Out, restart))
+	return errors.Join(err, outputErr, recoverConfiguration(ctx, application.ConfigPath, previous, application.Out, restart))
+}
+
+// Operational failures trigger rollback. Output failures are returned separately.
+func (application *Application) restartConfiguration(ctx context.Context, restart func(context.Context, bool) error, check func(context.Context) error) (error, error) {
+	if err := restart(ctx, false); err != nil {
+		return err, nil
+	}
+	outputErr := writeString(application.Out, "Service restarted.\n")
+	if err := check(ctx); err != nil {
+		return err, outputErr
+	}
+	outputErr = errors.Join(outputErr, writeString(application.Out, "Health checks passed.\n"))
+	return nil, outputErr
 }
 
 // persistConfiguration writes value and returns whether the service is

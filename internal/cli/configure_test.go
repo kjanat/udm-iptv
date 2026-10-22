@@ -94,12 +94,15 @@ func TestLifecycleConflictDoesNotReachSystemd(t *testing.T) {
 	}
 }
 
-func TestFailedActivationDoesNotReportSavedConfiguration(t *testing.T) {
+func TestFailedActivationReportsOnlyCompletedSave(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
 	application := &Application{Out: &output}
-	err := application.finishConfiguration(t.Context(), true, nil, func(context.Context, bool) error { return errTestActivation })
-	if !errors.Is(err, errTestActivation) || strings.Contains(output.String(), "Configuration saved") {
+	err := application.finishConfiguration(t.Context(), true, nil, func(context.Context, bool) error { return errTestActivation }, func(context.Context) error {
+		t.Fatal("health checked after failed restart")
+		return nil
+	})
+	if !errors.Is(err, errTestActivation) || !strings.Contains(output.String(), "Configuration saved") || strings.Contains(output.String(), "Service restarted") || strings.Contains(output.String(), "Health checks passed") {
 		t.Fatalf("error=%v output=%s", err, &output)
 	}
 }
@@ -231,7 +234,12 @@ func TestConfigurationOutputFailureDoesNotSkipActivation(t *testing.T) {
 	application := &Application{Out: writer, ConfigPath: filepath.Join(t.TempDir(), "config.json")}
 	restarted := false
 	err := application.finishConfiguration(t.Context(), true, nil, func(_ context.Context, check bool) error {
-		restarted = check
+		if check {
+			t.Fatal("restart must report completion before checking health")
+		}
+		restarted = true
+		return nil
+	}, func(context.Context) error {
 		return nil
 	})
 	if !restarted || !application.reportApplied || !errors.Is(err, io.ErrClosedPipe) {
