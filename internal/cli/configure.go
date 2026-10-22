@@ -299,6 +299,9 @@ func (application *Application) configureCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := installer.ProbeLock(application.StateDir); err != nil {
+				return fmt.Errorf("prepare the configuration change: %w", err)
+			}
 			if err := application.askForConfiguration(command, &value, fresh, flags.answered(command, &value)); err != nil {
 				return err
 			}

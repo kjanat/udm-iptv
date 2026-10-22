@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -320,5 +321,32 @@ func TestConfigureGetPrintsSettings(t *testing.T) {
 	command.SetArgs([]string{"configure", "get", "colour"})
 	if err := command.Execute(); !errors.Is(err, errUnknownSetting) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestConfigureRefusesAnUnwritableStateDirectoryBeforeTheForm(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.json")
+	if err := config.Save(path, configtest.KPN()); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(directory, "state")
+	if err := os.Mkdir(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	application := &Application{Version: "test", ConfigPath: path, StateDir: stateDir, Out: &output, Err: &output}
+	command := application.root()
+	command.SetArgs([]string{"reconfigure"})
+	err := command.Execute()
+	if !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), "prepare the configuration change") {
+		t.Fatalf("reconfigure with an unwritable state directory: %v", err)
+	}
+	if strings.Contains(output.String(), "?") {
+		t.Fatalf("the form was opened:\n%s", output.String())
 	}
 }

@@ -48,3 +48,15 @@ func AcquireLock(stateDir string) (func() error, error) {
 		return file.Close()
 	}, nil
 }
+
+// ProbeLock takes and releases the operation lock, so a command can report a
+// read-only state directory or a running operation before it asks the
+// operator anything. The change itself takes the lock again when it starts.
+func ProbeLock(stateDir string) error {
+	release, err := AcquireLock(stateDir)
+	if err != nil {
+		return err
+	}
+
+	return release()
+}

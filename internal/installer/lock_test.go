@@ -2,8 +2,10 @@ package installer
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +76,38 @@ func assertOperationLocked(t *testing.T, stateDir string) {
 	}
 	if !errors.Is(err, errOperationInProgress) {
 		t.Errorf("cleanup released the operation lock: %v", err)
+	}
+}
+
+func TestProbeLockReportsAHeldLockAndLeavesNoneBehind(t *testing.T) {
+	t.Parallel()
+	stateDir := filepath.Join(t.TempDir(), "udm-iptv")
+	if err := ProbeLock(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	release, err := AcquireLock(stateDir)
+	if err != nil {
+		t.Fatalf("acquisition after probe: %v", err)
+	}
+	if err := ProbeLock(stateDir); !errors.Is(err, errOperationInProgress) {
+		t.Fatalf("probe during an operation: %v", err)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProbeLockReportsAnUnwritableStateDirectory(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	stateDir := filepath.Join(t.TempDir(), "udm-iptv")
+	if err := os.Mkdir(stateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	err := ProbeLock(stateDir)
+	if !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), "open operation lock") {
+		t.Fatalf("probe of an unwritable directory: %v", err)
 	}
 }
