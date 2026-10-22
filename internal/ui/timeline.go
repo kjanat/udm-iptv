@@ -80,6 +80,9 @@ func logSource(source string) string {
 
 func summarize(value *diagnostics.Snapshot) string {
 	parts := []string{fmt.Sprintf("service %s/%s, proxy %s pid %d", value.Service.ActiveState, value.Service.SubState, value.Service.Proxy, value.Service.ProxyPID)}
+	if value.ProxyInterfaces != nil {
+		parts = append(parts, proxyInterfaceStatus(value))
+	}
 	if value.Multicast != nil {
 		parts = append(parts, multicastStatus(value))
 		for _, route := range scopedMulticastRoutes(value) {
@@ -98,6 +101,9 @@ func describeRoute(group, source, input string, outputs []string) string {
 func changes(before, after *diagnostics.Snapshot, interval time.Duration) []string {
 	var lines []string
 	lines = append(lines, serviceChanges(before, after)...)
+	if previous, current := proxyInterfaceStatus(before), proxyInterfaceStatus(after); previous != current {
+		lines = append(lines, current)
+	}
 	lines = append(lines, networkChanges(before, after)...)
 	lines = append(lines, multicastChanges(before, after, interval)...)
 	lines = append(lines, membershipChanges(before, after)...)
@@ -287,6 +293,9 @@ func status(value *diagnostics.Snapshot) []string {
 		fmt.Sprintf("service %s/%s  proxy %s pid %d  restarts %d", value.Service.ActiveState, value.Service.SubState, value.Service.Proxy, value.Service.ProxyPID, value.Service.Restarts),
 		fmt.Sprintf("%s %s  %s  routes %d  default %t", value.Network.Target, value.Network.LinkState, strings.Join(value.Network.Addresses, " "), len(value.Network.Routes), value.Network.DefaultRoute),
 	}
+	if value.ProxyInterfaces != nil {
+		lines = append(lines, proxyInterfaceStatus(value))
+	}
 	if value.Multicast != nil {
 		lines = append(lines, multicastStatus(value))
 	} else {
@@ -297,4 +306,14 @@ func status(value *diagnostics.Snapshot) []string {
 	}
 
 	return lines
+}
+
+func proxyInterfaceStatus(value *diagnostics.Snapshot) string {
+	if value.ProxyInterfaces == nil {
+		return "proxy interface registration unavailable (not collected)"
+	}
+	if err := value.ProxyInterfaces.Check(); err != nil {
+		return "WARNING: proxy interfaces: " + strings.ReplaceAll(err.Error(), "\n", "; ")
+	}
+	return "proxy interfaces registered: " + strings.Join(value.ProxyInterfaces.Expected, ", ")
 }

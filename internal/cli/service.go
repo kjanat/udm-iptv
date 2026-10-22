@@ -147,7 +147,7 @@ func (application *Application) diagnosticsJSON(ctx context.Context) (json.RawMe
 
 func (application *Application) waitHealthy(ctx context.Context, startup, stable time.Duration) error {
 	err := application.reportRun(ctx, "service.health", func(ctx context.Context) error {
-		if err := service.WaitHealthy(ctx, startup, stable); err != nil {
+		if err := service.WaitHealthy(ctx, application.ConfigPath, startup, stable); err != nil {
 			// Attach diagnostics before the innermost operation reports the
 			// failure; outer wrappers intentionally do not report it again.
 			return application.reportHealthFailure(ctx, err)

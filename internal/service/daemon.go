@@ -147,6 +147,9 @@ func startupConfiguration(ctx context.Context, path string) (config.Config, conf
 	if err := proxycheck.Check(ctx); err != nil {
 		return config.Config{}, config.Addressing{}, fmt.Errorf("check multicast proxy before startup: %w", err)
 	}
+	if err := waitDownstreams(ctx, value.LAN.Interfaces); err != nil {
+		return config.Config{}, config.Addressing{}, fmt.Errorf("prepare proxy downstreams: %w", err)
+	}
 	return value, addressing, nil
 }
 
@@ -201,7 +204,35 @@ type supervised struct {
 // supervise waits out a settling period before reporting readiness, so a
 // proxy that fails immediately is reported as a startup failure.
 func (application *Daemon) supervise(ctx context.Context, sources supervised) error {
+	if err := sources.settle(ctx); err != nil {
+		return err
+	}
+	if err := waitProxyCheck(ctx, proxyInterfaceTimeout, func() error {
+		return InspectProxyInterfaces(sources.config).Check()
+	}); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return application.proxyInterfaceFailure(sources.config, err)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	if sources.config.Proxy.Debug {
+		application.logProxyInterfaceEvidence(sources.config)
+	}
+	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
+	_, _ = sdnotify.SdNotify(false, "STATUS=IPTV proxy is running")
+	application.Monitor.Ready(ctx)
+	stopMetrics := application.startTelemetryMetrics(ctx, sources.config)
+	defer stopMetrics()
+	return application.monitorProxy(ctx, sources)
+}
+
+func (sources supervised) settle(ctx context.Context) error {
 	select {
+	case <-ctx.Done():
+		return nil
 	case <-sources.proxy.done:
 		return sources.proxyStopped(ctx)
 	case <-processDone(sources.dhcp):
@@ -210,22 +241,46 @@ func (application *Daemon) supervise(ctx context.Context, sources supervised) er
 		return networkFailed(ctx, cause)
 	case <-time.After(signalGrace):
 	}
-	_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyReady)
-	_, _ = sdnotify.SdNotify(false, "STATUS=IPTV proxy is running")
-	application.Monitor.Ready(ctx)
-	stopMetrics := application.startTelemetryMetrics(ctx, sources.config)
-	defer stopMetrics()
-	select {
-	case <-ctx.Done():
-		_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
+	return nil
+}
 
-		return nil
-	case <-sources.proxy.done:
-		return sources.proxyStopped(ctx)
-	case <-processDone(sources.dhcp):
-		return sources.dhcpStopped(ctx)
-	case cause := <-sources.network:
-		return networkFailed(ctx, cause)
+func (application *Daemon) monitorProxy(ctx context.Context, sources supervised) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			_, _ = sdnotify.SdNotify(false, sdnotify.SdNotifyStopping)
+
+			return nil
+		case <-sources.proxy.done:
+			return sources.proxyStopped(ctx)
+		case <-processDone(sources.dhcp):
+			return sources.dhcpStopped(ctx)
+		case cause := <-sources.network:
+			return networkFailed(ctx, cause)
+		case <-ticker.C:
+			if err := InspectProxyInterfaces(sources.config).Check(); err != nil {
+				// Exit through ordinary cleanup. systemd restarts the proxy only
+				// after downstream readiness, rather than leaving partial service.
+				return application.proxyInterfaceFailure(sources.config, err)
+			}
+		}
+	}
+}
+
+func (application *Daemon) proxyInterfaceFailure(value config.Config, cause error) error {
+	if application.Err != nil {
+		_, _ = fmt.Fprintf(application.Err, "Proxy interface registration failed: %v\n", cause)
+	}
+	application.logProxyInterfaceEvidence(value)
+	return fmt.Errorf("verify multicast proxy interfaces: %w", cause)
+}
+
+func (application *Daemon) logProxyInterfaceEvidence(value config.Config) {
+	data, err := json.Marshal(InspectProxyInterfaces(value))
+	if err == nil && application.Err != nil {
+		_, _ = fmt.Fprintf(application.Err, "Kernel multicast interface evidence: %s\n", data)
 	}
 }
 

@@ -9,7 +9,23 @@ import (
 
 	"github.com/kjanat/udm-iptv/internal/diagnostics"
 	"github.com/kjanat/udm-iptv/internal/mroute"
+	"github.com/kjanat/udm-iptv/internal/service"
 )
+
+func TestTimelineExposesAndRecoversPartialProxy(t *testing.T) {
+	before := &diagnostics.Snapshot{ProxyInterfaces: &service.ProxyInterfaces{
+		Expected: []string{"iptv", "br0", "br2"}, IPv4: mroute.Interfaces{Names: []string{"iptv", "br0"}},
+	}}
+	if text := strings.Join(status(before), "\n"); !strings.Contains(text, "WARNING: proxy interfaces: IPv4: multicast interface not registered: br2") {
+		t.Fatal(text)
+	}
+	after := &diagnostics.Snapshot{ProxyInterfaces: &service.ProxyInterfaces{
+		Expected: []string{"iptv", "br0", "br2"}, IPv4: mroute.Interfaces{Names: []string{"iptv", "br0", "br2"}},
+	}}
+	if text := strings.Join(changes(before, after, time.Second), "\n"); !strings.Contains(text, "proxy interfaces registered: iptv, br0, br2") {
+		t.Fatal(text)
+	}
+}
 
 func snapshotJSON(t *testing.T) string {
 	t.Helper()

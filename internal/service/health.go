@@ -7,6 +7,8 @@ import (
 	"time"
 
 	systemd "github.com/coreos/go-systemd/v22/dbus"
+
+	"github.com/kjanat/udm-iptv/internal/config"
 )
 
 // healthCheckInterval is how often WaitHealthy samples the service's state.
@@ -21,7 +23,11 @@ var (
 
 // WaitHealthy waits for udm-iptv.service to become active and stay that way
 // for stable, failing if it does not become ready within startup.
-func WaitHealthy(ctx context.Context, startup, stable time.Duration) error {
+func WaitHealthy(ctx context.Context, configPath string, startup, stable time.Duration) error {
+	value, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load expected proxy configuration: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, startup+stable)
 	defer cancel()
 	connection, err := systemd.NewSystemConnectionContext(ctx)
@@ -40,7 +46,11 @@ func WaitHealthy(ctx context.Context, startup, stable time.Duration) error {
 			return healthSample{}, fmt.Errorf("read proxy state: %w", err)
 		}
 
-		return checkedHealthSample(properties, state, processExists(state.ProxyPID))
+		sample, err := checkedHealthSample(properties, state, processExists(state.ProxyPID))
+		if err == nil {
+			err = InspectProxyInterfaces(value).Check()
+		}
+		return sample, err
 	})
 }
 

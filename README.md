@@ -117,8 +117,8 @@ Private reports: `/data/udm-iptv/diagnostics` (0600), including addresses and ra
 Export complete capture evidence locally; the original stays unchanged:
 
 ```sh
-udm-iptv diagnose export /data/udm-iptv/diagnostics/CAPTURE.jsonl > share.jsonl
-udm-iptv diagnose export /data/udm-iptv/diagnostics/CAPTURE.jsonl --format text > share.txt
+udm-iptv diagnose export /data/udm-iptv/diagnostics/CAPTURE.jsonl >share.jsonl
+udm-iptv diagnose export /data/udm-iptv/diagnostics/CAPTURE.jsonl --format text >share.txt
 ```
 
 See [diagnostics](docs/diagnostics.md) for retained evidence, collection limits and export formats.

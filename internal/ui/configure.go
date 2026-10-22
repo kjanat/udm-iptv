@@ -433,10 +433,17 @@ func (session *configureSession) pickProfile(ctx context.Context) (wizardStage, 
 		return stageChain, err
 	}
 	session.asked = asked
+	changed := session.chosen.profile() != session.draft.Profile
 	if err := applyProfile(session.catalog, session.draft, session.chosen.profile()); err != nil {
 		return stageChain, err
 	}
-	session.settings, session.apply = session.settingsForm()
+	// Keep the form's edit buffers when revisiting the same provider. Some
+	// answers are not copied into draft until validation on forward navigation.
+	if session.settings == nil || changed {
+		session.settings, session.apply = session.settingsForm()
+	} else {
+		session.settings.steps(session.asked, 1)
+	}
 
 	return stageSettings, nil
 }

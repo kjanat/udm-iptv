@@ -932,6 +932,7 @@ func (session *Session) Observe(observer Observer) *Session {
 // Run shows the wizard and waits for it to finish, or for ctx to end. The
 // terminal program is started on the first call; Close stops it.
 func (session *Session) Run(ctx context.Context, wizard *Wizard) error {
+	wizard.wentBack = false
 	wizard.done = make(chan struct{})
 	wizard.Form.SubmitCmd = func() tea.Msg { return wizardDoneMsg{} }
 	wizard.Form.CancelCmd = wizard.Form.SubmitCmd

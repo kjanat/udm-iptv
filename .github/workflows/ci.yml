@@ -34,7 +34,7 @@ jobs:
     name: Lint GitHub Actions workflows
     runs-on: ubuntu-latest
     timeout-minutes: 1
-    steps: [*Checkout, { uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 }] # v1.17
+    steps: [*Checkout, { uses: kjanat/actionlint@722799fa4b8cc6734debb97bae24aca9e0dbaf59 }] # v1
 
   integration:
     name: Integration (${{ matrix.package }})
@@ -75,9 +75,10 @@ jobs:
           - name: Install golangci-lint
             uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
             with: { version-file: &TV .tool-versions, install-only: true }
-          - uses: tombi-toml/setup-tombi@ea139001852855a7f1cf30a9b60c71ebb6446a99 # v1.5.5
+          - uses: kjanat/setup-tombi@94a6834e289046705b32e6b8dc977c8b939e8b35 # v1
+            with: { version-file: *TV }
       - name: Check formatting
-        uses: kjanat/dprint-check@2a71b9c51a4bd9935243a16de38fa830dbaa30be # v3
+        uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # v3.1.0
 
   lint:
     name: Lint and vulnerabilities
@@ -99,7 +100,7 @@ jobs:
           - name: Check Go vulnerabilities
             run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
           - name: Lint shell scripts
-            run: shellcheck tests/firmware/boot.sh packaging/deb/{config,preinstall,postinstall,preremove,postremove}
+            run: shellcheck tests/firmware/boot.sh tests/multicast/registration.sh packaging/deb/{config,preinstall,postinstall,preremove,postremove}
           - name: Check Debian script syntax
             working-directory: packaging/deb
             run: for script in config preinstall postinstall preremove postremove; do sh -n "${script}"; done
@@ -112,7 +113,7 @@ jobs:
     steps:
       - &dlArtefacts
         name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: "${{ needs.build.outputs.artifact }}", path: dist }
       - parallel:
           - name: Verify checksums
@@ -198,7 +199,7 @@ jobs:
         run: go test -tags firmware -v -count=1 -timeout=20m ./tests/firmware
       - name: Upload firmware evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: firmware-evidence-${{ matrix.model }}-${{ strategy.job-index }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/firmware-evidence

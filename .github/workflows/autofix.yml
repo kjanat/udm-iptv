@@ -10,12 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - parallel:
-          - uses: tombi-toml/setup-tombi@ea139001852855a7f1cf30a9b60c71ebb6446a99 # v1.5.5
+          - uses: kjanat/setup-tombi@94a6834e289046705b32e6b8dc977c8b939e8b35 # v1
+            with: { version-file: .tool-versions }
           - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
             with: { version-file: .tool-versions, install-only: true }
           - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
             with: { go-version-file: go.mod }
-          - uses: kjanat/dprint-check@v3 # Without this action, dprint has to recompile the wasm plugins each time the action runs, which is often, and wastes time, energy, and sanity.
+          - uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # Without this action, dprint has to recompile the wasm plugins each time the action runs, which is often, and wastes time, energy, and sanity.
             with: { install-only: true }
       - name: x/tools/go/analysis modernize
         run: go run golang.org/x/tools/go/analysis/passes/modernize/cmd/modernize@latest -fix ./...

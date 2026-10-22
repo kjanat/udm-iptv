@@ -1,4 +1,4 @@
-// Package mroute reads the kernel's IPv4 multicast forwarding cache.
+// Package mroute reads kernel multicast forwarding and interface tables.
 package mroute
 
 import (
@@ -154,11 +154,20 @@ func parseVIFs(reader io.Reader) (map[string]string, error) {
 	if !scanner.Scan() {
 		return nil, fmt.Errorf("read multicast interface header: %w", errTruncated)
 	}
+	if fields := strings.Fields(scanner.Text()); len(fields) == 0 || fields[0] != "Interface" {
+		return nil, fmt.Errorf("read multicast interface header: %w", errTruncated)
+	}
 	names := map[string]string{}
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < vifColumns {
+		if len(fields) == 0 {
 			continue
+		}
+		if len(fields) < vifColumns {
+			return nil, fmt.Errorf("parse multicast interface row %q: %w", scanner.Text(), errTruncated)
+		}
+		if _, err := strconv.ParseUint(fields[0], 10, 32); err != nil {
+			return nil, fmt.Errorf("parse multicast interface index: %w", err)
 		}
 		names[fields[0]] = fields[1]
 	}

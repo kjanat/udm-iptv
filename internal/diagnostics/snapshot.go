@@ -34,25 +34,26 @@ type Collector struct{ ConfigPath, StateDir, Version string }
 // Snapshot represents a point-in-time summary of the router's
 // configuration and status.
 type Snapshot struct {
-	Proxies     proxyinventory.Inventory `json:"proxies,omitempty"`
-	Errors      map[string]string        `json:"errors,omitempty"`
-	Timestamp   time.Time                `json:"timestamp"`
-	Version     string                   `json:"version"`
-	System      systemInfo               `json:"system"`
-	ProxyConfig *string                  `json:"proxyConfig"`
-	RecentLogs  *recentJournal           `json:"recentLogs,omitempty"`
-	Config      configSummary            `json:"config"`
-	Service     serviceStatus            `json:"service"`
-	Network     networkStatus            `json:"network"`
-	Multicast   *MulticastInfo           `json:"multicast"`
-	Memberships *[]Membership            `json:"memberships"`
-	Lease       *service.LeaseState      `json:"lease"`
-	NAT         *[]network.NATRule       `json:"natRules"`
-	NATEvidence *[]NATEvidence           `json:"natEvidence"`
-	Downstream  []downstreamStatus       `json:"downstream"`
-	Switches    string                   `json:"switches"`
-	NativeProxy string                   `json:"nativeProxy"`
-	Playback    string                   `json:"playback"`
+	Proxies         proxyinventory.Inventory `json:"proxies,omitempty"`
+	Errors          map[string]string        `json:"errors,omitempty"`
+	Timestamp       time.Time                `json:"timestamp"`
+	Version         string                   `json:"version"`
+	System          systemInfo               `json:"system"`
+	ProxyConfig     *string                  `json:"proxyConfig"`
+	ProxyInterfaces *service.ProxyInterfaces `json:"proxyInterfaces,omitempty"`
+	RecentLogs      *recentJournal           `json:"recentLogs,omitempty"`
+	Config          configSummary            `json:"config"`
+	Service         serviceStatus            `json:"service"`
+	Network         networkStatus            `json:"network"`
+	Multicast       *MulticastInfo           `json:"multicast"`
+	Memberships     *[]Membership            `json:"memberships"`
+	Lease           *service.LeaseState      `json:"lease"`
+	NAT             *[]network.NATRule       `json:"natRules"`
+	NATEvidence     *[]NATEvidence           `json:"natEvidence"`
+	Downstream      []downstreamStatus       `json:"downstream"`
+	Switches        string                   `json:"switches"`
+	NativeProxy     string                   `json:"nativeProxy"`
+	Playback        string                   `json:"playback"`
 }
 
 type configSummary struct {
@@ -172,6 +173,8 @@ func (application *Collector) Snapshot(ctx context.Context) (Snapshot, error) {
 		result.Network.IPv6Knobs = network.IPv6MulticastState(value)
 	}
 	collectSnapshotTables(ctx, value, &result)
+	interfaces := service.InspectProxyInterfaces(value)
+	result.ProxyInterfaces = &interfaces
 	if generated, err := service.ReadProxyConfig(); err == nil {
 		result.ProxyConfig = &generated
 	} else {

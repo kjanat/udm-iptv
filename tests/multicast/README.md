@@ -91,6 +91,38 @@ the original and patched source implementations and pinned UDM Pro/UCG Max 5.1.3
 `ubuntu-24.04-arm`. It checks both host and daemon architecture and uploads evidence
 even on failure. It never automatically runs the longer scenarios.
 
+## Service registration regression
+
+The automatic ARM64 smoke matrix also runs the Go service regression against each
+built implementation, including both pinned firmware images:
+
+```sh
+bash tests/multicast/registration.sh upstream
+bash tests/multicast/registration.sh patched
+bash tests/multicast/registration.sh firmware
+```
+
+Build the selected image first as described above. Go and root or passwordless
+sudo are required. The wrapper extracts the binary from a container that is never
+started; the Go test creates fresh network and mount namespaces and makes `/run`
+private. It never configures host interfaces or contacts a router.
+
+The test covers both a missing `br2` and an up but addressless `br2`. It requires that preflight,
+activation health, daemon startup and runtime monitoring reject the live proxy's
+partial VIF table, and that failure logs retain the raw kernel evidence. After
+assigning `br2` an address and restarting the same binary, all expected VIFs must
+register. Missing binaries, namespace privileges or kernel multicast support fail
+the wrapper; they do not silently skip the CI check.
+
+This Go regression executes the extracted binary with the host loader/libraries.
+The separate firmware smoke lab still uses the preserved firmware loader/libraries.
+Neither test boots the UniFi kernel.
+
+Each invocation retains binary SHA-256, image/revision and host-kernel provenance,
+plus Go test output, under ignored `artifacts/registration-*`. No binary or private
+capture is committed. Small documentation-address VIF fixtures also exercise the
+parser/check in ordinary `go test ./internal/mroute` without privileges.
+
 ## Explicit longer experiments
 
 Run these only after the smoke test passes:
@@ -118,7 +150,8 @@ Each manual run first builds and passes smoke for its selected implementation.
 The scenario then runs for 360 seconds; assertion failures fail the job and retain
 the evidence. Separate scenarios can run concurrently without cancelling each
 other. Repeating the same scenario on the same ref replaces its in-progress run.
-Pushes, pull requests and manual dispatches with `scenario=smoke` run only smoke.
+Pushes, pull requests and manual dispatches with `scenario=smoke` run smoke and
+service registration regressions, not the six-minute experiments.
 
 For the complete before/after regression matrix, dispatch each implementation
 separately. Each run covers baseline, lower, higher and recovery with all three

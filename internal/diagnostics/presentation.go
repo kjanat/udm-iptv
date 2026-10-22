@@ -54,6 +54,7 @@ func RenderSnapshotStyled(value Snapshot, style func(ReportRole, string) string)
 	output.WriteString(r.field("Proxy source ranges", r.sourceRanges(value.Config)))
 	output.WriteString(r.field("LAN interfaces", strings.Join(value.Config.LANInterfaces, ", ")))
 	output.WriteString(r.service(value.Service))
+	output.WriteString(r.proxyInterfaces(value.ProxyInterfaces))
 	output.WriteString(r.proxies(value))
 	output.WriteString(r.field("IGMP version", fmt.Sprintf("%s, MLD: %s, quickleave enabled: %t, proxy debug logging: %t",
 		igmpVersionText(value.Config), mldText(value.Config.MLDVersion), value.Config.QuickLeave, value.Config.Debug)))

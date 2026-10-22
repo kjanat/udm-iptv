@@ -5,9 +5,9 @@ run-name: Multicast ${{ inputs.scenario || 'smoke' }}${{ inputs.scenario == 'reg
 on:
   push:
     branches: ["**"]
-    paths: [tests/multicast/**, patches/improxy/**, .github/workflows/multicast.yml]
+    paths: [tests/multicast/**, patches/improxy/**, internal/**, go.mod, go.sum, .github/workflows/multicast.yml]
   pull_request:
-    paths: [tests/multicast/**, patches/improxy/**, .github/workflows/multicast.yml]
+    paths: [tests/multicast/**, patches/improxy/**, internal/**, go.mod, go.sum, .github/workflows/multicast.yml]
   workflow_dispatch:
     inputs:
       scenario:
@@ -39,7 +39,7 @@ jobs:
       - name: Decide whether this push touched the fixture
         id: classify
         uses: $/.github/actions/pushed-paths
-        with: { pattern: '^(tests/multicast/|patches/improxy/|\.github/(workflows/multicast\.yml|actions/pushed-paths/))' }
+        with: { pattern: '^(tests/multicast/|patches/improxy/|internal/|go\.(mod|sum)$|\.github/(workflows/multicast\.yml|actions/pushed-paths/))' }
 
   smoke:
     needs: changes
@@ -93,7 +93,13 @@ jobs:
           } | tee tests/multicast/artifacts/runner.txt
       - name: Build fixture and run fixture checks
         run: docker compose -f tests/multicast/compose.yaml build 2>&1 | tee tests/multicast/artifacts/build.log
-      # Automatic runs stop after smoke; scenarios require an explicit dispatch.
+      - name: Setup Go for service registration regression
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with: { go-version-file: go.mod, cache-dependency-path: go.sum }
+      - name: Reject partial proxy startup and verify recovery
+        timeout-minutes: 3
+        run: bash tests/multicast/registration.sh "${PROXY_IMPLEMENTATION}"
+      # Automatic runs stop after registration and smoke; longer scenarios require dispatch.
       - name: Run five-second multicast smoke test
         timeout-minutes: 2
         run: |
@@ -112,7 +118,7 @@ jobs:
             --firmware-image "${FIRMWARE_IMAGE}"
       - name: Upload fixture evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: multicast-${{ inputs.scenario || 'smoke' }}-${{ matrix.name }}-${{ github.run_attempt }}
           path: tests/multicast/artifacts/
@@ -201,7 +207,7 @@ jobs:
             --query-version "${IGMP_VERSION}"
       - name: Upload regression evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: multicast-regression-${{ inputs.implementation }}-${{ matrix.scenario }}-v${{ matrix.version }}-${{ github.run_attempt }}
           path: tests/multicast/artifacts/
