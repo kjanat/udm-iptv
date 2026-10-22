@@ -42,6 +42,27 @@ failed outcome. The launcher reports that acknowledgement; a clean process exit
 without a completion record is an error. A capture that finishes before the launcher
 returns is reported as completed, with no new completion deadline.
 
+## Log partition running out of space
+
+The daemon measures free space on `/var/log` and on its state directory
+every 30 seconds. When either drops under 5% or 32 MiB it logs one line,
+drops the proxy's INFO and DEBUG output until the space is back above 10%
+and 64 MiB, and forces the rotation UniFi OS schedules daily for the
+syslog-ng files, at most once an hour:
+
+```sh
+logrotate --force /etc/logrotate.d/syslog-ng
+```
+
+That rotation keeps four compressed generations of `daemon.log` and caps
+the live file at 8 MB. The proxy debug option runs improxy at INFO, which
+is enough to follow joins, leaves and queries. Turn it off once a problem
+is understood:
+
+```sh
+udm-iptv configure set --debug=false
+```
+
 ## DHCP acquisition
 
 DHCP has 30 seconds to apply a lease. Defaults (`-t 3 -T 3 -A 2`) allow two complete

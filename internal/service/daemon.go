@@ -35,6 +35,10 @@ type Daemon struct {
 	Out, Err             io.Writer
 	Monitor              *telemetry.Reporter
 	Diagnostics          func(context.Context) (json.RawMessage, error)
+
+	// space is started by Run and thins the proxy output while the log
+	// partition or the state directory runs short.
+	space *spaceGuard
 }
 
 const (
@@ -81,6 +85,7 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	}
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	application.watchSpace(ctx)
 	link, owner, releaseNetwork, err := claimNetwork(value)
 	if err != nil {
 		return err
@@ -120,6 +125,13 @@ func (application *Daemon) Run(parent context.Context) (result error) {
 	return application.supervise(ctx, supervised{
 		program: value.Proxy.Program, config: value, proxy: process, dhcp: dhcp, network: networkFailure,
 	})
+}
+
+// watchSpace starts the guard that thins the proxy output while the log
+// partition or the state directory runs short.
+func (application *Daemon) watchSpace(ctx context.Context) {
+	application.space = newSpaceGuard(application.Out, systemLogDir, application.StateDir)
+	go application.space.run(ctx, spaceCheckInterval)
 }
 
 // startupConfiguration checks prerequisites before any network mutation.
@@ -306,8 +318,8 @@ func (application *Daemon) proxyCommand(ctx context.Context, value config.Config
 	}
 	proxy := exec.CommandContext(ctx, binary, arguments...)
 	proxyLog := application.Monitor.LineWriter(ctx, "proxy")
-	out := io.MultiWriter(application.Out, proxyLog)
-	proxy.Stderr = io.MultiWriter(application.Err, proxyLog)
+	out := io.MultiWriter(application.space.filter(application.Out), proxyLog)
+	proxy.Stderr = io.MultiWriter(application.space.filter(application.Err), proxyLog)
 	output, err := attachTerminal(proxy, out)
 	if err != nil {
 		_, _ = fmt.Fprintf(application.Err, "%s output through a pipe: %v\n", value.Proxy.Program, err)
