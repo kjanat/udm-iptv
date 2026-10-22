@@ -38,6 +38,7 @@ var (
 	errWANInterfaceName    = errors.New("WAN interface must be a valid Linux interface name")
 	errWANVLANRange        = errors.New("WAN VLAN must be between 0 and 4094")
 	errVLANInterfaceName   = errors.New("VLAN interface must be a valid Linux interface name")
+	errVLANIsParent        = errors.New("VLAN interface must differ from its WAN parent interface")
 	errNoLANInterface      = errors.New("at least one LAN interface is required")
 	errProxyProgram        = errors.New("proxy must be improxy or igmpproxy")
 	errMissingProxySources = errors.New("igmpproxy requires at least one proxy source range")
@@ -47,7 +48,7 @@ var (
 	errIGMPVersion          = errors.New("IGMP version must be 2 or 3")
 	errMLDVersion           = errors.New("MLD version must be 0 to leave IPv6 alone, or 1 or 2")
 	errMLDNeedsIMProxy      = errors.New("only improxy forwards IPv6 multicast; igmpproxy has no MLD")
-	errVLANMAC              = errors.New("VLAN MAC address must be a six-byte Ethernet address")
+	errVLANMAC              = errors.New("VLAN MAC address must be a nonzero six-byte unicast Ethernet address")
 	errStaticAddress        = errors.New("static address must be an IPv4 CIDR address")
 	errDHCPWithStatic       = errors.New("DHCP and a static address are mutually exclusive")
 	errRoutePolicy          = errors.New("DHCP route policy must be no-default, allow-default or none")
@@ -345,6 +346,9 @@ func validateVLAN(value Config) error {
 	if value.WAN.VLAN > 0 && !validInterface(value.WAN.VLANInterface) {
 		return errVLANInterfaceName
 	}
+	if value.WAN.VLAN > 0 && value.WAN.VLANInterface == value.WAN.Interface {
+		return errVLANIsParent
+	}
 
 	return nil
 }
@@ -393,11 +397,8 @@ func validateMLD(value Config) error {
 }
 
 func validateWANAddressing(value Config) error {
-	if value.WAN.VLANMAC != "" {
-		address, err := net.ParseMAC(value.WAN.VLANMAC)
-		if err != nil || len(address) != 6 {
-			return errVLANMAC
-		}
+	if err := ValidateVLANMAC(value.WAN.VLANMAC); err != nil {
+		return err
 	}
 	if _, err := value.WAN.Addressing(); err != nil {
 		return err
@@ -406,6 +407,18 @@ func validateWANAddressing(value Config) error {
 		return fmt.Errorf("%w %q", errRoutePolicy, value.WAN.DHCPRoutes)
 	}
 
+	return nil
+}
+
+// ValidateVLANMAC accepts an unset override or a kernel-assignable Ethernet MAC.
+func ValidateVLANMAC(value string) error {
+	if value == "" {
+		return nil
+	}
+	address, err := net.ParseMAC(value)
+	if err != nil || len(address) != 6 || address[0]&1 != 0 || slices.Equal(address, net.HardwareAddr{0, 0, 0, 0, 0, 0}) {
+		return errVLANMAC
+	}
 	return nil
 }
 

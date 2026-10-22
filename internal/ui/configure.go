@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -25,7 +24,6 @@ type formValues struct {
 var (
 	errNotIPv4Prefix         = errors.New("use IPv4 prefixes, for example 213.75.0.0/16")
 	errVLANIDOutOfRange      = errors.New("enter a VLAN ID between 0 and 4094")
-	errNotMACAddress         = errors.New("enter a valid MAC address")
 	errNotIPv4CIDR           = errors.New("enter an IPv4 CIDR address")
 	errSourcePrefixesMissing = errors.New("igmpproxy needs at least one source prefix")
 )
@@ -635,13 +633,9 @@ func validateVLANID(value string) error {
 }
 
 func validateOptionalMAC(value string) error {
-	if value == "" {
-		return nil
+	if err := config.ValidateVLANMAC(value); err != nil {
+		return fmt.Errorf("MAC override: %w", err)
 	}
-	if _, err := net.ParseMAC(value); err != nil {
-		return errNotMACAddress
-	}
-
 	return nil
 }
 

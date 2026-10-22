@@ -204,11 +204,20 @@ func collectSnapshotTables(ctx context.Context, value config.Config, result *Sna
 	} else {
 		recordCollectionError(&result.Errors, "memberships", err)
 	}
-	if lease, err := service.ReadLeaseState(); err == nil {
-		result.Lease = &lease
-	} else {
-		recordCollectionError(&result.Errors, "lease", err)
+	lease, err := service.ReadLeaseState()
+	result.collectLease(lease, err)
+}
+
+func (snapshot *Snapshot) collectLease(lease service.LeaseState, err error) {
+	if err == nil {
+		snapshot.Lease = &lease
+		return
 	}
+	// Static and externally managed addressing do not produce a DHCP lease.
+	if !snapshot.Config.DHCP && errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	recordCollectionError(&snapshot.Errors, "lease", err)
 }
 
 func observedNATEvidence(destinations []string, observed networkStatus, rules []network.NATRule) *[]NATEvidence {

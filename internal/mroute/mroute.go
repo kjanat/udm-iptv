@@ -3,6 +3,7 @@ package mroute
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -85,7 +86,19 @@ func Read() (Table, error) {
 	}
 	defer func() { _ = vif.Close() }()
 
-	return Parse(io.LimitReader(cache, readLimit), io.LimitReader(vif, readLimit))
+	return readTables(cache, vif)
+}
+
+func readTables(cache, vif io.Reader) (Table, error) {
+	cacheData, err := readTableData(cache)
+	if err != nil {
+		return Table{}, fmt.Errorf("read %s: %w", cachePath, err)
+	}
+	vifData, err := readTableData(vif)
+	if err != nil {
+		return Table{}, fmt.Errorf("read %s: %w", vifPath, err)
+	}
+	return Parse(bytes.NewReader(cacheData), bytes.NewReader(vifData))
 }
 
 // Parse decodes ip_mr_cache with the interface names from ip_mr_vif.

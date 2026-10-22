@@ -123,6 +123,49 @@ func TestValidateWANAddressing(t *testing.T) {
 	}
 }
 
+func TestValidateVLANMAC(t *testing.T) {
+	t.Parallel()
+	for _, address := range []string{"ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:01", "00:00:00:00:00:00", "00:11:22:33:44:55:66:77", "invalid"} {
+		t.Run(address, func(t *testing.T) {
+			value := withPorts(DefaultKPN())
+			value.WAN.VLANMAC = address
+			if err := value.Validate(); !errors.Is(err, errVLANMAC) {
+				t.Fatalf("invalid MAC %q: got %v", address, err)
+			}
+			if err := Save(filepath.Join(t.TempDir(), "config.json"), value); !errors.Is(err, errVLANMAC) {
+				t.Fatalf("saved invalid MAC %q: %v", address, err)
+			}
+		})
+	}
+	for _, address := range []string{"", "00:11:22:33:44:55", "02:11:22:33:44:55"} {
+		value := withPorts(DefaultKPN())
+		value.WAN.VLANMAC = address
+		if err := value.Validate(); err != nil {
+			t.Errorf("valid MAC %q rejected: %v", address, err)
+		}
+	}
+}
+
+func TestValidateVLANParentCollision(t *testing.T) {
+	t.Parallel()
+	value := withPorts(DefaultKPN())
+	value.WAN.VLANInterface = value.WAN.Interface
+	if err := value.Validate(); !errors.Is(err, errVLANIsParent) {
+		t.Fatalf("VLAN named after its parent accepted: %v", err)
+	}
+	if err := Save(filepath.Join(t.TempDir(), "config.json"), value); !errors.Is(err, errVLANIsParent) {
+		t.Fatalf("saved colliding VLAN: %v", err)
+	}
+	value.WAN.VLAN = 0
+	if err := value.Validate(); err != nil {
+		t.Fatalf("unused VLAN name rejected for untagged WAN: %v", err)
+	}
+	value.WAN.VLAN, value.WAN.VLANInterface = 4, "iptv"
+	if err := value.Validate(); err != nil {
+		t.Fatalf("distinct VLAN name rejected: %v", err)
+	}
+}
+
 func TestNormalizeProxyPinsIgmpproxyToIGMPv2(t *testing.T) {
 	t.Parallel()
 	value := withPorts(Default())

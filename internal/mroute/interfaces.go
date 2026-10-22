@@ -20,10 +20,10 @@ type Interfaces struct {
 	Error string   `json:"error,omitempty"`
 }
 
-func readInterfaceData(reader io.Reader) ([]byte, error) {
+func readTableData(reader io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(reader, readLimit+1))
 	if err != nil {
-		return data, fmt.Errorf("read interface table: %w", err)
+		return data, fmt.Errorf("read multicast table: %w", err)
 	}
 	if len(data) > readLimit {
 		return data[:readLimit], errTruncated
@@ -47,7 +47,7 @@ func readInterfaces(system fs.FS, name string) Interfaces {
 	}
 	defer func() { _ = file.Close() }()
 	// Preserve evidence even if decoding fails; never accept a truncated table.
-	data, err := readInterfaceData(file)
+	data, err := readTableData(file)
 	result := Interfaces{Raw: string(data)}
 	if err == nil {
 		var names map[string]string
