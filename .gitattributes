@@ -1,8 +1,11 @@
-**/*.schema.json          diff                             -linguist-vendored
-.github/actions/**/*.bash       linguist-language=Shell    -linguist-vendored
-completions/udm-iptv            linguist-language=Shell
-debian/config                   linguist-language=Shell    -linguist-vendored
-debian/postinst                 linguist-language=Shell    -linguist-vendored
-debian/postrm                   linguist-language=Shell    -linguist-vendored
-debian/rules                    linguist-language=Makefile -linguist-vendored
-tests/vendor/**/*.json   -diff                              linguist-vendored
+*.go linguist-language=Go
+packaging/deb/config linguist-language=Shell
+packaging/deb/postinstall linguist-language=Shell
+packaging/deb/postremove linguist-language=Shell
+packaging/deb/preinstall linguist-language=Shell
+packaging/deb/preremove linguist-language=Shell
+docs/vendor/** linguist-vendored
+
+.github/actions/**/*.bash linguist-language=Shell -linguist-vendored
+tests/vendor/**/*.json -diff linguist-vendored
+**/*.schema.json diff -linguist-vendored

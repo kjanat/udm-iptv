@@ -1,5 +1,0 @@
-[Unit]
-Description=Minimal target for udm-iptv integration tests
-DefaultDependencies=no
-Requires=systemd-journald.service dbus.socket
-After=systemd-journald.service dbus.socket
