@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 
-import run, { bodyFor, commitFindings, groupsFromPatch, keyFor, proseBody, proseFindings } from './comment-cop.mjs';
+import run, { bodyFor, commitFindings, groupsFromPatch, keyFor, proseBody, proseFindings, wordingMatches } from './comment-cop.mjs';
 
 /** @typedef {Parameters<Parameters<typeof run>[0]['github']['rest']['pulls']['createReview']>[0]} ReviewParams */
 
@@ -17,7 +17,7 @@ test('flags a long implementation comment', () => {
 `,
 	);
 
-	assert.deepEqual(groups.map(group => group.reasons), [['3 lines']]);
+	assert.deepEqual(groups.map(group => group.reasons), [['3 lines', 'stock technical wording']]);
 });
 
 test('does not measure Go doc comments by length', () => {
@@ -46,7 +46,7 @@ test('does not measure Go field documentation by length', () => {
 		' }',
 	].join('\n');
 
-	assert.deepEqual(groupsFromPatch('metadata.go', patch), []);
+	assert.deepEqual(groupsFromPatch('metadata.go', patch).map(group => group.reasons), [['stock technical wording']]);
 });
 
 test('recognizes a Go doc comment when its declaration follows unchanged lines', () => {
@@ -89,7 +89,7 @@ test('uses the unchanged first line to recognize partial field documentation', (
 		' \tDefaults []*Value',
 	].join('\n');
 
-	assert.deepEqual(groupsFromPatch('metadata.go', patch, source), []);
+	assert.deepEqual(groupsFromPatch('metadata.go', patch, source).map(group => group.reasons), [['stock technical wording']]);
 });
 
 test('flags style tells at any length', () => {
@@ -123,7 +123,7 @@ test('flags hedging in comments and Markdown', () => {
 	);
 
 	assert.deepEqual(comment.map(group => group.reasons), [['hedge']]);
-	assert.deepEqual(prose.map(group => group.reasons), [['hedge']]);
+	assert.deepEqual(prose.map(group => group.reasons), [['hedge', 'stock technical wording']]);
 });
 
 test('flags participial post-modifiers and reduced relative clauses', () => {
@@ -136,7 +136,9 @@ test('flags participial post-modifiers and reduced relative clauses', () => {
 			'Count the pages this version ships.',
 		]
 	) {
-		assert.deepEqual(proseFindings('commit 1234567', text).map(finding => finding.reasons), [['participial post-modifier']], text);
+		const reasons = ['participial post-modifier'];
+		if (text.startsWith('Keep ')) reasons.push('stock technical wording');
+		assert.deepEqual(proseFindings('commit 1234567', text).map(finding => finding.reasons), [reasons], text);
 	}
 	for (
 		const text of [
@@ -148,7 +150,8 @@ test('flags participial post-modifiers and reduced relative clauses', () => {
 			'A finding posts a review that requests changes.',
 		]
 	) {
-		assert.deepEqual(proseFindings('commit 1234567', text), [], text);
+		const want = text.includes('remaining') ? [['stock technical wording']] : [];
+		assert.deepEqual(proseFindings('commit 1234567', text).map(finding => finding.reasons), want, text);
 	}
 });
 
@@ -164,11 +167,12 @@ test('flags comparisons without a marker phrase and narrated history', () => {
 			['That value used to come from the hook.', 'narrated history'],
 		]
 	) {
-		assert.deepEqual(proseFindings('commit 1234567', text).map(finding => finding.reasons), [[reason]], text);
+		const reasons = [reason];
+		if (text.includes('record')) reasons.push('stock technical wording');
+		assert.deepEqual(proseFindings('commit 1234567', text).map(finding => finding.reasons), [reasons], text);
 	}
 	for (
 		const text of [
-			'WithInterfaces leaves a LAN list it is given alone.',
 			'The hook sets the address before it installs the routes.',
 			'Run the check before the change.',
 		]
@@ -182,6 +186,7 @@ test('sees a tell that a wrapped line splits', () => {
 	assert.deepEqual(commitFindings('commit 1234567', message).map(finding => finding.reasons), [['"X instead of Y"']]);
 	assert.deepEqual(proseFindings('pull request description', 'Reads the record\nrather than the file.').map(f => f.reasons), [[
 		'"X rather than Y"',
+		'stock technical wording',
 	]]);
 });
 
@@ -195,6 +200,7 @@ test('flags a commit subject over fifty characters', () => {
 	assert.deepEqual(commitFindings('commit 1234567', both).map(finding => finding.reasons), [[
 		'subject longer than 50 characters',
 		'participial post-modifier',
+		'stock technical wording',
 	]]);
 });
 
@@ -209,7 +215,7 @@ test('flags tells inside Go string literals', () => {
 `,
 	);
 
-	assert.deepEqual(groups.map(group => [group.start, group.reasons]), [[1, ['hedge']]]);
+	assert.deepEqual(groups.map(group => [group.start, group.reasons]), [[1, ['verification disclaimer', 'hedge']]]);
 });
 
 test('ignores Go struct tags and strings without tells', () => {
@@ -436,7 +442,7 @@ test('requests changes for commit messages and the description, fails the job, a
 	assert.match(review.body, /^<!-- actionlint-comment-cop:prose -->/);
 	assert.match(
 		review.body,
-		/^Commit https:\/\/github\.com\/owner\/repo\/commit\/b{40}, flagged for: participial post-modifier\.\n\n> Keep the origin serving it\n\n<details>\n<summary>body<\/summary>\n\n> Body\.\n<\/details>\n\nWrite a possessive/m,
+		/^Commit https:\/\/github\.com\/owner\/repo\/commit\/b{40}, flagged for: participial post-modifier, stock technical wording\.\n\n> Keep the origin serving it\n\n<details>\n<summary>body<\/summary>\n\n> Body\.\n<\/details>\n\nWrite a possessive/m,
 	);
 	assert.match(
 		review.body,
@@ -574,7 +580,7 @@ test('submits comments across files and line ranges in one review', async () => 
 		event: 'COMMENT',
 		body: 'Please review the flagged wording in the inline comments.',
 		comments: [
-			{ path: 'docs/first.md', line: 2, side: 'RIGHT', body: bodyFor(firstGroup), start_line: 1, start_side: 'RIGHT' },
+			{ path: 'docs/first.md', line: 2, side: 'RIGHT', body: bodyFor({ ...firstGroup, matches: wordingMatches(firstGroup.text) }), start_line: 1, start_side: 'RIGHT' },
 			{
 				path: 'docs/first.md',
 				line: 5,
@@ -585,6 +591,7 @@ test('submits comments across files and line ranges in one review', async () => 
 					end: 5,
 					text: 'Moreover, refresh the entry.',
 					reasons: ['connective glue'],
+					matches: wordingMatches('Moreover, refresh the entry.'),
 				}),
 			},
 			{
@@ -597,6 +604,7 @@ test('submits comments across files and line ranges in one review', async () => 
 					end: 1,
 					text: 'Use the cache rather than fetching again.',
 					reasons: ['"X rather than Y"'],
+					matches: wordingMatches('Use the cache rather than fetching again.'),
 				}),
 			},
 		],

@@ -6,8 +6,14 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { findMatches, reasonsFrom } from './matchers.mjs';
+import { technicalGuidance, technicalRules } from './technical-prose.mjs';
+
+/** @typedef {import('./matchers.mjs').Rule} Rule */
+/** @typedef {import('./matchers.mjs').WordingMatch} WordingMatch */
+
 /** @typedef {'go' | 'js' | 'hash' | 'md'} Lang */
-/** @typedef {{path: string, start: number, end: number, text: string, reasons: string[]}} Group */
+/** @typedef {{path: string, start: number, end: number, text: string, reasons: string[], matches?: WordingMatch[]}} Group */
 /** @typedef {{start: number, end: number, lang: Lang, topLevel: boolean, doc: boolean, lines: string[]}} PendingGroup */
 /** @typedef {{id: string, isResolved: boolean, path: string, comments: {nodes: Array<{body: string, viewerDidAuthor: boolean}>}}} ReviewThread */
 /** @typedef {{repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: boolean, endCursor: string | null}, nodes: ReviewThread[]}}}}} ReviewThreadsResponse */
@@ -26,6 +32,24 @@ const LANGS = [
 
 const CONTRAST_GUIDANCE =
 	'Check whether the comparison explains a real constraint. If it does, keep it; otherwise describe the chosen behavior directly.';
+const NON_EFFECT = '(?:un(?:changed|affected|altered|modified|touched|interrupted|disturbed|impacted)|intact|as[- ]is|the same)';
+const EFFECT_VERB = '(?:affect|alter|change|touch|modify|interrupt|restart|disrupt|break|disturb|impact)';
+const CONTRAST = new RegExp([
+	',\\s+not\\s+\\S',
+	`\\b(?:remain(?:s|ed|ing)?|stay(?:s|ed|ing)?|is|are|was|were|be|been|being)\\s+(?:(?:otherwise|completely|entirely|fully|still)\\s+)?${NON_EFFECT}\\b`,
+	`\\b(?:leave|leaves|leaving|left|keep|keeps|keeping|kept)\\s+(?:[^.;!?\\n]{1,100}?\\s+)?(?:${NON_EFFECT}|alone)\\b`,
+	'\\bwithout\\s+(?:affecting|altering|changing|touching|modifying|interrupting|restarting|disrupting|breaking|disturbing|impacting)\\b',
+	'\\b(?:without|with no)\\s+(?:any\\s+)?(?:changes?|interruptions?|disruptions?|side[- ]effects?|impact)\\b',
+	`\\b(?:(?:does|do|did|will|would|can)\\s+not|doesn't|don't|didn't|won't|wouldn't|can't)\\s+${EFFECT_VERB}\\b`,
+	`\\bcontinu(?:e|es|ed|ing)\\s+(?:to\\s+(?:run|work|operate)\\s+)?(?:${NON_EFFECT}|normally|as before|as usual)\\b`,
+].join('|'), 'i');
+const VERIFICATION_DISCLAIMER = new RegExp([
+	'\\b(?:unverified|untested|unvalidated|unconfirmed)\\b',
+	"\\b(?:not|never|hasn't|haven't|wasn't|weren't|isn't|aren't)\\s+(?:(?:yet|been|independently|locally|fully|manually|actually|explicitly|directly|end[- ]to[- ]end)\\s+){0,4}(?:verified|tested|validated|confirmed|checked|proven|established)\\b",
+	"\\b(?:cannot|can't|could not|couldn't|unable to)\\s+(?:(?:be|independently|locally|fully|directly)\\s+){0,3}(?:confirm(?:ed)?|verif(?:y|ied)|validat(?:e|ed)|prov(?:e|en)|establish(?:ed)?)\\b",
+	'\\b(?:does not|doesn\'t|do not|don\'t)\\s+(?:prove|confirm|verify|establish)\\b',
+	'\\b(?:verification|validation|testing|tests?|checks?)\\s+(?:(?:is|are|was|were|has|have)\\s+)?(?:not\\s+(?:been\\s+)?(?:performed|run|done)|pending)\\b',
+].join('|'), 'i');
 
 const DETERMINER = '(?:the|a|an|its|their|this|that|these|those|each|every|any)';
 const INNER_DETERMINER = '(?:the|a|an|its|their|this|these|those|each|every|any)';
@@ -48,7 +72,7 @@ const TELLS = [
 		/[—–]/,
 		'For ordinary prose, consider a comma, colon, parentheses, or separate sentence. Preserve punctuation that is part of quoted material.',
 	],
-	['"X, not Y"', /,[\s]+not\s+\S/, CONTRAST_GUIDANCE],
+	['"X, not Y"', CONTRAST, CONTRAST_GUIDANCE],
 	['"X rather than Y"', /\brather than\b/i, CONTRAST_GUIDANCE],
 	['"X instead of Y"', /\b(?:instead of|as opposed to)\b/i, CONTRAST_GUIDANCE],
 	['"X, no longer Y"', /\b(?:no longer|in place of|and not)\b|(?<!\b(?:leaves?|left)\b(?:\s+\w+){0,8}\s)\balone\b/i, CONTRAST_GUIDANCE],
@@ -84,6 +108,11 @@ const TELLS = [
 		'An explanation of a consequence or failure mode can be useful. Keep it when it documents a non-obvious constraint; otherwise state the behavior directly.',
 	],
 	[
+		'verification disclaimer',
+		VERIFICATION_DISCLAIMER,
+		'Describe the implemented check and its scope. If a verification limit matters, identify the unchecked behavior and the check needed to resolve it.',
+	],
+	[
 		'hedge',
 		/\b(?:not (?:yet )?verified|unverified|may (?:be|have|not|still|already)|might|possibly|probably|likely|appears? to|seems? to|cannot (?:be )?(?:confirm|verif|prov|establish)\w*|does not prove|remains? unknown|not (?:been )?(?:checked|proven|confirmed|established))\b/i,
 		'State the fact the code establishes. A qualifier such as "may" or "not verified" leaves the reader to guess what was checked.',
@@ -100,10 +129,37 @@ const TELLS = [
 	],
 ];
 
+const BASELINE_IDS = new Map([
+	['em dash', 'em-dash'],
+	['"X, not Y"', 'contrast-not'],
+	['"X rather than Y"', 'contrast-rather-than'],
+	['"X instead of Y"', 'contrast-instead-of'],
+	['"X, no longer Y"', 'contrast-no-longer'],
+	['narrated history', 'narrated-history'],
+	['"not just X but Y"', 'contrast-not-just'],
+	['emphatic cleft', 'emphatic-cleft'],
+	['filler phrase', 'filler-phrase'],
+	['inflated diction', 'inflated-diction'],
+	['connective glue', 'connective-glue'],
+	['counterfactual justification', 'counterfactual-justification'],
+	['verification disclaimer', 'verification-disclaimer'],
+	['hedge', 'hedge'],
+	['participial post-modifier', 'participial-post-modifier'],
+	['paste artifact', 'paste-artifact'],
+]);
+
+/** @type {Rule[]} */
+export const wordingRules = [
+	...TELLS.map(([label, pattern, guidance]) => ({ id: BASELINE_IDS.get(label) ?? label, label, pattern, guidance })),
+	...technicalRules,
+];
+
+/** @param {string} text @param {string} [searchText] */
+export const wordingMatches = (text, searchText) => findMatches(text, wordingRules, searchText);
+
 const TOP_LEVEL_DECL = /^(?:package|const|func|type|var)\b/;
 const GO_STRING = /"(?:[^"\\\n]|\\.)*"|`[^`]*`/g;
 const GO_STRUCT_TAG = /^`\w+:"/;
-const DASH_AS_SUBJECT = /[`'"][—–][`'"]|\b(?:em|en)[-\s]dash|U\+201[34]/i;
 const MD_ITEM = /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|\||>\s)/;
 
 /** @param {string} path @returns {Lang | null} */
@@ -154,26 +210,13 @@ function isDocBlock(group, nextLine, sourceLines) {
 	return field !== undefined && stripCommentPrefix(firstLine).startsWith(`${field} `);
 }
 
-/** @param {string} text */
-function tellsIn(text) {
-	const reasons = [];
-	for (const [name, pattern] of TELLS) {
-		if (!pattern.test(text)) continue;
-		if (name === 'em dash' && DASH_AS_SUBJECT.test(text)) continue;
-		reasons.push(name);
-	}
-	return reasons;
-}
-
-/** @typedef {{kind: 'commit' | 'description', label: string, text: string, reasons: string[]}} ProseFinding */
-
-/** @param {string} text */
-const unwrapped = text => text.replace(/[ \t]*\n[ \t]*/g, ' ');
+/** @typedef {{kind: 'commit' | 'description', label: string, text: string, reasons: string[], matches?: WordingMatch[]}} ProseFinding */
 
 /** @param {string} label @param {string} text @returns {ProseFinding[]} */
 export function proseFindings(label, text) {
-	const reasons = tellsIn(unwrapped(text));
-	return reasons.length === 0 ? [] : [{ kind: 'description', label, text, reasons }];
+	const matches = wordingMatches(text);
+	const reasons = reasonsFrom(matches);
+	return reasons.length === 0 ? [] : [{ kind: 'description', label, text, reasons, matches }];
 }
 
 const SUBJECT_LIMIT = 50;
@@ -181,33 +224,35 @@ const LONG_SUBJECT = `subject longer than ${SUBJECT_LIMIT} characters`;
 
 /** @param {string} label @param {string} message @returns {ProseFinding[]} */
 export function commitFindings(label, message) {
-	const reasons = tellsIn(unwrapped(message));
+	const matches = wordingMatches(message);
 	const subject = message.split('\n', 1)[0];
-	if (subject.length > SUBJECT_LIMIT) reasons.unshift(LONG_SUBJECT);
-	return reasons.length === 0 ? [] : [{ kind: 'commit', label, text: message, reasons }];
+	if (subject.length > SUBJECT_LIMIT) matches.unshift({ ruleId: 'subject-length', label: LONG_SUBJECT, text: subject, start: 0, end: subject.length });
+	const reasons = reasonsFrom(matches);
+	return reasons.length === 0 ? [] : [{ kind: 'commit', label, text: message, reasons, matches }];
 }
 
 /** @param {PendingGroup} group @param {string} nextLine @param {string[] | undefined} sourceLines */
-function reasonsFor(group, nextLine, sourceLines) {
-	const reasons = [];
+function detailsFor(group, nextLine, sourceLines) {
+	const text = group.lines.join('\n');
+	const searchText = group.lang === 'md' ? text : group.lines.map(line => {
+		const prefix = /^\s*(?:\/\/|\/\*\*?|#|\*)\s?/.exec(line)?.[0] ?? '';
+		return ' '.repeat(prefix.length) + line.slice(prefix.length);
+	}).join('\n');
+	const matches = wordingMatches(text, searchText);
 	if (group.lang !== 'md' && group.lines.length >= 3 && !isDocBlock(group, nextLine, sourceLines)) {
-		reasons.push(`${group.lines.length} lines`);
+		matches.unshift({ ruleId: 'comment-length', label: `${group.lines.length} lines`, text, start: 0, end: text.length });
 	}
-
-	const text = group.lang === 'md'
-		? group.lines.join(' ')
-		: group.lines.map(stripCommentPrefix).join(' ');
-	return [...reasons, ...tellsIn(text)];
+	return { reasons: reasonsFrom(matches), matches };
 }
 
 /** @param {string} line */
-function goStringText(line) {
+function goStringTexts(line) {
 	const literals = [];
 	for (const match of line.matchAll(GO_STRING)) {
 		if (GO_STRUCT_TAG.test(match[0])) continue;
-		literals.push(match[0].slice(1, -1));
+		literals.push({ text: match[0].slice(1, -1), offset: match.index + 1 });
 	}
-	return literals.join(' ');
+	return literals;
 }
 
 /** @param {Fence} fence @param {string} line @returns {Fence} */
@@ -249,7 +294,7 @@ export function groupsFromPatch(path, patch, source) {
 	/** @param {string} nextLine */
 	const flush = nextLine => {
 		if (pending !== null) {
-			const reasons = reasonsFor(pending, nextLine, sourceLines);
+			const { reasons, matches } = detailsFor(pending, nextLine, sourceLines);
 			if (reasons.length > 0) {
 				groups.push({
 					path,
@@ -257,6 +302,7 @@ export function groupsFromPatch(path, patch, source) {
 					end: pending.end,
 					text: pending.lines.join('\n'),
 					reasons,
+					matches,
 				});
 			}
 		}
@@ -306,9 +352,12 @@ export function groupsFromPatch(path, patch, source) {
 			} else {
 				flush(content);
 				if (lang === 'go') {
-					const reasons = tellsIn(goStringText(content));
+					const matches = goStringTexts(content).flatMap(literal => wordingMatches(literal.text).map(match => ({
+						...match, start: match.start + literal.offset, end: match.end + literal.offset,
+					})));
+					const reasons = reasonsFrom(matches);
 					if (reasons.length > 0) {
-						groups.push({ path, start: newLine, end: newLine, text: content, reasons });
+						groups.push({ path, start: newLine, end: newLine, text: content, reasons, matches });
 					}
 				}
 			}
@@ -354,7 +403,17 @@ function guidanceFor(reason) {
 	if (reason === LONG_SUBJECT) {
 		return `Keep the first line of a commit message to ${SUBJECT_LIMIT} characters and put the rest in the body.`;
 	}
-	return TELLS.find(([name]) => name === reason)?.[2] ?? 'Review the flagged wording in context.';
+	return technicalGuidance.get(reason) ?? TELLS.find(([name]) => name === reason)?.[2] ?? 'Review the flagged wording in context.';
+}
+
+/** @param {WordingMatch[] | undefined} matches */
+function matchDetails(matches) {
+	if (matches === undefined || matches.length === 0) return '';
+	const entries = matches.map(match => {
+		const text = JSON.stringify(match.text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+		return `- \`${match.ruleId}\`: <code>${text}</code> [${match.start}, ${match.end})`;
+	});
+	return `\n\nMatches:\n\n${entries.join('\n')}`;
 }
 
 /** @param {Group} group */
@@ -362,7 +421,7 @@ export function bodyFor(group) {
 	const guidance = [...new Set(group.reasons.map(guidanceFor))];
 	const advice = guidance.length === 1 ? guidance[0] : guidance.map(text => `- ${text}`).join('\n');
 	return `<!-- actionlint-comment-cop:${keyFor(group)} -->\n`
-		+ `Flagged for: ${group.reasons.join(', ')}.\n\n${advice}\n\n`
+		+ `Flagged for: ${group.reasons.join(', ')}.\n\n${advice}${matchDetails(group.matches)}\n\n`
 		+ `<sub>Comment Cop is intentionally sensitive; its suggestions are advisory. `
 		+ `If this is a false positive, you are welcome to resolve this thread without changing the text.</sub>`
 		+ `<br><sub>Any AI agents are only allowed to resolve the comment if it is a false positive and need to justify the closure with a reply. Otherwise fix it. Comment-cop will resolve it automatically on next push.</sub>`;
@@ -393,7 +452,7 @@ function proseQuote(finding) {
 export function proseBody(findings) {
 	const sections = findings.map(finding => {
 		const guidance = [...new Set(finding.reasons.map(guidanceFor))].join('\n');
-		return `${finding.label}, flagged for: ${finding.reasons.join(', ')}.\n\n${proseQuote(finding)}\n\n${guidance}`;
+		return `${finding.label}, flagged for: ${finding.reasons.join(', ')}.\n\n${proseQuote(finding)}\n\n${guidance}${matchDetails(finding.matches)}`;
 	});
 	return `${PROSE_MARKER}\nComment Cop found this wording in the commit messages or the description. `
 		+ `Reword the commits and push again; this review clears itself on the next run.\n\n${sections.join('\n\n')}`;
@@ -662,8 +721,8 @@ const outputLines = output => output.split('\n').map(line => line.trim()).filter
 /** @param {string} name */
 const scannable = name => langFor(name) !== null && !name.startsWith('vendor/') && !name.includes('/vendor/');
 
-/** @param {string | undefined} base */
-export function scanLocal(base) {
+/** @param {string | undefined} base @param {{json?: boolean}} [options] */
+export function scanLocal(base, options = {}) {
 	const from = base ?? defaultBase();
 	const tracked = outputLines(git(['diff', '--name-only', '--diff-filter=d', from, '--'])).filter(scannable);
 	const untracked = outputLines(git(['ls-files', '--others', '--exclude-standard'])).filter(scannable);
@@ -674,18 +733,39 @@ export function scanLocal(base) {
 		...untracked.flatMap(name => groupsFromPatch(name, untrackedPatch(name), readFileSync(name, 'utf8'))),
 	];
 
-	for (const group of groups) {
-		console.log(`${group.path}:${group.start}-${group.end} [${group.reasons.join(', ')}]`);
-		console.log(`${group.text}\n`);
-	}
 	const prose = localCommitFindings(from);
-	for (const finding of prose) {
-		console.log(`${finding.label} [${finding.reasons.join(', ')}]`);
-		console.log(`${finding.text.trim()}\n`);
-	}
 	const total = groups.length + prose.length;
-	console.log(`comment-cop: ${total === 0 ? 'clean' : `${total} finding(s)`}.`);
+	if (options.json) {
+		console.log(JSON.stringify({ base: from, total, groups, prose }, null, 2));
+	} else {
+		for (const group of groups) {
+			console.log(`${group.path}:${group.start}-${group.end} [${group.reasons.join(', ')}]`);
+			console.log(`${group.text}\n`);
+			printMatches(group.matches);
+		}
+		for (const finding of prose) {
+			console.log(`${finding.label} [${finding.reasons.join(', ')}]`);
+			console.log(`${finding.text.trim()}\n`);
+			printMatches(finding.matches);
+		}
+		console.log(`comment-cop: ${total === 0 ? 'clean' : `${total} finding(s)`}.`);
+	}
 	return total === 0 ? 0 : 1;
+}
+
+/** @param {WordingMatch[] | undefined} matches */
+function printMatches(matches) {
+	for (const match of matches ?? []) {
+		console.log(`  ${match.ruleId}: ${JSON.stringify(match.text)} [${match.start}, ${match.end})`);
+	}
+}
+
+export function ruleCatalog() {
+	return [
+		...wordingRules.map(({ id, label, pattern, guidance }) => ({ id, label, pattern: pattern.toString(), guidance })),
+		{ id: 'subject-length', label: LONG_SUBJECT, guidance: guidanceFor(LONG_SUBJECT), limit: SUBJECT_LIMIT },
+		{ id: 'comment-length', label: 'implementation comment length', guidance: guidanceFor('3 lines'), limit: 3 },
+	];
 }
 
 /** @param {string} from */
@@ -703,12 +783,17 @@ function localCommitFindings(from) {
 
 if (import.meta.main) {
 	const args = process.argv.slice(2);
-	if (args.length > 1 || args.includes('--help') || args.includes('-h')) {
-		console.log('usage: comment-cop.mjs [<base-ref>]');
-		process.exitCode = args.length > 1 ? 2 : 0;
+	const positional = args.filter(arg => !arg.startsWith('-'));
+	const invalid = args.some(arg => arg.startsWith('-') && !['--json', '--rules', '--help', '-h'].includes(arg))
+		|| positional.length > 1 || (args.includes('--rules') && positional.length > 0);
+	if (invalid || args.includes('--help') || args.includes('-h')) {
+		console.log('usage: comment-cop.mjs [--json] [<base-ref>]\n       comment-cop.mjs --rules\n\n--json   Print findings with rule IDs, matching text and offsets.\n--rules  Print the rule catalog and guidance.\n\nSuppressions: none. Every wording match is reported.\n\nSource scan: comments, Markdown prose and Go strings. Vendor paths, unsupported file types, Markdown code fences and Go struct tags are outside the source scan.\nCommit messages and PR descriptions are scanned in full.\nOffsets: zero-based UTF-16 positions within each finding text, with an exclusive end.');
+		process.exitCode = invalid ? 2 : 0;
+	} else if (args.includes('--rules')) {
+		console.log(JSON.stringify(ruleCatalog(), null, 2));
 	} else {
 		try {
-			process.exitCode = scanLocal(args[0]);
+			process.exitCode = scanLocal(positional[0], { json: args.includes('--json') });
 		} catch (error) {
 			console.error(errorMessage(error));
 			process.exitCode = 2;
