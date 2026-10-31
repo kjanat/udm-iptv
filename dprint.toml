@@ -1,0 +1,57 @@
+#:schema dprint.schema.json
+#:tombi schema.strict = false
+
+useTabs     = true
+incremental = true
+excludes    = ["dist/**", "**/vendor", "docs/rfc/**"]
+plugins     = [
+  "https://plugins.dprint.dev/kjanat/json-schema-sort-0.1.2.wasm",
+  "https://plugins.dprint.dev/kjanat/shfmt-1.1.1.wasm",
+  "npm:@dprint/dockerfile@0.7.0",
+  "npm:@dprint/json@0.25.2",
+  "npm:@dprint/markdown@0.28.2",
+  "npm:@dprint/ruff@0.11.3",
+  "npm:@jakebailey/dprint-plugin-gofumpt@0.0.20",
+  "npm:dprint-plugin-graphql@0.2.3",
+  "npm:dprint-plugin-yaml@0.6.0",
+  "https://plugins.dprint.dev/kjanat/tombi-0.1.1.wasm"
+]
+
+[json]
+preferSingleLine = false
+useTabs          = false
+
+[jsonSchemaSort]
+associations = ["**/schema.json", "**/*.schema.json"]
+
+[markdown]
+emphasisKind = "asterisks"
+lineWidth    = 100
+textWrap     = "maintain"
+
+[shfmt]
+useTabs          = true
+binaryNextLine   = true
+switchCaseIndent = true
+associations     = [
+  "packaging/deb/config",
+  "packaging/deb/postinstall",
+  "packaging/deb/postremove",
+  "packaging/deb/preinstall",
+  "packaging/deb/preremove"
+]
+
+[yaml]
+printWidth = 160
+
+[toml]
+
+# `#:schema dprint.schema.json` was produced with `dprint schema > dprint.schema.json`
+[exec]
+cwd = "${configDir}"
+
+[[exec.commands]]
+command       = "tombi format - --stdin-filename {{file_path}}"
+exts          = ["toml"]
+setupCommand  = "node -e \"try { require('child_process').execSync('tombi --version', {stdio:'ignore'}); } catch { require('child_process').execSync('npm i -g tombi', {stdio:'inherit'}); }\""
+cacheKeyFiles = ["tombi.toml"]
