@@ -1,0 +1,6 @@
+golang               1.27.3
+golangci-lint        2.15
+goreleaser           2.19
+tombi                1.9
+npm:@kjanat/fmt      latest
+npm:@kprint/kprint   latest
