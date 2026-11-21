@@ -147,6 +147,7 @@ The installation process supports various pre-defined configuration profiles for
 |   Vivo SP |   BR    | Yes - Tested with GPON TP-Link TX-6610                                                                              |
 |  Vivo GVT |   BR    | Yes - [Manual configuration necessary](https://github.com/fabianishere/udm-iptv/issues/167#issuecomment-1244797462) |
 |   Telenor |   NO    | Yes                                                                                                                 |
+|     Telia |   LT    | Yes - Tested with UCG-Industrial                                                                                    |
 |    PostTV |   LU    | [Manual configuration necessary](https://github.com/fabianishere/udm-iptv/discussions/86#discussioncomment-2345968) |
 
 If your ISP is not supported, you may select the *Custom* profile, which allows you manually configure the package to your needs. We appreciate if you share the configuration so others can also benefit. See the [profiles](profiles) directory for examples of existing configuration profiles.
