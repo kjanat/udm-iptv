@@ -119,6 +119,13 @@ db_get udm-iptv/wan-ranges
 ranges=$(echo "${RET}" | tr ',' ' ')
 replace_conf "${tmpconf}" "IPTV_WAN_RANGES" "${ranges}"
 
+db_get udm-iptv/wan-ranges-gw-dest
+if [ "${RET}" = "true" ]; then
+	replace_conf "${tmpconf}" "IPTV_WAN_RANGES_GW_DEST" "${RET}"
+else
+	remove_conf "${tmpconf}" "IPTV_WAN_RANGES_GW_DEST"
+fi
+
 db_get udm-iptv/wan-dhcp
 if [ "${RET}" = "false" ]; then
 	replace_conf "${tmpconf}" "IPTV_WAN_DHCP" "${RET}"
