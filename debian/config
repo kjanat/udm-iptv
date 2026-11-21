@@ -81,6 +81,7 @@ _list_profiles() {
 	echo "meo", "MEO (PT)"
 	echo "bt", "BT (GB)"
 	echo "telenor", "Telenor (NO)"
+	echo "telia-lt", "Telia (LT)"
 	echo "vivo", "Vivo SP (BR)"
 	echo "posttv", "PostTV (LU)"
 	echo "magentatv", "MagentaTV (DE)"
@@ -137,6 +138,11 @@ if [ -e "${CONFIGFILE}" ]; then
 
 	wan_ranges=$(echo "${IPTV_WAN_RANGES}" | tr -s ' ' ',')
 	db_set udm-iptv/wan-ranges "${wan_ranges}"
+	wan_ranges_gw_dest="false"
+	if [ "${IPTV_WAN_RANGES_GW_DEST:-}" = "true" ]; then
+		wan_ranges_gw_dest="true"
+	fi
+	db_set udm-iptv/wan-ranges-gw-dest "${wan_ranges_gw_dest}"
 	db_set udm-iptv/wan-dhcp "${IPTV_WAN_DHCP:-}"
 	db_set udm-iptv/wan-dhcp-options "${IPTV_WAN_DHCP_OPTIONS}"
 	db_set udm-iptv/wan-static-ip "${IPTV_WAN_STATIC_IP:-}"
