@@ -148,9 +148,20 @@ routes() {
             return 1
         }
     else
+        # Without option 121, the Router option supplies a default route. With
+        # IPTV_WAN_RANGES_GW_DEST enabled, it only routes IPTV_WAN_RANGES
+        # instead: a default route on the IPTV interface takes over all internet
+        # traffic on UniFi OS, where the main table is consulted before the WAN
+        # tables, and only IPTV_WAN_RANGES is NATed onto this interface anyway.
+        router_dests="0.0.0.0/0"
+        if [ "${IPTV_WAN_RANGES_GW_DEST:-false}" = "true" ] && [ -n "${IPTV_WAN_RANGES:-}" ]; then
+            router_dests="${IPTV_WAN_RANGES}"
+        fi
         for default_gw in ${router:-}; do
-            route_add 0.0.0.0/0 "${default_gw}" "${route_index}" "${route_metric}"
-            route_index=$((route_index + 1))
+            for router_dest in ${router_dests}; do
+                route_add "${router_dest}" "${default_gw}" "${route_index}" "${route_metric}"
+                route_index=$((route_index + 1))
+            done
         done
     fi
 }

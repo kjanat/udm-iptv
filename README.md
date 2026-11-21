@@ -239,6 +239,7 @@ See below for a reference of the available options to configure:
 | IPTV_WAN_VLAN                     | ID of VLAN which carries IPTV traffic (use 0 if no VLAN is used)                                                                                                      |
 | IPTV_WAN_DHCP                     | Boolean to indicate whether DHCP is enabled on the IPTV WAN (VLAN) interface                                                                                          |
 | IPTV_WAN_DHCP_OPTIONS             | [DHCP options](https://busybox.net/downloads/BusyBox.html#udhcpc) to send when requesting an IP address                                                               |
+| IPTV_WAN_RANGES_GW_DEST           | Boolean to route only IPTV_WAN_RANGES via the DHCP Router option instead of a default route (ignored when DHCP sends static routes)                                   |
 | IPTV_WAN_STATIC_IP                | Static IP address to assign to the IPTV WAN (VLAN) interface (if DHCP is disabled)                                                                                    |
 | IPTV_WAN_MAC                      | Custom MAC address to assign to the IPTV WAN VLAN interface                                                                                                           |
 | IPTV_LAN_INTERFACES               | Interfaces on which IPTV should be made available                                                                                                                     |

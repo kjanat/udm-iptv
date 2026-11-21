@@ -36,6 +36,8 @@ run_hook() {
 		broadcast="${broadcast}" \
 		staticroutes="${staticroutes}" \
 		router="${router}" \
+		IPTV_WAN_RANGES="${IPTV_WAN_RANGES:-}" \
+		IPTV_WAN_RANGES_GW_DEST="${IPTV_WAN_RANGES_GW_DEST:-}" \
 		"${hook}" "${event}"
 }
 
@@ -110,6 +112,33 @@ assert_not_contains "203.0.113.0/24"
 run_hook renew "" "192.0.2.254"
 assert_route_count 1
 assert_contains "default via 192.0.2.254 metric ${metric}"
+
+# IPTV_WAN_RANGES without IPTV_WAN_RANGES_GW_DEST keeps the default route.
+IPTV_WAN_RANGES="198.18.0.0/15 203.0.113.0/24"
+run_hook renew "" "192.0.2.254"
+assert_route_count 1
+assert_contains "default via 192.0.2.254 metric ${metric}"
+
+# With IPTV_WAN_RANGES_GW_DEST, the Router option routes only the IPTV ranges.
+IPTV_WAN_RANGES_GW_DEST=true
+run_hook renew "" "192.0.2.254"
+assert_route_count 2
+assert_contains "198.18.0.0/15 via 192.0.2.254 metric ${metric}"
+assert_contains "203.0.113.0/24 via 192.0.2.254 metric $((metric + 1))"
+assert_not_contains "default"
+
+# Option 121 still takes precedence over the IPTV ranges.
+run_hook renew "198.51.100.130/25 192.0.2.1" "192.0.2.254"
+assert_route_count 1
+assert_contains "198.51.100.128/25 via 192.0.2.1 metric ${metric}"
+assert_not_contains "198.18.0.0/15"
+
+# Without any ranges configured, the default route is used.
+IPTV_WAN_RANGES=""
+run_hook renew "" "192.0.2.254"
+assert_route_count 1
+assert_contains "default via 192.0.2.254 metric ${metric}"
+IPTV_WAN_RANGES_GW_DEST=""
 
 # A lease without route options removes routes from the previous lease.
 run_hook renew "" ""
