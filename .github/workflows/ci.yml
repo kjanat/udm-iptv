@@ -71,14 +71,16 @@ jobs:
     steps:
       - *Checkout
       - parallel:
-          - *Go
+          - name: Setup Go
+            uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+            with: { go-version-file: go.mod, cache: false }
           - name: Install golangci-lint
             uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
             with: { version-file: &TV .tool-versions, install-only: true }
           - uses: kjanat/setup-tombi@94a6834e289046705b32e6b8dc977c8b939e8b35 # v1
             with: { version-file: *TV }
       - name: Check formatting
-        uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # v3.1.0
+        uses: kjanat/dprint-check@b6a885d3403db5e40ed59f2c27917d758381f577 # v3.2.0
 
   lint:
     name: Lint and vulnerabilities

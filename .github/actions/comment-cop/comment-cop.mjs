@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { findMatches, reasonsFrom } from './matchers.mjs';
 import { technicalGuidance, technicalRules } from './technical-prose.mjs';
+import { filesFromDiff } from './unified-diff.mjs';
 
 /** @typedef {import('./matchers.mjs').Rule} Rule */
 /** @typedef {import('./matchers.mjs').WordingMatch} WordingMatch */
@@ -16,7 +17,7 @@ import { technicalGuidance, technicalRules } from './technical-prose.mjs';
 /** @typedef {{path: string, start: number, end: number, text: string, reasons: string[], matches?: WordingMatch[]}} Group */
 /** @typedef {{start: number, end: number, lang: Lang, topLevel: boolean, doc: boolean, lines: string[]}} PendingGroup */
 /** @typedef {{id: string, isResolved: boolean, path: string, comments: {nodes: Array<{body: string, viewerDidAuthor: boolean}>}}} ReviewThread */
-/** @typedef {{repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: boolean, endCursor: string | null}, nodes: ReviewThread[]}}}}} ReviewThreadsResponse */
+/** @typedef {{repository: {pullRequest: {headRefOid: string, reviewThreads: {pageInfo: {hasNextPage: boolean, endCursor: string | null}, nodes: ReviewThread[]}}}}} ReviewThreadsResponse */
 /** @typedef {Pick<import('@actions/github-script').AsyncFunctionArguments, 'github' | 'context' | 'core'>} RunArguments */
 /** @typedef {{id: number, state: string, body: string | null}} Review */
 /** @typedef {{character: '`' | '~', length: number} | null} Fence */
@@ -170,8 +171,9 @@ function langFor(path) {
 	return null;
 }
 
-/** @param {string} line @param {Lang} lang */
+/** @param {string | undefined} line @param {Lang} lang */
 function isCommentLine(line, lang) {
+	if (line === undefined) return false;
 	const text = line.trimStart();
 	if (lang === 'hash') return text.startsWith('#') && !text.startsWith('#!');
 	return text.startsWith('//')
@@ -510,6 +512,102 @@ function requiredString(value, name) {
 	return value;
 }
 
+const FREE_FETCH_TIMEOUT_MS = 30_000;
+
+/** @param {string} url */
+async function freeText(url) {
+	const response = await fetch(url, { signal: AbortSignal.timeout(FREE_FETCH_TIMEOUT_MS) });
+	if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
+	return response.text();
+}
+
+/** @param {string} path */
+const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
+
+/** @typedef {{kind: 'removed', path: string} | {kind: 'unpatched', path: string} | {kind: 'patched', path: string, patch: string, contentsUrl: string}} ChangedFile */
+/** @typedef {{owner: string, repo: string, pullNumber: number, baseSha: string, headSha: string, public: boolean, apiUrl: string}} Pull */
+
+/** @param {Pick<RunArguments, 'github' | 'core'>} args @param {Pull} pull @returns {Promise<ChangedFile[]>} */
+async function changedFiles({ github, core }, pull) {
+	if (pull.public) {
+		const url = `https://github.com/${pull.owner}/${pull.repo}/compare/${pull.baseSha}...${pull.headSha}.diff`;
+		try {
+			return filesFromDiff(await freeText(url)).map(file =>
+				file.kind === 'patched'
+					? { ...file, contentsUrl: `${pull.apiUrl}/repos/${pull.owner}/${pull.repo}/contents/${encodePath(file.path)}?ref=${pull.headSha}` }
+					: file
+			);
+		} catch (error) {
+			core.warning(`Could not read ${url}; listing files through the API: ${errorMessage(error)}`);
+		}
+	}
+	const files = await github.paginate(github.rest.pulls.listFiles, {
+		owner: pull.owner,
+		repo: pull.repo,
+		pull_number: pull.pullNumber,
+		per_page: 100,
+	});
+	return files.map(file => {
+		if (file.status === 'removed') return { kind: 'removed', path: file.filename };
+		if (file.patch === undefined) return { kind: 'unpatched', path: file.filename };
+		return { kind: 'patched', path: file.filename, patch: file.patch, contentsUrl: file.contents_url };
+	});
+}
+
+/** @param {Pick<RunArguments, 'github' | 'core'>} args @param {Pull} pull @param {{path: string, contentsUrl: string}} file */
+async function readSource({ github, core }, pull, file) {
+	if (pull.public) {
+		const url = `https://raw.githubusercontent.com/${pull.owner}/${pull.repo}/${pull.headSha}/${encodePath(file.path)}`;
+		try {
+			return await freeText(url);
+		} catch (error) {
+			core.warning(`Could not read ${url}; reading it through the API: ${errorMessage(error)}`);
+		}
+	}
+	const response = await github.request(requiredString(file.contentsUrl, `contents URL for ${file.path}`), {
+		headers: { accept: 'application/vnd.github.raw+json' },
+	});
+	return requiredString(response.data, `contents of ${file.path}`);
+}
+
+/** @typedef {{id: string, isResolved: boolean, path: string, key: string}} CopThread */
+
+/** @param {RunArguments['github']} github @param {Pull} pull @returns {Promise<{headRefOid: string, threads: CopThread[]}>} */
+async function copThreads(github, pull) {
+	/** @type {CopThread[]} */
+	const threads = [];
+	let headRefOid = '';
+	let after = null;
+	for (;;) {
+		/** @type {ReviewThreadsResponse} */
+		const response = await github.graphql(
+			`query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
+				repository(owner: $owner, name: $repo) {
+					pullRequest(number: $pr) {
+						headRefOid
+						reviewThreads(first: 100, after: $after) {
+							pageInfo { hasNextPage endCursor }
+							nodes { id isResolved path comments(first: 1) { nodes { body viewerDidAuthor } } }
+						}
+					}
+				}
+			}`,
+			{ owner: pull.owner, repo: pull.repo, pr: pull.pullNumber, after },
+		);
+		headRefOid = response.repository.pullRequest.headRefOid;
+		const page = response.repository.pullRequest.reviewThreads;
+		for (const thread of page.nodes) {
+			const comment = thread.comments.nodes[0];
+			if (comment === undefined || !comment.viewerDidAuthor) continue;
+			const match = /<!-- actionlint-comment-cop:([a-f0-9]+) -->/.exec(comment.body);
+			if (match === null) continue;
+			threads.push({ id: thread.id, isResolved: thread.isResolved, path: thread.path, key: match[1] });
+		}
+		if (!page.pageInfo.hasNextPage) return { headRefOid, threads };
+		after = page.pageInfo.endCursor;
+	}
+}
+
 /** @param {RunArguments} args @param {Sleep} [sleep] */
 export default async function run({ github, context, core }, sleep = delay) {
 	const pullRequest = context.payload.pull_request;
@@ -518,41 +616,40 @@ export default async function run({ github, context, core }, sleep = delay) {
 	const owner = context.repo.owner;
 	const repo = context.repo.repo;
 	const pullNumber = pullRequest.number;
+	const baseSha = requiredString(pullRequest.base.sha, 'pull request base SHA');
 	const headSha = requiredString(pullRequest.head.sha, 'pull request head SHA');
-	const files = await github.paginate(github.rest.pulls.listFiles, {
-		owner,
-		repo,
-		pull_number: pullNumber,
-		per_page: 100,
-	});
+	/** @type {Pull} */
+	const pull = { owner, repo, pullNumber, baseSha, headSha, public: context.payload.repository?.private === false, apiUrl: context.apiUrl };
+	const { headRefOid, threads } = await copThreads(github, pull);
+	if (headRefOid !== headSha) {
+		core.info(`Comment Cop: skipped event head ${headSha}, pull request head is ${headRefOid}.`);
+		return;
+	}
+	const files = await changedFiles({ github, core }, pull);
 
 	/** @type {Group[]} */
 	const groups = [];
 	const unscannedPaths = new Set();
 	for (const file of files) {
-		if (file.status === 'removed' || langFor(file.filename) === null) continue;
-		if (file.filename.startsWith('vendor/') || file.filename.includes('/vendor/')) continue;
-		if (file.patch === undefined) {
-			unscannedPaths.add(file.filename);
-			core.warning(`No patch available for ${file.filename}; skipping comment scan.`);
+		if (file.kind === 'removed' || langFor(file.path) === null) continue;
+		if (file.path.startsWith('vendor/') || file.path.includes('/vendor/')) continue;
+		if (file.kind === 'unpatched') {
+			unscannedPaths.add(file.path);
+			core.warning(`No patch available for ${file.path}; skipping comment scan.`);
 			continue;
 		}
 
 		let source;
-		if (file.filename.endsWith('.go') || langFor(file.filename) === 'md') {
+		if (file.path.endsWith('.go') || langFor(file.path) === 'md') {
 			try {
-				const contentsUrl = requiredString(file.contents_url, `contents URL for ${file.filename}`);
-				const response = await github.request(contentsUrl, {
-					headers: { accept: 'application/vnd.github.raw+json' },
-				});
-				source = requiredString(response.data, `contents of ${file.filename}`);
+				source = await readSource({ github, core }, pull, file);
 			} catch (error) {
-				unscannedPaths.add(file.filename);
-				core.warning(`Could not read ${file.filename}; skipping comment scan: ${errorMessage(error)}`);
+				unscannedPaths.add(file.path);
+				core.warning(`Could not read ${file.path}; skipping comment scan: ${errorMessage(error)}`);
 				continue;
 			}
 		}
-		groups.push(...groupsFromPatch(file.filename, file.patch, source));
+		groups.push(...groupsFromPatch(file.path, file.patch, source));
 	}
 
 	const commits = await github.paginate(github.rest.pulls.listCommits, {
@@ -578,40 +675,10 @@ export default async function run({ github, context, core }, sleep = delay) {
 	);
 
 	const presentKeys = new Set(groups.map(keyFor));
-	const seenKeys = new Set();
-	/** @type {string[]} */
-	const staleThreadIds = [];
-	let after = null;
-	for (;;) {
-		/** @type {ReviewThreadsResponse} */
-		const response = await github.graphql(
-			`query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
-				repository(owner: $owner, name: $repo) {
-					pullRequest(number: $pr) {
-						reviewThreads(first: 100, after: $after) {
-							pageInfo { hasNextPage endCursor }
-							nodes { id isResolved path comments(first: 1) { nodes { body viewerDidAuthor } } }
-						}
-					}
-				}
-			}`,
-			{ owner, repo, pr: pullNumber, after },
-		);
-		const page = response.repository.pullRequest.reviewThreads;
-		for (const thread of page.nodes) {
-			const comment = thread.comments.nodes[0];
-			if (comment === undefined || !comment.viewerDidAuthor) continue;
-			const match = /<!-- actionlint-comment-cop:([a-f0-9]+) -->/.exec(comment.body);
-			if (match === null) continue;
-			const key = match[1];
-			seenKeys.add(key);
-			if (!thread.isResolved && !presentKeys.has(key) && !unscannedPaths.has(thread.path)) {
-				staleThreadIds.push(thread.id);
-			}
-		}
-		if (!page.pageInfo.hasNextPage) break;
-		after = page.pageInfo.endCursor;
-	}
+	const seenKeys = new Set(threads.map(thread => thread.key).filter(key => presentKeys.has(key)));
+	const staleThreadIds = threads
+		.filter(thread => !thread.isResolved && !presentKeys.has(thread.key) && !unscannedPaths.has(thread.path))
+		.map(thread => thread.id);
 
 	let resolved = 0;
 	for (const id of staleThreadIds) {

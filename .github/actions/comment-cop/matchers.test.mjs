@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { findMatches } from './matchers.mjs';
@@ -118,16 +121,26 @@ test('empty patterns and differently sized search text fail safely', () => {
 	assert.throws(() => findMatches('text', [rule], 'short'), /source length/);
 });
 
-test('CLI exports scan findings as JSON with the normal finding exit codes', () => {
+test('CLI exports scan findings as JSON with the normal finding exit codes', t => {
 	const script = new URL('./comment-cop.mjs', import.meta.url);
-	const result = spawnSync(process.execPath, [script.pathname, '--json', 'HEAD'], {
-		cwd: new URL('../../../', import.meta.url), encoding: 'utf8', maxBuffer: 1 << 27,
-	});
-	assert.ok(result.status === 0 || result.status === 1, result.stderr);
+	const cwd = mkdtempSync(join(tmpdir(), 'comment-cop-'));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	const git = (/** @type {string[]} */ args) => execFileSync('git', args, { cwd, encoding: 'utf8' });
+	git(['init', '--quiet']);
+	git(['-c', 'user.name=Cop', '-c', 'user.email=cop@example.com', '-c', 'commit.gpgsign=false', 'commit', '--quiet', '--allow-empty', '--message', 'init']);
+	const scan = () => spawnSync(process.execPath, [script.pathname, '--json', 'HEAD'], { cwd, encoding: 'utf8' });
+
+	const clean = scan();
+	assert.equal(clean.status, 0, clean.stderr);
+	assert.deepEqual(JSON.parse(clean.stdout), { base: 'HEAD', total: 0, groups: [], prose: [] });
+
+	writeFileSync(join(cwd, 'notes.md'), 'That said, the cache stores values.\n');
+	const result = scan();
+	assert.equal(result.status, 1, result.stderr);
 	const report = JSON.parse(result.stdout);
 	assert.equal(report.base, 'HEAD');
-	assert.equal(report.total, report.groups.length + report.prose.length);
-	assert.equal(result.status, report.total > 0 ? 1 : 0);
+	assert.equal(report.total, 1);
+	assert.deepEqual(report.groups.map((/** @type {{path: string, reasons: string[]}} */ group) => [group.path, group.reasons]), [['notes.md', ['filler phrase']]]);
 	for (const finding of [...report.groups, ...report.prose]) {
 		for (const match of finding.matches) assert.equal(finding.text.slice(match.start, match.end), match.text);
 	}
