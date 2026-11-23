@@ -1,0 +1,21 @@
+services:
+  lab:
+    image: udm-iptv-multicast:${PROXY_IMPLEMENTATION:-upstream}
+    build:
+      context: .
+      additional_contexts:
+        improxy_patch: ../../patches/improxy
+      target: ${PROXY_IMPLEMENTATION:-upstream}
+      args:
+        FIRMWARE_IMAGE: ${FIRMWARE_IMAGE:-ghcr.io/kjanat/unifi-os:udmpro-5.1.33@sha256:5d6138dd461c4d265380eb550f5e609b072268e50205007cdd050d09f1d38bf8}
+    network_mode: none
+    init: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW, SYS_ADMIN, DAC_OVERRIDE, SETUID, SETGID]
+    security_opt: [apparmor:unconfined]
+    pids_limit: 64
+    mem_limit: 256m
+    stop_grace_period: 10s
+    volumes:
+      - ./artifacts:/artifacts
+    command: [smoke]

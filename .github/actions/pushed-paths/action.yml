@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-action.json
+---
+name: Pushed paths
+description: Report whether the pushed range changed a path that matches a pattern
+inputs:
+  pattern:
+    description: Extended regular expression matched against each changed path
+    required: true
+outputs:
+  matched:
+    description: "true when a changed path matches, or when the pushed range is unknown"
+    value: ${{ steps.classify.outputs.matched }}
+runs:
+  using: composite
+  steps:
+    - name: Checkout history
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with: { persist-credentials: false, fetch-depth: 0 }
+    - name: Match the pushed range against the pattern
+      id: classify
+      shell: bash
+      env:
+        BEFORE: ${{ github.event.before }}
+        AFTER: ${{ github.event.after || github.sha }}
+        PATTERN: ${{ inputs.pattern }}
+      run: |
+        matched=true
+        if [[ -n "${BEFORE}" && "${BEFORE}" != 0000000000000000000000000000000000000000 ]] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+          changed=$(git diff --name-only "${BEFORE}" "${AFTER}")
+          printf 'Changed files:\n%s\n' "${changed}"
+          if ! grep -Eq -- "${PATTERN}" <<< "${changed}"; then
+            matched=false
+          fi
+        fi
+        echo "matched=${matched}" >> "${GITHUB_OUTPUT}"
+        echo "matched: ${matched}"
