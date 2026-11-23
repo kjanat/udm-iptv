@@ -78,7 +78,7 @@ jobs:
           - uses: kjanat/setup-tombi@94a6834e289046705b32e6b8dc977c8b939e8b35 # v1
             with: { version-file: *TV }
       - name: Check formatting
-        uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # v3.1.0
+        uses: kjanat/dprint-check@b6a885d3403db5e40ed59f2c27917d758381f577 # v3.2.0
 
   lint:
     name: Lint and vulnerabilities

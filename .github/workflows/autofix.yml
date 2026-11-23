@@ -16,7 +16,7 @@ jobs:
             with: { version-file: .tool-versions, install-only: true }
           - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
             with: { go-version-file: go.mod }
-          - uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # Without this action, dprint has to recompile the wasm plugins each time the action runs, which is often, and wastes time, energy, and sanity.
+          - uses: kjanat/dprint-check@b6a885d3403db5e40ed59f2c27917d758381f577 # Without this action, dprint has to recompile the wasm plugins each time the action runs, which is often, and wastes time, energy, and sanity.
             with: { install-only: true }
       - name: x/tools/go/analysis modernize
         run: go run golang.org/x/tools/go/analysis/passes/modernize/cmd/modernize@latest -fix ./...
