@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { findMatches, reasonsFrom } from './matchers.mjs';
 import { technicalGuidance, technicalRules } from './technical-prose.mjs';
+import { filesFromDiff } from './unified-diff.mjs';
 
 /** @typedef {import('./matchers.mjs').Rule} Rule */
 /** @typedef {import('./matchers.mjs').WordingMatch} WordingMatch */
@@ -510,6 +511,64 @@ function requiredString(value, name) {
 	return value;
 }
 
+const FREE_FETCH_TIMEOUT_MS = 30_000;
+
+/** @param {string} url */
+async function freeText(url) {
+	const response = await fetch(url, { signal: AbortSignal.timeout(FREE_FETCH_TIMEOUT_MS) });
+	if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
+	return response.text();
+}
+
+/** @param {string} path */
+const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
+
+/** @typedef {{kind: 'removed', path: string} | {kind: 'unpatched', path: string} | {kind: 'patched', path: string, patch: string, contentsUrl: string}} ChangedFile */
+/** @typedef {{owner: string, repo: string, pullNumber: number, headSha: string, public: boolean, apiUrl: string}} Pull */
+
+/** @param {Pick<RunArguments, 'github' | 'core'>} args @param {Pull} pull @returns {Promise<ChangedFile[]>} */
+async function changedFiles({ github, core }, pull) {
+	if (pull.public) {
+		const url = `https://github.com/${pull.owner}/${pull.repo}/pull/${pull.pullNumber}.diff`;
+		try {
+			return filesFromDiff(await freeText(url)).map(file =>
+				file.kind === 'patched'
+					? { ...file, contentsUrl: `${pull.apiUrl}/repos/${pull.owner}/${pull.repo}/contents/${encodePath(file.path)}?ref=${pull.headSha}` }
+					: file
+			);
+		} catch (error) {
+			core.warning(`Could not read ${url}; listing files through the API: ${errorMessage(error)}`);
+		}
+	}
+	const files = await github.paginate(github.rest.pulls.listFiles, {
+		owner: pull.owner,
+		repo: pull.repo,
+		pull_number: pull.pullNumber,
+		per_page: 100,
+	});
+	return files.map(file => {
+		if (file.status === 'removed') return { kind: 'removed', path: file.filename };
+		if (file.patch === undefined) return { kind: 'unpatched', path: file.filename };
+		return { kind: 'patched', path: file.filename, patch: file.patch, contentsUrl: file.contents_url };
+	});
+}
+
+/** @param {Pick<RunArguments, 'github' | 'core'>} args @param {Pull} pull @param {{path: string, contentsUrl: string}} file */
+async function readSource({ github, core }, pull, file) {
+	if (pull.public) {
+		const url = `https://raw.githubusercontent.com/${pull.owner}/${pull.repo}/${pull.headSha}/${encodePath(file.path)}`;
+		try {
+			return await freeText(url);
+		} catch (error) {
+			core.warning(`Could not read ${url}; reading it through the API: ${errorMessage(error)}`);
+		}
+	}
+	const response = await github.request(requiredString(file.contentsUrl, `contents URL for ${file.path}`), {
+		headers: { accept: 'application/vnd.github.raw+json' },
+	});
+	return requiredString(response.data, `contents of ${file.path}`);
+}
+
 /** @param {RunArguments} args @param {Sleep} [sleep] */
 export default async function run({ github, context, core }, sleep = delay) {
 	const pullRequest = context.payload.pull_request;
@@ -519,40 +578,33 @@ export default async function run({ github, context, core }, sleep = delay) {
 	const repo = context.repo.repo;
 	const pullNumber = pullRequest.number;
 	const headSha = requiredString(pullRequest.head.sha, 'pull request head SHA');
-	const files = await github.paginate(github.rest.pulls.listFiles, {
-		owner,
-		repo,
-		pull_number: pullNumber,
-		per_page: 100,
-	});
+	/** @type {Pull} */
+	const pull = { owner, repo, pullNumber, headSha, public: context.payload.repository?.private === false, apiUrl: context.apiUrl };
+	const files = await changedFiles({ github, core }, pull);
 
 	/** @type {Group[]} */
 	const groups = [];
 	const unscannedPaths = new Set();
 	for (const file of files) {
-		if (file.status === 'removed' || langFor(file.filename) === null) continue;
-		if (file.filename.startsWith('vendor/') || file.filename.includes('/vendor/')) continue;
-		if (file.patch === undefined) {
-			unscannedPaths.add(file.filename);
-			core.warning(`No patch available for ${file.filename}; skipping comment scan.`);
+		if (file.kind === 'removed' || langFor(file.path) === null) continue;
+		if (file.path.startsWith('vendor/') || file.path.includes('/vendor/')) continue;
+		if (file.kind === 'unpatched') {
+			unscannedPaths.add(file.path);
+			core.warning(`No patch available for ${file.path}; skipping comment scan.`);
 			continue;
 		}
 
 		let source;
-		if (file.filename.endsWith('.go') || langFor(file.filename) === 'md') {
+		if (file.path.endsWith('.go') || langFor(file.path) === 'md') {
 			try {
-				const contentsUrl = requiredString(file.contents_url, `contents URL for ${file.filename}`);
-				const response = await github.request(contentsUrl, {
-					headers: { accept: 'application/vnd.github.raw+json' },
-				});
-				source = requiredString(response.data, `contents of ${file.filename}`);
+				source = await readSource({ github, core }, pull, file);
 			} catch (error) {
-				unscannedPaths.add(file.filename);
-				core.warning(`Could not read ${file.filename}; skipping comment scan: ${errorMessage(error)}`);
+				unscannedPaths.add(file.path);
+				core.warning(`Could not read ${file.path}; skipping comment scan: ${errorMessage(error)}`);
 				continue;
 			}
 		}
-		groups.push(...groupsFromPatch(file.filename, file.patch, source));
+		groups.push(...groupsFromPatch(file.path, file.patch, source));
 	}
 
 	const commits = await github.paginate(github.rest.pulls.listCommits, {

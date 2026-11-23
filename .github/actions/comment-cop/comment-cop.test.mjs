@@ -387,27 +387,33 @@ function reviewHarness(seenBodies = [], submitErrors = [], files = reviewFiles, 
 			},
 		},
 	}));
+	const paginate = mock.fn(async (/** @type {unknown} */ fn) => {
+		if (fn === listFiles) return files;
+		if (fn === listCommits) return commits;
+		if (fn === listReviews) return reviews;
+		return [];
+	});
+	const request = mock.fn(async (/** @type {string} */ _url) => ({ data: 'Plain Markdown with no code fences.' }));
 	const args = {
 		github: {
 			rest: { pulls: { listFiles, listCommits, listReviews, dismissReview, createReview } },
-			paginate: mock.fn(async (/** @type {unknown} */ fn) => {
-				if (fn === listFiles) return files;
-				if (fn === listCommits) return commits;
-				if (fn === listReviews) return reviews;
-				return [];
-			}),
-			request: mock.fn(async () => ({ data: 'Plain Markdown with no code fences.' })),
+			paginate,
+			request,
 			graphql,
 		},
 		context: {
 			repo: { owner: 'owner', repo: 'repo' },
 			serverUrl: 'https://github.com',
+			apiUrl: 'https://api.github.com',
 			payload: { pull_request: { number: 42, head: { sha: 'a'.repeat(40) }, body: 'Plain description.' } },
 		},
 		core: { warning, info, setFailed },
 	};
 	return {
 		args: /** @type {Parameters<typeof run>[0]} */ (/** @type {unknown} */ (args)),
+		paginate,
+		listFiles,
+		request,
 		createReview,
 		dismissReview,
 		warning,
@@ -648,4 +654,133 @@ test('fails the job on a refused review without retrying', async () => {
 	assert.equal(h.sleep.mock.callCount(), 0);
 	assert.deepEqual(h.setFailed.mock.calls[0].arguments, ['Could not submit Comment Cop review: Review rejected']);
 	assert.match(h.info.mock.calls[0].arguments[0], /0 posted/);
+});
+
+const freeFiles = [
+	...reviewFiles,
+	{ filename: 'cmd/two words/main.go', status: 'added', contents_url: 'main', patch: '@@ -0,0 +1,1 @@\n+package main' },
+	{ filename: '.github/workflows/ci.yml', status: 'modified', contents_url: 'ci', patch: '@@ -1,0 +2,1 @@\n+# Run the tests.' },
+	{ filename: 'docs/old.md', status: 'removed', contents_url: 'old' },
+	{ filename: 'docs/diagram.md', status: 'modified', contents_url: 'diagram' },
+];
+
+/** @param {typeof freeFiles} files */
+const diffFor = files =>
+	files.map(({ filename: name, status, patch }) => {
+		const tab = name.includes(' ') ? '\t' : '';
+		if (status === 'removed') {
+			return `diff --git a/${name} b/${name}\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/${name}\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone`;
+		}
+		if (patch === undefined) {
+			return `diff --git a/${name} b/${name}\nindex 1111111..2222222 100644\nBinary files a/${name} and b/${name} differ`;
+		}
+		return `diff --git a/${name} b/${name}\nindex 1111111..2222222 100644\n--- a/${name}${tab}\n+++ b/${name}${tab}\n${patch}`;
+	}).join('\n') + '\n';
+
+const DIFF_URL = 'https://github.com/owner/repo/pull/42.diff';
+const RAW_URL = `https://raw.githubusercontent.com/owner/repo/${'a'.repeat(40)}/`;
+const API_URL = 'https://api.github.com/repos/owner/repo/contents/';
+const SOURCE = 'Plain Markdown with no code fences.';
+const sourcePaths = ['docs/first.md', 'docs/second.md', 'cmd/two%20words/main.go'];
+
+/** @param {import('node:test').TestContext} t @param {(url: string) => Promise<Response>} respond */
+const stubFetch = (t, respond) =>
+	t.mock.method(globalThis, 'fetch', async (/** @type {string} */ url, /** @type {RequestInit} */ init) => {
+		assert.ok(init.signal instanceof AbortSignal);
+		return respond(url);
+	});
+
+/** @param {string} url */
+const serveFree = async url => {
+	if (url === DIFF_URL) return new Response(diffFor(freeFiles), { status: 200 });
+	if (url.startsWith(RAW_URL)) return new Response(SOURCE, { status: 200 });
+	throw new Error(`unexpected fetch ${url}`);
+};
+
+/** @param {ReturnType<typeof reviewHarness>} h */
+const apiCalls = h => ({
+	listFiles: h.paginate.mock.calls.filter(call => call.arguments[0] === h.listFiles).length,
+	contents: h.request.mock.calls.map(call => call.arguments[0]),
+});
+
+const UNPATCHED = 'No patch available for docs/diagram.md; skipping comment scan.';
+
+/** @param {ReturnType<typeof reviewHarness>} h */
+const fallbacks = h => h.warning.mock.calls.map(call => call.arguments[0]).filter(message => message !== UNPATCHED).length;
+
+/** @param {ReturnType<typeof reviewHarness>} h */
+const reviewsOf = h => h.createReview.mock.calls.map(call => call.arguments[0]);
+
+/** @param {boolean} isPrivate */
+function visibilityHarness(isPrivate) {
+	const h = reviewHarness([], [], freeFiles);
+	Object.assign(h.args.context.payload, { repository: { private: isPrivate } });
+	return h;
+}
+
+test('reads a public pull request without listFiles or contents API calls', async t => {
+	const fetch = stubFetch(t, serveFree);
+	const h = visibilityHarness(false);
+	await run(h.args);
+
+	assert.deepEqual(apiCalls(h), { listFiles: 0, contents: [] });
+	assert.deepEqual(fetch.mock.calls.map(call => call.arguments[0]), [DIFF_URL, ...sourcePaths.map(path => RAW_URL + path)]);
+	assert.deepEqual(h.warning.mock.calls.map(call => call.arguments[0]), [UNPATCHED]);
+
+	const api = visibilityHarness(true);
+	await run(api.args);
+	assert.equal(reviewsOf(h).length, 1);
+	assert.deepEqual(reviewsOf(h), reviewsOf(api));
+});
+
+test('reads a private pull request through the API without free fetches', async t => {
+	const fetch = stubFetch(t, serveFree);
+	const h = visibilityHarness(true);
+	await run(h.args);
+
+	assert.equal(fetch.mock.callCount(), 0);
+	assert.deepEqual(apiCalls(h), { listFiles: 1, contents: ['first', 'second', 'main'] });
+	assert.deepEqual(h.warning.mock.calls.map(call => call.arguments[0]), [UNPATCHED]);
+});
+
+test('falls back to the API when a free fetch fails', async t => {
+	/** @type {Array<[string, () => Promise<Response>]>} */
+	const failures = [
+		['a 503 answer', async () => new Response('busy', { status: 503 })],
+		['a network error', () => Promise.reject(new TypeError('fetch failed'))],
+		['a timeout', () => Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))],
+	];
+	for (const [name, fail] of failures) {
+		await t.test(`diff and sources after ${name}`, async t => {
+			const fetch = stubFetch(t, fail);
+			const h = visibilityHarness(false);
+			await run(h.args);
+
+			assert.equal(fetch.mock.callCount(), 1 + sourcePaths.length);
+			assert.deepEqual(apiCalls(h), { listFiles: 1, contents: ['first', 'second', 'main'] });
+			assert.equal(fallbacks(h), 1 + sourcePaths.length);
+			assert.equal(h.setFailed.mock.callCount(), 0);
+			assert.equal(reviewsOf(h)[0].comments?.length, 3);
+		});
+		await t.test(`sources after ${name}`, async t => {
+			stubFetch(t, url => url === DIFF_URL ? serveFree(url) : fail());
+			const h = visibilityHarness(false);
+			await run(h.args);
+
+			assert.deepEqual(apiCalls(h), { listFiles: 0, contents: sourcePaths.map(path => `${API_URL}${path}?ref=${'a'.repeat(40)}`) });
+			assert.equal(fallbacks(h), sourcePaths.length);
+			assert.equal(h.setFailed.mock.callCount(), 0);
+			assert.equal(reviewsOf(h)[0].comments?.length, 3);
+		});
+	}
+});
+
+test('falls back to listFiles when the diff answer holds no file headers', async t => {
+	stubFetch(t, url => url === DIFF_URL ? Promise.resolve(new Response('<!DOCTYPE html>\n', { status: 200 })) : serveFree(url));
+	const h = visibilityHarness(false);
+	await run(h.args);
+
+	assert.deepEqual(apiCalls(h), { listFiles: 1, contents: [] });
+	assert.equal(fallbacks(h), 1);
+	assert.equal(reviewsOf(h)[0].comments?.length, 3);
 });
