@@ -92,6 +92,12 @@ test('uses the unchanged first line to recognize partial field documentation', (
 	assert.deepEqual(groupsFromPatch('metadata.go', patch, source).map(group => group.reasons), [['stock technical wording']]);
 });
 
+test('scans a Go comment whose lines lie past the end of the source', () => {
+	const patch = '@@ -2,0 +10,4 @@\n+\t// Parse the value here.\n+\t// Keep the original around.\n+\t// Return both values.\n+\tparse(value)';
+
+	assert.deepEqual(groupsFromPatch('rule.go', patch, 'package rule\n').map(group => group.reasons), [['3 lines', 'stock technical wording']]);
+});
+
 test('flags style tells at any length', () => {
 	const groups = groupsFromPatch(
 		'rule.go',
@@ -405,7 +411,7 @@ function reviewHarness(seenBodies = [], submitErrors = [], files = reviewFiles, 
 			repo: { owner: 'owner', repo: 'repo' },
 			serverUrl: 'https://github.com',
 			apiUrl: 'https://api.github.com',
-			payload: { pull_request: { number: 42, head: { sha: 'a'.repeat(40) }, body: 'Plain description.' } },
+			payload: { pull_request: { number: 42, base: { sha: 'd'.repeat(40) }, head: { sha: 'a'.repeat(40) }, body: 'Plain description.' } },
 		},
 		core: { warning, info, setFailed },
 	};
@@ -677,7 +683,7 @@ const diffFor = files =>
 		return `diff --git a/${name} b/${name}\nindex 1111111..2222222 100644\n--- a/${name}${tab}\n+++ b/${name}${tab}\n${patch}`;
 	}).join('\n') + '\n';
 
-const DIFF_URL = 'https://github.com/owner/repo/pull/42.diff';
+const DIFF_URL = `https://github.com/owner/repo/compare/${'d'.repeat(40)}...${'a'.repeat(40)}.diff`;
 const RAW_URL = `https://raw.githubusercontent.com/owner/repo/${'a'.repeat(40)}/`;
 const API_URL = 'https://api.github.com/repos/owner/repo/contents/';
 const SOURCE = 'Plain Markdown with no code fences.';
@@ -783,4 +789,20 @@ test('falls back to listFiles when the diff answer holds no file headers', async
 	assert.deepEqual(apiCalls(h), { listFiles: 1, contents: [] });
 	assert.equal(fallbacks(h), 1);
 	assert.equal(reviewsOf(h)[0].comments?.length, 3);
+});
+
+test('reads the diff of the event revision after a newer push', async t => {
+	const newer = [
+		...freeFiles,
+		{ filename: 'docs/third.md', status: 'added', contents_url: 'third', patch: '@@ -0,0 +1,1 @@\n+Moreover, a newer push added this.' },
+	];
+	const fetch = stubFetch(t, async url => {
+		if (url === 'https://github.com/owner/repo/pull/42.diff') return new Response(diffFor(newer), { status: 200 });
+		return serveFree(url);
+	});
+	const h = visibilityHarness(false);
+	await run(h.args);
+
+	assert.equal(fetch.mock.calls[0].arguments[0], DIFF_URL);
+	assert.deepEqual(reviewsOf(h)[0].comments?.map(comment => comment.path), ['docs/first.md', 'docs/first.md', 'docs/second.md']);
 });

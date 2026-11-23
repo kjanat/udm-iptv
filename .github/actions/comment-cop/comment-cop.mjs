@@ -171,8 +171,9 @@ function langFor(path) {
 	return null;
 }
 
-/** @param {string} line @param {Lang} lang */
+/** @param {string | undefined} line @param {Lang} lang */
 function isCommentLine(line, lang) {
+	if (line === undefined) return false;
 	const text = line.trimStart();
 	if (lang === 'hash') return text.startsWith('#') && !text.startsWith('#!');
 	return text.startsWith('//')
@@ -524,12 +525,12 @@ async function freeText(url) {
 const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
 
 /** @typedef {{kind: 'removed', path: string} | {kind: 'unpatched', path: string} | {kind: 'patched', path: string, patch: string, contentsUrl: string}} ChangedFile */
-/** @typedef {{owner: string, repo: string, pullNumber: number, headSha: string, public: boolean, apiUrl: string}} Pull */
+/** @typedef {{owner: string, repo: string, pullNumber: number, baseSha: string, headSha: string, public: boolean, apiUrl: string}} Pull */
 
 /** @param {Pick<RunArguments, 'github' | 'core'>} args @param {Pull} pull @returns {Promise<ChangedFile[]>} */
 async function changedFiles({ github, core }, pull) {
 	if (pull.public) {
-		const url = `https://github.com/${pull.owner}/${pull.repo}/pull/${pull.pullNumber}.diff`;
+		const url = `https://github.com/${pull.owner}/${pull.repo}/compare/${pull.baseSha}...${pull.headSha}.diff`;
 		try {
 			return filesFromDiff(await freeText(url)).map(file =>
 				file.kind === 'patched'
@@ -577,9 +578,10 @@ export default async function run({ github, context, core }, sleep = delay) {
 	const owner = context.repo.owner;
 	const repo = context.repo.repo;
 	const pullNumber = pullRequest.number;
+	const baseSha = requiredString(pullRequest.base.sha, 'pull request base SHA');
 	const headSha = requiredString(pullRequest.head.sha, 'pull request head SHA');
 	/** @type {Pull} */
-	const pull = { owner, repo, pullNumber, headSha, public: context.payload.repository?.private === false, apiUrl: context.apiUrl };
+	const pull = { owner, repo, pullNumber, baseSha, headSha, public: context.payload.repository?.private === false, apiUrl: context.apiUrl };
 	const files = await changedFiles({ github, core }, pull);
 
 	/** @type {Group[]} */
