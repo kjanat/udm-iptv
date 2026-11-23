@@ -17,7 +17,7 @@ import { filesFromDiff } from './unified-diff.mjs';
 /** @typedef {{path: string, start: number, end: number, text: string, reasons: string[], matches?: WordingMatch[]}} Group */
 /** @typedef {{start: number, end: number, lang: Lang, topLevel: boolean, doc: boolean, lines: string[]}} PendingGroup */
 /** @typedef {{id: string, isResolved: boolean, path: string, comments: {nodes: Array<{body: string, viewerDidAuthor: boolean}>}}} ReviewThread */
-/** @typedef {{repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: boolean, endCursor: string | null}, nodes: ReviewThread[]}}}}} ReviewThreadsResponse */
+/** @typedef {{repository: {pullRequest: {headRefOid: string, reviewThreads: {pageInfo: {hasNextPage: boolean, endCursor: string | null}, nodes: ReviewThread[]}}}}} ReviewThreadsResponse */
 /** @typedef {Pick<import('@actions/github-script').AsyncFunctionArguments, 'github' | 'context' | 'core'>} RunArguments */
 /** @typedef {{id: number, state: string, body: string | null}} Review */
 /** @typedef {{character: '`' | '~', length: number} | null} Fence */
@@ -570,6 +570,44 @@ async function readSource({ github, core }, pull, file) {
 	return requiredString(response.data, `contents of ${file.path}`);
 }
 
+/** @typedef {{id: string, isResolved: boolean, path: string, key: string}} CopThread */
+
+/** @param {RunArguments['github']} github @param {Pull} pull @returns {Promise<{headRefOid: string, threads: CopThread[]}>} */
+async function copThreads(github, pull) {
+	/** @type {CopThread[]} */
+	const threads = [];
+	let headRefOid = '';
+	let after = null;
+	for (;;) {
+		/** @type {ReviewThreadsResponse} */
+		const response = await github.graphql(
+			`query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
+				repository(owner: $owner, name: $repo) {
+					pullRequest(number: $pr) {
+						headRefOid
+						reviewThreads(first: 100, after: $after) {
+							pageInfo { hasNextPage endCursor }
+							nodes { id isResolved path comments(first: 1) { nodes { body viewerDidAuthor } } }
+						}
+					}
+				}
+			}`,
+			{ owner: pull.owner, repo: pull.repo, pr: pull.pullNumber, after },
+		);
+		headRefOid = response.repository.pullRequest.headRefOid;
+		const page = response.repository.pullRequest.reviewThreads;
+		for (const thread of page.nodes) {
+			const comment = thread.comments.nodes[0];
+			if (comment === undefined || !comment.viewerDidAuthor) continue;
+			const match = /<!-- actionlint-comment-cop:([a-f0-9]+) -->/.exec(comment.body);
+			if (match === null) continue;
+			threads.push({ id: thread.id, isResolved: thread.isResolved, path: thread.path, key: match[1] });
+		}
+		if (!page.pageInfo.hasNextPage) return { headRefOid, threads };
+		after = page.pageInfo.endCursor;
+	}
+}
+
 /** @param {RunArguments} args @param {Sleep} [sleep] */
 export default async function run({ github, context, core }, sleep = delay) {
 	const pullRequest = context.payload.pull_request;
@@ -582,6 +620,11 @@ export default async function run({ github, context, core }, sleep = delay) {
 	const headSha = requiredString(pullRequest.head.sha, 'pull request head SHA');
 	/** @type {Pull} */
 	const pull = { owner, repo, pullNumber, baseSha, headSha, public: context.payload.repository?.private === false, apiUrl: context.apiUrl };
+	const { headRefOid, threads } = await copThreads(github, pull);
+	if (headRefOid !== headSha) {
+		core.info(`Comment Cop: skipped event head ${headSha}, pull request head is ${headRefOid}.`);
+		return;
+	}
 	const files = await changedFiles({ github, core }, pull);
 
 	/** @type {Group[]} */
@@ -632,40 +675,10 @@ export default async function run({ github, context, core }, sleep = delay) {
 	);
 
 	const presentKeys = new Set(groups.map(keyFor));
-	const seenKeys = new Set();
-	/** @type {string[]} */
-	const staleThreadIds = [];
-	let after = null;
-	for (;;) {
-		/** @type {ReviewThreadsResponse} */
-		const response = await github.graphql(
-			`query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
-				repository(owner: $owner, name: $repo) {
-					pullRequest(number: $pr) {
-						reviewThreads(first: 100, after: $after) {
-							pageInfo { hasNextPage endCursor }
-							nodes { id isResolved path comments(first: 1) { nodes { body viewerDidAuthor } } }
-						}
-					}
-				}
-			}`,
-			{ owner, repo, pr: pullNumber, after },
-		);
-		const page = response.repository.pullRequest.reviewThreads;
-		for (const thread of page.nodes) {
-			const comment = thread.comments.nodes[0];
-			if (comment === undefined || !comment.viewerDidAuthor) continue;
-			const match = /<!-- actionlint-comment-cop:([a-f0-9]+) -->/.exec(comment.body);
-			if (match === null) continue;
-			const key = match[1];
-			seenKeys.add(key);
-			if (!thread.isResolved && !presentKeys.has(key) && !unscannedPaths.has(thread.path)) {
-				staleThreadIds.push(thread.id);
-			}
-		}
-		if (!page.pageInfo.hasNextPage) break;
-		after = page.pageInfo.endCursor;
-	}
+	const seenKeys = new Set(threads.map(thread => thread.key).filter(key => presentKeys.has(key)));
+	const staleThreadIds = threads
+		.filter(thread => !thread.isResolved && !presentKeys.has(thread.key) && !unscannedPaths.has(thread.path))
+		.map(thread => thread.id);
 
 	let resolved = 0;
 	for (const id of staleThreadIds) {

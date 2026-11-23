@@ -378,9 +378,11 @@ function reviewHarness(seenBodies = [], submitErrors = [], files = reviewFiles, 
 	const warning = mock.fn();
 	const info = mock.fn();
 	const setFailed = mock.fn();
-	const graphql = mock.fn(async () => ({
+	const state = { headRefOid: 'a'.repeat(40) };
+	const graphql = mock.fn(async (/** @type {string} */ _query) => ({
 		repository: {
 			pullRequest: {
+				headRefOid: state.headRefOid,
 				reviewThreads: {
 					pageInfo: { hasNextPage: false, endCursor: null },
 					nodes: seenBodies.map((body, i) => ({
@@ -420,6 +422,7 @@ function reviewHarness(seenBodies = [], submitErrors = [], files = reviewFiles, 
 		paginate,
 		listFiles,
 		request,
+		state,
 		createReview,
 		dismissReview,
 		warning,
@@ -717,9 +720,9 @@ const fallbacks = h => h.warning.mock.calls.map(call => call.arguments[0]).filte
 /** @param {ReturnType<typeof reviewHarness>} h */
 const reviewsOf = h => h.createReview.mock.calls.map(call => call.arguments[0]);
 
-/** @param {boolean} isPrivate */
-function visibilityHarness(isPrivate) {
-	const h = reviewHarness([], [], freeFiles);
+/** @param {boolean} isPrivate @param {string[]} [seenBodies] */
+function visibilityHarness(isPrivate, seenBodies = []) {
+	const h = reviewHarness(seenBodies, [], freeFiles);
 	Object.assign(h.args.context.payload, { repository: { private: isPrivate } });
 	return h;
 }
@@ -805,4 +808,24 @@ test('reads the diff of the event revision after a newer push', async t => {
 
 	assert.equal(fetch.mock.calls[0].arguments[0], DIFF_URL);
 	assert.deepEqual(reviewsOf(h)[0].comments?.map(comment => comment.path), ['docs/first.md', 'docs/first.md', 'docs/second.md']);
+});
+
+test('leaves threads open when the event head is behind the pull request head', async t => {
+	const fetch = stubFetch(t, serveFree);
+	const newer = bodyFor({ path: 'docs/first.md', start: 9, end: 9, text: 'Moreover, a newer push added this.', reasons: ['connective glue'] });
+	const h = visibilityHarness(false, [newer]);
+	h.state.headRefOid = 'e'.repeat(40);
+	await run(h.args);
+
+	assert.deepEqual(h.graphql.mock.calls.filter(call => call.arguments[0].includes('resolveReviewThread')), []);
+	assert.equal(h.createReview.mock.callCount(), 0);
+	assert.equal(fetch.mock.callCount(), 0);
+	assert.deepEqual(apiCalls(h), { listFiles: 0, contents: [] });
+	assert.deepEqual(h.info.mock.calls.map(call => call.arguments[0]), [
+		`Comment Cop: skipped event head ${'a'.repeat(40)}, pull request head is ${'e'.repeat(40)}.`,
+	]);
+
+	const current = visibilityHarness(false, [newer]);
+	await run(current.args);
+	assert.equal(current.graphql.mock.calls.filter(call => call.arguments[0].includes('resolveReviewThread')).length, 1);
 });
